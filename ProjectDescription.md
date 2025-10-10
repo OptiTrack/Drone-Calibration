@@ -52,7 +52,7 @@ Out of Scope (Don’t do)
 
 # Success Criteria
 
-At minimum, a successful project would have a program where you can define the trajectory of a drone in a space to automatically calibrate the volmue. The calibrtaion given from this flight path should be at least on par with a manual Calibration.
+At minimum, a successful project would have a program where you can define the trajectory of a drone in a space to automatically calibrate the volume. The calibrtaion given from this flight path should be at least on par with a manual Calibration.
 
 
 # Learning Goals 
@@ -62,5 +62,7 @@ Since this is aimed at being a student project it’s important to have some lea
 * Learn how to establish requirements and stakeholders for a project to validate progress.
 * Learn basic 3D viewport manipulation skills.
 * Learn how to write standardized file formats.
-* Learn how to work with physical hardware.
-* Learn the basics of motion capture techniques.
+* Learn how Calibration is done Manually in Motive today
+* User interface programming and design.
+* Complete a small useful application for helping to automate a lengthy and skill-based process.
+* Possibly gain some cross collaboration experience with the Mechanical Engineering team to improve surrounding processes.  
