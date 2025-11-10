@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import PathPlanner from './PathPlanner'
+import PathPlanner3D from './PathPlanner3D'
 import RecordedPaths from './RecordedPaths'
 import RecordedVideos from './RecordedVideos'
 import CameraFeed from './CameraFeed'
@@ -171,7 +171,7 @@ function App() {
                 )}
 
                 {activeView === 'planner' && (
-                    <PathPlanner
+                    <PathPlanner3D
                         points={draftPoints}
                         onPointsChange={setDraftPoints}
                         onSavePath={handleSavePath}
