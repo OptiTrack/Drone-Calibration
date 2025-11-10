@@ -1,11 +1,14 @@
 import { useState } from 'react'
 import PathPlanner from './PathPlanner'
 import RecordedPaths from './RecordedPaths'
+import RecordedVideos from './RecordedVideos'
+import CameraFeed from './CameraFeed'
 
 function App() {
     const [drawerOpen, setDrawerOpen] = useState(false)
     const [activeView, setActiveView] = useState('home')
     const [paths, setPaths] = useState([])
+    const [recordings, setRecordings] = useState([])
     const [draftPoints, setDraftPoints] = useState([])
 
     const handleSavePath = (name, points) => {
@@ -25,6 +28,25 @@ function App() {
     const handleLoadToPlanner = (points) => {
         setDraftPoints([...points])
         setActiveView('planner')
+    }
+
+    const handleSaveRecording = (recording) => {
+        setRecordings(prev => [...prev, recording])
+    }
+
+    const handleDeleteRecording = (id) => {
+        setRecordings(prev => {
+            const recording = prev.find(r => r.id === id)
+            if (recording && recording.blobUrl) {
+                URL.revokeObjectURL(recording.blobUrl)
+            }
+            return prev.filter(r => r.id !== id)
+        })
+    }
+
+    const handlePlayRecording = (recording) => {
+        // Open the recording in a new window/tab for playback
+        window.open(recording.blobUrl, '_blank')
     }
 
     const switchView = (view) => {
@@ -66,6 +88,20 @@ function App() {
                         className={`w-full ${activeView === 'recorder' ? 'bg-gray-300' : 'bg-gray-200'} hover:bg-gray-300 text-gray-800 py-4 px-4 rounded-lg transition text-left`}
                     >
                         <span className="font-medium">Recorded Paths</span>
+                    </button>
+
+                    <button
+                        onClick={() => switchView('videos')}
+                        className={`w-full ${activeView === 'videos' ? 'bg-gray-300' : 'bg-gray-200'} hover:bg-gray-300 text-gray-800 py-4 px-4 rounded-lg transition text-left`}
+                    >
+                        <span className="font-medium">Recorded Videos</span>
+                    </button>
+
+                    <button
+                        onClick={() => switchView('camera')}
+                        className={`w-full ${activeView === 'camera' ? 'bg-gray-300' : 'bg-gray-200'} hover:bg-gray-300 text-gray-800 py-4 px-4 rounded-lg transition text-left`}
+                    >
+                        <span className="font-medium">Camera Feed</span>
                     </button>
 
                     <button
@@ -114,8 +150,11 @@ function App() {
                             </button>
 
                             {/* Camera Feed Box */}
-                            <div className="bg-gray-200 rounded-xl p-4 flex items-center justify-center">
-                                <span className="text-gray-800 text-xl font-medium">Camera Feed</span>
+                            <div className="bg-gray-900 rounded-xl p-2 h-full">
+                                <CameraFeed 
+                                    compact={true} 
+                                    onSaveRecording={handleSaveRecording}
+                                />
                             </div>
 
                             {/* Telemetry Box */}
@@ -145,6 +184,25 @@ function App() {
                         paths={paths}
                         onDeletePath={handleDeletePath}
                         onLoadToPlanner={handleLoadToPlanner}
+                    />
+                )}
+
+                {activeView === 'camera' && (
+                    <div className="p-6 h-full">
+                        <div className="h-full bg-gray-900 rounded-xl p-4">
+                            <CameraFeed 
+                                compact={false} 
+                                onSaveRecording={handleSaveRecording}
+                            />
+                        </div>
+                    </div>
+                )}
+
+                {activeView === 'videos' && (
+                    <RecordedVideos
+                        recordings={recordings}
+                        onDeleteRecording={handleDeleteRecording}
+                        onPlayRecording={handlePlayRecording}
                     />
                 )}
 

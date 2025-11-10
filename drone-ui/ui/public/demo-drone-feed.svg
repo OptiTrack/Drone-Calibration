@@ -1,0 +1,98 @@
+<svg width="1920" height="1080" xmlns="http://www.w3.org/2000/svg">
+  <!-- Sky gradient background -->
+  <defs>
+    <linearGradient id="skyGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#87CEEB;stop-opacity:1" />
+      <stop offset="70%" style="stop-color:#98D8E8;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#F0F8FF;stop-opacity:1" />
+    </linearGradient>
+    <radialGradient id="cloudGradient" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#FFFFFF;stop-opacity:0.9" />
+      <stop offset="100%" style="stop-color:#E6E6FA;stop-opacity:0.3" />
+    </radialGradient>
+  </defs>
+  
+  <!-- Sky background -->
+  <rect width="1920" height="1080" fill="url(#skyGradient)"/>
+  
+  <!-- Clouds -->
+  <ellipse cx="300" cy="200" rx="80" ry="40" fill="url(#cloudGradient)"/>
+  <ellipse cx="280" cy="190" rx="60" ry="30" fill="url(#cloudGradient)"/>
+  <ellipse cx="320" cy="185" rx="70" ry="35" fill="url(#cloudGradient)"/>
+  
+  <ellipse cx="1200" cy="150" rx="100" ry="50" fill="url(#cloudGradient)"/>
+  <ellipse cx="1180" cy="140" rx="80" ry="40" fill="url(#cloudGradient)"/>
+  <ellipse cx="1220" cy="135" rx="90" ry="45" fill="url(#cloudGradient)"/>
+  
+  <ellipse cx="1600" cy="300" rx="120" ry="60" fill="url(#cloudGradient)"/>
+  <ellipse cx="1580" cy="290" rx="100" ry="50" fill="url(#cloudGradient)"/>
+  
+  <!-- Ground/Landscape -->
+  <rect x="0" y="800" width="1920" height="280" fill="#3CB371"/>
+  
+  <!-- Trees -->
+  <rect x="100" y="750" width="20" height="50" fill="#8B4513"/>
+  <circle cx="110" cy="740" r="30" fill="#228B22"/>
+  
+  <rect x="200" y="760" width="15" height="40" fill="#8B4513"/>
+  <circle cx="207" cy="750" r="25" fill="#228B22"/>
+  
+  <rect x="400" y="740" width="25" height="60" fill="#8B4513"/>
+  <circle cx="412" cy="730" r="35" fill="#228B22"/>
+  
+  <rect x="600" y="755" width="18" height="45" fill="#8B4513"/>
+  <circle cx="609" cy="745" r="28" fill="#228B22"/>
+  
+  <rect x="1100" y="745" width="22" height="55" fill="#8B4513"/>
+  <circle cx="1111" cy="735" r="32" fill="#228B22"/>
+  
+  <rect x="1300" y="750" width="20" height="50" fill="#8B4513"/>
+  <circle cx="1310" cy="740" r="30" fill="#228B22"/>
+  
+  <rect x="1500" y="760" width="18" height="45" fill="#8B4513"/>
+  <circle cx="1509" cy="750" r="28" fill="#228B22"/>
+  
+  <rect x="1650" y="745" width="25" height="55" fill="#8B4513"/>
+  <circle cx="1662" cy="735" r="33" fill="#228B22"/>
+  
+  <!-- Buildings in distance -->
+  <rect x="800" y="700" width="40" height="100" fill="#696969"/>
+  <rect x="850" y="720" width="30" height="80" fill="#708090"/>
+  <rect x="890" y="710" width="35" height="90" fill="#696969"/>
+  <rect x="930" y="695" width="28" height="105" fill="#696969"/>
+  <rect x="970" y="715" width="32" height="85" fill="#708090"/>
+  
+  <!-- More distant buildings -->
+  <rect x="1200" y="730" width="25" height="70" fill="#778899" opacity="0.8"/>
+  <rect x="1230" y="740" width="20" height="60" fill="#696969" opacity="0.8"/>
+  <rect x="1260" y="735" width="22" height="65" fill="#778899" opacity="0.8"/>
+  
+  <!-- Roads/Paths -->
+  <rect x="0" y="850" width="1920" height="40" fill="#2F4F4F"/>
+  <rect x="0" y="865" width="1920" height="4" fill="#FFFF00" opacity="0.8"/>
+  <rect x="0" y="875" width="1920" height="4" fill="#FFFF00" opacity="0.8"/>
+  
+  <!-- Additional road -->
+  <polygon points="500,800 520,800 600,1080 580,1080" fill="#2F4F4F"/>
+  <polygon points="502,800 518,800 598,1080 582,1080" fill="#FFFF00" opacity="0.6"/>
+  
+  <!-- Fields/Open areas -->
+  <rect x="0" y="900" width="400" height="180" fill="#32CD32"/>
+  <rect x="1400" y="900" width="520" height="180" fill="#32CD32"/>
+  
+  <!-- River/Water body -->
+  <ellipse cx="1200" cy="950" rx="200" ry="80" fill="#4682B4" opacity="0.7"/>
+  <ellipse cx="1150" cy="970" rx="150" ry="60" fill="#5F9EA0" opacity="0.5"/>
+  
+  <!-- Drone shadow on ground (more realistic) -->
+  <ellipse cx="960" cy="820" rx="60" ry="20" fill="#000000" opacity="0.3"/>
+  
+  <!-- Additional natural elements -->
+  <!-- Small paths -->
+  <rect x="300" y="825" width="200" height="8" fill="#8B4513" opacity="0.6"/>
+  <rect x="1200" y="835" width="150" height="6" fill="#8B4513" opacity="0.6"/>
+  
+  <!-- Parking areas -->
+  <rect x="750" y="830" width="80" height="50" fill="#2F4F4F"/>
+  <rect x="1050" y="840" width="60" height="40" fill="#2F4F4F"/>
+</svg>
