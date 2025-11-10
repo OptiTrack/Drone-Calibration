@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { BsCamera, BsGearFill, BsFullscreen, BsFullscreenExit, BsRecordCircle, BsStopCircle } from 'react-icons/bs'
 
 function CameraFeed({ compact = false, showControls = true, onSaveRecording, recordingSettings = {} }) {
@@ -8,7 +8,7 @@ function CameraFeed({ compact = false, showControls = true, onSaveRecording, rec
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [zoom, setZoom] = useState(1)
   const [showSettings, setShowSettings] = useState(false)
-  const [cameraSettings, setCameraSettings] = useState({
+  const [cameraSettings, _setCameraSettings] = useState({
     quality: 'high',
     format: 'mp4',
     framerate: 30,
@@ -25,40 +25,9 @@ function CameraFeed({ compact = false, showControls = true, onSaveRecording, rec
   const demoImageUrl = '/demo-drone-feed.jpg'
   
   // Simulated live feed URL (in real implementation, this would be the drone's camera stream)
-  const liveFeedUrl = 'ws://localhost:8080/camera-stream' // WebSocket or HTTP stream
+  const _liveFeedUrl = 'ws://localhost:8080/camera-stream' // WebSocket or HTTP stream
 
-  useEffect(() => {
-    // Initialize camera feed
-    initializeFeed()
-    
-    // Cleanup on unmount
-    return () => {
-      if (videoRef.current && videoRef.current.srcObject) {
-        const tracks = videoRef.current.srcObject.getTracks()
-        tracks.forEach(track => track.stop())
-      }
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stop()
-      }
-    }
-  }, [feedSource])
-
-  // Recording duration timer
-  useEffect(() => {
-    let interval = null
-    if (isRecording && recordingStartTime) {
-      interval = setInterval(() => {
-        setRecordingDuration(Math.floor((Date.now() - recordingStartTime) / 1000))
-      }, 1000)
-    } else {
-      setRecordingDuration(0)
-    }
-    return () => {
-      if (interval) clearInterval(interval)
-    }
-  }, [isRecording, recordingStartTime])
-
-  const initializeFeed = async () => {
+  const initializeFeed = useCallback(async () => {
     if (feedSource === 'live') {
       try {
         // In a real implementation, you would connect to the drone's camera stream
@@ -79,7 +48,42 @@ function CameraFeed({ compact = false, showControls = true, onSaveRecording, rec
         setFeedSource('demo')
       }
     }
-  }
+  }, [feedSource, setError, setFeedSource])
+
+  useEffect(() => {
+    // Initialize camera feed
+    initializeFeed()
+    
+    // Store current refs for cleanup
+    const currentVideoRef = videoRef.current
+    const currentMediaRecorderRef = mediaRecorderRef.current
+    
+    // Cleanup on unmount
+    return () => {
+      if (currentVideoRef && currentVideoRef.srcObject) {
+        const tracks = currentVideoRef.srcObject.getTracks()
+        tracks.forEach(track => track.stop())
+      }
+      if (currentMediaRecorderRef && currentMediaRecorderRef.state !== 'inactive') {
+        currentMediaRecorderRef.stop()
+      }
+    }
+  }, [initializeFeed])
+
+  // Recording duration timer
+  useEffect(() => {
+    let interval = null
+    if (isRecording && recordingStartTime) {
+      interval = setInterval(() => {
+        setRecordingDuration(Math.floor((Date.now() - recordingStartTime) / 1000))
+      }, 1000)
+    } else {
+      setRecordingDuration(0)
+    }
+    return () => {
+      if (interval) clearInterval(interval)
+    }
+  }, [isRecording, recordingStartTime])
 
   const handleRecord = async () => {
     if (!isRecording) {
@@ -108,11 +112,13 @@ function CameraFeed({ compact = false, showControls = true, onSaveRecording, rec
           }
           
           mediaRecorderRef.current.start()
-          setRecordingStartTime(Date.now())
+          const startTime = Date.now()
+          setRecordingStartTime(startTime)
           setIsRecording(true)
         } else {
           // Demo mode - simulate recording
-          setRecordingStartTime(Date.now())
+          const startTime = Date.now()
+          setRecordingStartTime(startTime)
           setIsRecording(true)
           // Auto-stop demo recording after 10 seconds
           setTimeout(() => {
