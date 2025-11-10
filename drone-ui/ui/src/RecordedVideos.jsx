@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { BsPlay, BsDownload, BsTrash, BsCameraVideo } from 'react-icons/bs'
 
 function RecordedVideos({ recordings, onDeleteRecording, onPlayRecording }) {
-  const [selectedRecording, setSelectedRecording] = useState(null)
+  const [_selectedRecording, _setSelectedRecording] = useState(null)
 
   const formatDate = (timestamp) => {
     const date = new Date(timestamp)
