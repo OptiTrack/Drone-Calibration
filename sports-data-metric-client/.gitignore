@@ -1,0 +1,87 @@
+# === Qt Creator specific ===
+*.autosave
+*.user
+*.user.*
+*.pro.user*
+*.qbs.user*
+*.qmlproject.user*
+*.creator.*
+CMakeLists.txt.user*
+
+# Qt Creator build directories
+build-*/
+_build*/
+build*/
+
+# Qt Creator generated files
+*.pro.user
+*.moc
+*.qrc.depends
+*.qrc.temp
+Makefile*
+*.o
+*.obj
+*.lo
+*.la
+*.a
+*.so
+*.so.*
+*.dll
+*.dylib
+
+# moc, rcc, uic generated files
+moc_*.cpp
+moc_*.h
+ui_*.h
+qrc_*.cpp
+
+# Compiled object files
+*.o
+*.obj
+*.exe
+*.out
+*.app
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+*.cmake
+*.dir/
+
+# Temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+*.kate-swp
+*.ncb
+*.sdf
+*.suo
+*.VC.db
+*.VC.opendb
+
+# OS-specific
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Qt Resource compiled files
+*.qrc.cpp
+*.rcc
+
+# Conan (if used)
+conanbuildinfo.*
+conaninfo.txt
+graph_info.json
+
+# vcpkg (if used)
+vcpkg_installed/
+vcpkg_buildtrees/
+
+# VSCode settings
+.vscode

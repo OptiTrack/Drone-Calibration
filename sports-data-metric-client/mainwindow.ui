@@ -1,0 +1,684 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1409</width>
+    <height>1106</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Sports Data Metrics Client</string>
+  </property>
+  <property name="windowIcon">
+   <iconset resource="resource.qrc">
+    <normaloff>:/small-icons/src/assets/icons/Small/Motive/motive-logo-dark.svg</normaloff>:/small-icons/src/assets/icons/Small/Motive/motive-logo-dark.svg</iconset>
+  </property>
+  <widget class="QWidget" name="mainWidget">
+   <layout class="QVBoxLayout" name="verticalLayout">
+    <item>
+     <layout class="QHBoxLayout" name="topBarHBoxLayout">
+      <item>
+       <spacer name="leftHorizontalSpacer">
+        <property name="orientation">
+         <enum>Qt::Orientation::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="panesHBoxLayout">
+        <item>
+         <widget class="QToolButton" name="streamingToolButton">
+          <property name="minimumSize">
+           <size>
+            <width>75</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="text">
+           <string>Streaming</string>
+          </property>
+          <property name="icon">
+           <iconset resource="resource.qrc">
+            <normaloff>:/large-icons/src/assets/icons/Large/Streaming/Streaming-Off.svg</normaloff>
+            <normalon>:/large-icons/src/assets/icons/Large/Streaming/Streaming-On.svg</normalon>
+            <disabledoff>:/large-icons/src/assets/icons/Large/Streaming/Streaming-Disabled.svg</disabledoff>
+            <activeoff>:/large-icons/src/assets/icons/Large/Streaming/Streaming-Active.svg</activeoff>:/large-icons/src/assets/icons/Large/Streaming/Streaming-Off.svg</iconset>
+          </property>
+          <property name="iconSize">
+           <size>
+            <width>32</width>
+            <height>32</height>
+           </size>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+          <property name="toolButtonStyle">
+           <enum>Qt::ToolButtonStyle::ToolButtonTextUnderIcon</enum>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QToolButton" name="configureToolButton">
+          <property name="minimumSize">
+           <size>
+            <width>75</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="text">
+           <string>Configure</string>
+          </property>
+          <property name="icon">
+           <iconset resource="resource.qrc">
+            <normaloff>:/small-icons/src/assets/icons/Small/Actions/Actions-Off.svg</normaloff>
+            <normalon>:/small-icons/src/assets/icons/Small/Actions/Actions-On.svg</normalon>
+            <disabledoff>:/large-icons/src/assets/icons/Large/General/General-Disabled.svg</disabledoff>
+            <activeoff>:/large-icons/src/assets/icons/Large/General/General-Active.svg</activeoff>:/small-icons/src/assets/icons/Small/Actions/Actions-Off.svg</iconset>
+          </property>
+          <property name="iconSize">
+           <size>
+            <width>32</width>
+            <height>32</height>
+           </size>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+          <property name="toolButtonStyle">
+           <enum>Qt::ToolButtonStyle::ToolButtonTextUnderIcon</enum>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QToolButton" name="rigidQuickToolButton">
+          <property name="minimumSize">
+           <size>
+            <width>75</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="text">
+           <string>Rigid Quick</string>
+          </property>
+          <property name="icon">
+           <iconset resource="resource.qrc">
+            <normaloff>:/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-Off.svg</normaloff>
+            <normalon>:/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-On.svg</normalon>
+            <disabledoff>:/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-Disabled.svg</disabledoff>
+            <activeoff>:/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-Active.svg</activeoff>:/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-Off.svg</iconset>
+          </property>
+          <property name="iconSize">
+           <size>
+            <width>32</width>
+            <height>32</height>
+           </size>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+          <property name="toolButtonStyle">
+           <enum>Qt::ToolButtonStyle::ToolButtonTextUnderIcon</enum>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QToolButton" name="bodyQuickToolButton">
+          <property name="minimumSize">
+           <size>
+            <width>75</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="text">
+           <string>Body Quick</string>
+          </property>
+          <property name="icon">
+           <iconset resource="resource.qrc">
+            <normaloff>:/large-icons/src/assets/icons/Large/Skeleton/Skeleton-Off.svg</normaloff>
+            <normalon>:/large-icons/src/assets/icons/Large/Skeleton/Skeleton-On.svg</normalon>
+            <disabledoff>:/large-icons/src/assets/icons/Large/Skeleton/Skeleton-Disabled.svg</disabledoff>
+            <activeoff>:/large-icons/src/assets/icons/Large/Skeleton/Skeleton-Active.svg</activeoff>:/large-icons/src/assets/icons/Large/Skeleton/Skeleton-Off.svg</iconset>
+          </property>
+          <property name="iconSize">
+           <size>
+            <width>32</width>
+            <height>32</height>
+           </size>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+          <property name="toolButtonStyle">
+           <enum>Qt::ToolButtonStyle::ToolButtonTextUnderIcon</enum>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="Line" name="leftLineDivider">
+        <property name="orientation">
+         <enum>Qt::Orientation::Vertical</enum>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="actionsHBoxLayout">
+        <item>
+         <widget class="QToolButton" name="eventToolButton">
+          <property name="minimumSize">
+           <size>
+            <width>75</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="text">
+           <string>Event</string>
+          </property>
+          <property name="icon">
+           <iconset resource="resource.qrc">
+            <normaloff>:/large-icons/src/assets/icons/Large/Events/Events-Off.svg</normaloff>
+            <normalon>:/large-icons/src/assets/icons/Large/Events/Events-On.svg</normalon>
+            <disabledoff>:/large-icons/src/assets/icons/Large/Events/Events-Disabled.svg</disabledoff>
+            <activeoff>:/large-icons/src/assets/icons/Large/Events/Events-Active.svg</activeoff>:/large-icons/src/assets/icons/Large/Events/Events-Off.svg</iconset>
+          </property>
+          <property name="iconSize">
+           <size>
+            <width>32</width>
+            <height>32</height>
+           </size>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+          <property name="toolButtonStyle">
+           <enum>Qt::ToolButtonStyle::ToolButtonTextUnderIcon</enum>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QToolButton" name="jointAngleToolButton">
+          <property name="minimumSize">
+           <size>
+            <width>75</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="text">
+           <string>Joint Angle</string>
+          </property>
+          <property name="icon">
+           <iconset resource="resource.qrc">
+            <normaloff>:/large-icons/src/assets/icons/Large/Angle/Angle-Off.svg</normaloff>
+            <normalon>:/large-icons/src/assets/icons/Large/Angle/Angle-On.svg</normalon>
+            <disabledoff>:/large-icons/src/assets/icons/Large/Angle/Angle-Disabled.svg</disabledoff>
+            <activeoff>:/large-icons/src/assets/icons/Large/Angle/Angle-Active.svg</activeoff>:/large-icons/src/assets/icons/Large/Angle/Angle-Off.svg</iconset>
+          </property>
+          <property name="iconSize">
+           <size>
+            <width>32</width>
+            <height>32</height>
+           </size>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+          <property name="toolButtonStyle">
+           <enum>Qt::ToolButtonStyle::ToolButtonTextUnderIcon</enum>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="Line" name="rightLineDivider">
+        <property name="orientation">
+         <enum>Qt::Orientation::Vertical</enum>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="exportsHBoxLayout">
+        <item>
+         <widget class="QToolButton" name="recordToolButton">
+          <property name="minimumSize">
+           <size>
+            <width>75</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="text">
+           <string>Record</string>
+          </property>
+          <property name="icon">
+           <iconset resource="resource.qrc">
+            <normaloff>:/large-icons/src/assets/icons/Large/Streaming-Alt/Streaming-Alt-Off.svg</normaloff>
+            <normalon>:/large-icons/src/assets/icons/Large/Streaming-Alt/Streaming-Alt-On.svg</normalon>
+            <disabledoff>:/large-icons/src/assets/icons/Large/Streaming-Alt/Streaming-Alt-Disabled.svg</disabledoff>
+            <activeoff>:/large-icons/src/assets/icons/Large/Streaming-Alt/Streaming-Alt-Active.svg</activeoff>:/large-icons/src/assets/icons/Large/Streaming-Alt/Streaming-Alt-Off.svg</iconset>
+          </property>
+          <property name="iconSize">
+           <size>
+            <width>32</width>
+            <height>32</height>
+           </size>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+          <property name="toolButtonStyle">
+           <enum>Qt::ToolButtonStyle::ToolButtonTextUnderIcon</enum>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QToolButton" name="exportToolButton">
+          <property name="minimumSize">
+           <size>
+            <width>75</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="text">
+           <string>Export</string>
+          </property>
+          <property name="icon">
+           <iconset resource="resource.qrc">
+            <normaloff>:/large-icons/src/assets/icons/Large/Export Events/Export-Events-Off.svg</normaloff>
+            <normalon>:/large-icons/src/assets/icons/Large/Export Events/Export-Events-On.svg</normalon>
+            <disabledoff>:/large-icons/src/assets/icons/Large/Export Events/Export-Events-Disabled.svg</disabledoff>
+            <activeoff>:/large-icons/src/assets/icons/Large/Export Events/Export-Events-Active.svg</activeoff>:/large-icons/src/assets/icons/Large/Export Events/Export-Events-Off.svg</iconset>
+          </property>
+          <property name="iconSize">
+           <size>
+            <width>32</width>
+            <height>32</height>
+           </size>
+          </property>
+          <property name="checkable">
+           <bool>true</bool>
+          </property>
+          <property name="toolButtonStyle">
+           <enum>Qt::ToolButtonStyle::ToolButtonTextUnderIcon</enum>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <spacer name="rightHorizontalSpacer">
+        <property name="orientation">
+         <enum>Qt::Orientation::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="mainHBoxLayout" stretch="1,5,1">
+      <property name="spacing">
+       <number>0</number>
+      </property>
+      <item>
+       <widget class="QTabWidget" name="leftTabWidget">
+        <property name="minimumSize">
+         <size>
+          <width>325</width>
+          <height>0</height>
+         </size>
+        </property>
+        <property name="tabPosition">
+         <enum>QTabWidget::TabPosition::North</enum>
+        </property>
+        <property name="tabShape">
+         <enum>QTabWidget::TabShape::Rounded</enum>
+        </property>
+        <property name="currentIndex">
+         <number>0</number>
+        </property>
+        <property name="iconSize">
+         <size>
+          <width>24</width>
+          <height>24</height>
+         </size>
+        </property>
+        <widget class="QWidget" name="streamingTabWidget">
+         <attribute name="icon">
+          <iconset resource="resource.qrc">
+           <normaloff>:/small-icons/src/assets/icons/Small/Streaming/Streaming-Off.svg</normaloff>
+           <normalon>:/small-icons/src/assets/icons/Small/Streaming/Streaming-On.svg</normalon>
+           <disabledoff>:/small-icons/src/assets/icons/Small/Streaming/Streaming-Disabled.svg</disabledoff>
+           <activeoff>:/small-icons/src/assets/icons/Small/Streaming/Streaming-Active.svg</activeoff>:/small-icons/src/assets/icons/Small/Streaming/Streaming-Off.svg</iconset>
+         </attribute>
+         <attribute name="title">
+          <string/>
+         </attribute>
+         <layout class="QVBoxLayout" name="verticalLayout_2">
+          <item>
+           <layout class="QHBoxLayout" name="streamingHBoxLayout">
+            <property name="rightMargin">
+             <number>0</number>
+            </property>
+            <item>
+             <widget class="QLabel" name="streamingLabel">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+                <horstretch>0</horstretch>
+                <verstretch>0</verstretch>
+               </sizepolicy>
+              </property>
+              <property name="maximumSize">
+               <size>
+                <width>16777215</width>
+                <height>16777215</height>
+               </size>
+              </property>
+              <property name="text">
+               <string>Streaming</string>
+              </property>
+             </widget>
+            </item>
+            <item alignment="Qt::AlignmentFlag::AlignLeft">
+             <widget class="QLabel" name="lockLabel">
+              <property name="maximumSize">
+               <size>
+                <width>16777215</width>
+                <height>16</height>
+               </size>
+              </property>
+              <property name="text">
+               <string/>
+              </property>
+              <property name="pixmap">
+               <pixmap resource="resource.qrc">:/small-icons/src/assets/icons/Small/Lock/Lock-Broken-Active.svg</pixmap>
+              </property>
+              <property name="alignment">
+               <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignVCenter</set>
+              </property>
+              <property name="margin">
+               <number>12</number>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item>
+           <widget class="QScrollArea" name="streamingScrollArea">
+            <property name="widgetResizable">
+             <bool>true</bool>
+            </property>
+            <widget class="QWidget" name="streamingLayoutWidget">
+             <property name="geometry">
+              <rect>
+               <x>0</x>
+               <y>0</y>
+               <width>301</width>
+               <height>892</height>
+              </rect>
+             </property>
+             <layout class="QVBoxLayout" name="verticalLayout_7">
+              <item>
+               <spacer name="streamingVerticalSpacer">
+                <property name="orientation">
+                 <enum>Qt::Orientation::Vertical</enum>
+                </property>
+                <property name="sizeHint" stdset="0">
+                 <size>
+                  <width>20</width>
+                  <height>40</height>
+                 </size>
+                </property>
+               </spacer>
+              </item>
+             </layout>
+            </widget>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+        <widget class="QWidget" name="configureTabWidget">
+         <attribute name="icon">
+          <iconset resource="resource.qrc">
+           <normaloff>:/small-icons/src/assets/icons/Small/Actions/Actions-Off.svg</normaloff>
+           <normalon>:/small-icons/src/assets/icons/Small/Actions/Actions-On.svg</normalon>
+           <disabledoff>:/small-icons/src/assets/icons/Small/Actions/Actions-Disabled.svg</disabledoff>
+           <activeoff>:/small-icons/src/assets/icons/Small/Actions/Actions-Active.svg</activeoff>:/small-icons/src/assets/icons/Small/Actions/Actions-Off.svg</iconset>
+         </attribute>
+         <attribute name="title">
+          <string/>
+         </attribute>
+         <layout class="QVBoxLayout" name="verticalLayout_20">
+          <item>
+           <widget class="QLabel" name="configureLabel">
+            <property name="text">
+             <string>Configure</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QScrollArea" name="configureScrollArea">
+            <property name="widgetResizable">
+             <bool>true</bool>
+            </property>
+            <widget class="QWidget" name="configureLayoutWidget">
+             <property name="geometry">
+              <rect>
+               <x>0</x>
+               <y>0</y>
+               <width>301</width>
+               <height>894</height>
+              </rect>
+             </property>
+             <layout class="QVBoxLayout" name="verticalLayout_3">
+              <item>
+               <spacer name="configureVerticalSpacer">
+                <property name="orientation">
+                 <enum>Qt::Orientation::Vertical</enum>
+                </property>
+                <property name="sizeHint" stdset="0">
+                 <size>
+                  <width>20</width>
+                  <height>40</height>
+                 </size>
+                </property>
+               </spacer>
+              </item>
+             </layout>
+            </widget>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </widget>
+      </item>
+      <item>
+       <widget class="GLWidget" name="openGLWidget"/>
+      </item>
+      <item>
+       <widget class="QTabWidget" name="rightTabWidget">
+        <property name="minimumSize">
+         <size>
+          <width>325</width>
+          <height>0</height>
+         </size>
+        </property>
+        <property name="currentIndex">
+         <number>0</number>
+        </property>
+        <property name="iconSize">
+         <size>
+          <width>24</width>
+          <height>24</height>
+         </size>
+        </property>
+        <widget class="QWidget" name="rigidQuickTabWidget">
+         <attribute name="icon">
+          <iconset resource="resource.qrc">
+           <normaloff>:/small-icons/src/assets/icons/Small/Rigid Body/Rigid-Body-Off.svg</normaloff>
+           <normalon>:/small-icons/src/assets/icons/Small/Rigid Body/Rigid-Body-On.svg</normalon>
+           <disabledoff>:/small-icons/src/assets/icons/Small/Rigid Body/Rigid-Body-Disabled.svg</disabledoff>
+           <activeoff>:/small-icons/src/assets/icons/Small/Rigid Body/Rigid-Body-Active.svg</activeoff>:/small-icons/src/assets/icons/Small/Rigid Body/Rigid-Body-Off.svg</iconset>
+         </attribute>
+         <attribute name="title">
+          <string/>
+         </attribute>
+         <layout class="QVBoxLayout" name="verticalLayout_4">
+          <item>
+           <widget class="QLabel" name="rigidQuickLabel">
+            <property name="text">
+             <string>Bat Metrics</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTrailing|Qt::AlignmentFlag::AlignVCenter</set>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QScrollArea" name="rigidQuickScrollArea">
+            <property name="widgetResizable">
+             <bool>true</bool>
+            </property>
+            <widget class="QWidget" name="rigidQuickLayoutWidget">
+             <property name="geometry">
+              <rect>
+               <x>0</x>
+               <y>0</y>
+               <width>301</width>
+               <height>894</height>
+              </rect>
+             </property>
+             <layout class="QVBoxLayout" name="verticalLayout_8">
+              <item>
+               <spacer name="rigidQuickVerticalSpacer">
+                <property name="orientation">
+                 <enum>Qt::Orientation::Vertical</enum>
+                </property>
+                <property name="sizeHint" stdset="0">
+                 <size>
+                  <width>20</width>
+                  <height>40</height>
+                 </size>
+                </property>
+               </spacer>
+              </item>
+             </layout>
+            </widget>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+        <widget class="QWidget" name="bodyQuickTabWidget">
+         <attribute name="icon">
+          <iconset resource="resource.qrc">
+           <normaloff>:/small-icons/src/assets/icons/Small/Speed/Speed-Off.svg</normaloff>
+           <normalon>:/small-icons/src/assets/icons/Small/Speed/Speed-On.svg</normalon>
+           <disabledoff>:/small-icons/src/assets/icons/Small/Speed/Speed-Disabled.svg</disabledoff>
+           <activeoff>:/small-icons/src/assets/icons/Small/Speed/Speed-Active.svg</activeoff>:/small-icons/src/assets/icons/Small/Speed/Speed-Off.svg</iconset>
+         </attribute>
+         <attribute name="title">
+          <string/>
+         </attribute>
+         <layout class="QVBoxLayout" name="verticalLayout_5">
+          <item>
+           <widget class="QLabel" name="bodyQuickLabel">
+            <property name="text">
+             <string>Quick Skeleton Metrics</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTrailing|Qt::AlignmentFlag::AlignVCenter</set>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QScrollArea" name="bodyQuickScrollArea">
+            <property name="widgetResizable">
+             <bool>true</bool>
+            </property>
+            <widget class="QWidget" name="bodyQuickLayoutWidget">
+             <property name="geometry">
+              <rect>
+               <x>0</x>
+               <y>0</y>
+               <width>301</width>
+               <height>894</height>
+              </rect>
+             </property>
+             <layout class="QVBoxLayout" name="verticalLayout_9">
+              <item>
+               <spacer name="bodyQuickVerticalSpacer">
+                <property name="orientation">
+                 <enum>Qt::Orientation::Vertical</enum>
+                </property>
+                <property name="sizeHint" stdset="0">
+                 <size>
+                  <width>20</width>
+                  <height>40</height>
+                 </size>
+                </property>
+               </spacer>
+              </item>
+             </layout>
+            </widget>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </widget>
+      </item>
+     </layout>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>1409</width>
+     <height>21</height>
+    </rect>
+   </property>
+   <widget class="QMenu" name="fileMenu">
+    <property name="title">
+     <string>File</string>
+    </property>
+   </widget>
+   <widget class="QMenu" name="editMenu">
+    <property name="title">
+     <string>Edit</string>
+    </property>
+   </widget>
+   <addaction name="fileMenu"/>
+   <addaction name="editMenu"/>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>GLWidget</class>
+   <extends>QOpenGLWidget</extends>
+   <header>glwidget.h</header>
+  </customwidget>
+ </customwidgets>
+ <resources>
+  <include location="resource.qrc"/>
+ </resources>
+ <connections/>
+</ui>

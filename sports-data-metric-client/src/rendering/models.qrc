@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/models">
+        <file alias="cylinder">assets/models/cylinder.obj</file>
+        <file alias="sphere">assets/models/sphere.obj</file>
+    </qresource>
+</RCC>
