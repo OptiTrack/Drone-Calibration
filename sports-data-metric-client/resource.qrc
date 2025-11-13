@@ -1,0 +1,105 @@
+<RCC>
+    <qresource prefix="/large-icons">
+        <file>src/assets/icons/Large/Streaming/Streaming-On.svg</file>
+        <file>src/assets/icons/Large/Streaming/Streaming-Active.svg</file>
+        <file>src/assets/icons/Large/Streaming/Streaming-Disabled.svg</file>
+        <file>src/assets/icons/Large/Streaming/Streaming-Off.svg</file>
+        <file>src/assets/icons/Large/Skeleton/Skeleton-Active.svg</file>
+        <file>src/assets/icons/Large/Skeleton/Skeleton-Disabled.svg</file>
+        <file>src/assets/icons/Large/Skeleton/Skeleton-Off.svg</file>
+        <file>src/assets/icons/Large/Skeleton/Skeleton-On.svg</file>
+        <file>src/assets/icons/Large/Rigid Body/Rigid-Body-Active.svg</file>
+        <file>src/assets/icons/Large/Rigid Body/Rigid-Body-Disabled.svg</file>
+        <file>src/assets/icons/Large/Rigid Body/Rigid-Body-Off.svg</file>
+        <file>src/assets/icons/Large/Rigid Body/Rigid-Body-On.svg</file>
+        <file>src/assets/icons/Large/Angle/Angle-Active.svg</file>
+        <file>src/assets/icons/Large/Angle/Angle-Disabled.svg</file>
+        <file>src/assets/icons/Large/Angle/Angle-Off.svg</file>
+        <file>src/assets/icons/Large/Angle/Angle-On.svg</file>
+        <file>src/assets/icons/Large/Export Events/Export-Events-Active.svg</file>
+        <file>src/assets/icons/Large/Export Events/Export-Events-Disabled.svg</file>
+        <file>src/assets/icons/Large/Export Events/Export-Events-Off.svg</file>
+        <file>src/assets/icons/Large/Export Events/Export-Events-On.svg</file>
+        <file>src/assets/icons/Large/Events/Events-Active.svg</file>
+        <file>src/assets/icons/Large/Events/Events-Disabled.svg</file>
+        <file>src/assets/icons/Large/Events/Events-Off.svg</file>
+        <file>src/assets/icons/Large/Events/Events-On.svg</file>
+        <file>src/assets/icons/Large/Streaming-Alt/Streaming-Alt-Active.svg</file>
+        <file>src/assets/icons/Large/Streaming-Alt/Streaming-Alt-Disabled.svg</file>
+        <file>src/assets/icons/Large/Streaming-Alt/Streaming-Alt-Off.svg</file>
+        <file>src/assets/icons/Large/Streaming-Alt/Streaming-Alt-On.svg</file>
+    </qresource>
+    <qresource prefix="/small-icons">
+        <file>src/assets/icons/Small/Events/Events-Active.svg</file>
+        <file>src/assets/icons/Small/Events/Events-Disabled.svg</file>
+        <file>src/assets/icons/Small/Events/Events-Off.svg</file>
+        <file>src/assets/icons/Small/Events/Events-On.svg</file>
+        <file>src/assets/icons/Small/Streaming/Streaming-Active.svg</file>
+        <file>src/assets/icons/Small/Streaming/Streaming-Disabled.svg</file>
+        <file>src/assets/icons/Small/Streaming/Streaming-Off.svg</file>
+        <file>src/assets/icons/Small/Streaming/Streaming-On.svg</file>
+        <file>src/assets/icons/Small/Speed/Speed-Active.svg</file>
+        <file>src/assets/icons/Small/Speed/Speed-Disabled.svg</file>
+        <file>src/assets/icons/Small/Speed/Speed-Off.svg</file>
+        <file>src/assets/icons/Small/Speed/Speed-On.svg</file>
+        <file>src/assets/icons/Small/Rigid Body/Rigid-Body-Active.svg</file>
+        <file>src/assets/icons/Small/Rigid Body/Rigid-Body-Disabled.svg</file>
+        <file>src/assets/icons/Small/Rigid Body/Rigid-Body-Off.svg</file>
+        <file>src/assets/icons/Small/Rigid Body/Rigid-Body-On.svg</file>
+        <file>src/assets/icons/Small/More/More-Active.svg</file>
+        <file>src/assets/icons/Small/More/More-Disabled.svg</file>
+        <file>src/assets/icons/Small/More/More-Off.svg</file>
+        <file>src/assets/icons/Small/More/More-On.svg</file>
+        <file>src/assets/icons/Small/Folder/Folder-Active.svg</file>
+        <file>src/assets/icons/Small/Folder/Folder-Disabled.svg</file>
+        <file>src/assets/icons/Small/Folder/Folder-Off.svg</file>
+        <file>src/assets/icons/Small/Folder/Folder-On.svg</file>
+        <file>src/assets/icons/Small/Lock/Lock-Active.svg</file>
+        <file>src/assets/icons/Small/Lock/Lock-Broken-Active.svg</file>
+        <file>src/assets/icons/Small/Lock/Lock-Broken-Disabled.svg</file>
+        <file>src/assets/icons/Small/Lock/Lock-Broken-Off.svg</file>
+        <file>src/assets/icons/Small/Lock/Lock-Broken-On.svg</file>
+        <file>src/assets/icons/Small/Lock/Lock-Disabled.svg</file>
+        <file>src/assets/icons/Small/Lock/Lock-Off.svg</file>
+        <file>src/assets/icons/Small/Lock/Lock-On.svg</file>
+        <file>src/assets/icons/Small/Actions/Actions-Active.svg</file>
+        <file>src/assets/icons/Small/Actions/Actions-Disabled.svg</file>
+        <file>src/assets/icons/Small/Actions/Actions-Off.svg</file>
+        <file>src/assets/icons/Small/Actions/Actions-On.svg</file>
+        <file>src/assets/icons/Small/Motive/motive-logo-dark.svg</file>
+    </qresource>
+    <qresource prefix="/css">
+        <file>src/assets/css/client.css</file>
+    </qresource>
+    <qresource prefix="/config">
+        <file>src/config/sports.json</file>
+    </qresource>
+    <qresource prefix="/json">
+        <file>src/assets/json/Dribble Basket Ball.json</file>
+        <file>src/assets/json/Dribble Basket Ball_001.json</file>
+        <file>src/assets/json/Dribble Basket Ball_002.json</file>
+        <file>src/assets/json/Dribble Basket Ball_003.json</file>
+        <file>src/assets/json/Jumping Jacks.json</file>
+        <file>src/assets/json/Jumping Jacks_001.json</file>
+        <file>src/assets/json/Jumping Jacks_002.json</file>
+        <file>src/assets/json/Jumping Jacks_003.json</file>
+        <file>src/assets/json/Rigid_Body_01.json</file>
+        <file>src/assets/json/Rigid_Body_02_Simple_Move.json</file>
+        <file>src/assets/json/Rigid_Body_03_Simple_Rotation.json</file>
+        <file>src/assets/json/Running.json</file>
+        <file>src/assets/json/Running_001.json</file>
+        <file>src/assets/json/Running_002.json</file>
+        <file>src/assets/json/Running_003.json</file>
+        <file>src/assets/json/Shooting a Gun.json</file>
+        <file>src/assets/json/Shooting a Gun_001.json</file>
+        <file>src/assets/json/Shooting a Gun_002.json</file>
+        <file>src/assets/json/Shooting a Gun_003.json</file>
+        <file>src/assets/json/Swinging a Golf Club.json</file>
+        <file>src/assets/json/Swinging a Golf Club_001.json</file>
+        <file>src/assets/json/Swinging a Golf Club_002.json</file>
+        <file>src/assets/json/Swinging a Golf Club_003.json</file>
+    </qresource>
+    <qresource prefix="/html">
+        <file>src/assets/html/report.html</file>
+    </qresource>
+</RCC>

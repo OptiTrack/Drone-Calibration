@@ -1,0 +1,322 @@
+{
+    "sports": [
+        {
+            "name": "Sample",
+            "rigidMetrics": [  
+                {
+                    "name": "Velocity",
+                    "class": "velocity",
+                    "units": "mm/s",
+                    "labels": ["velocity"],
+                    "descriptions": [],
+                    "ids": [],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Acceleration",
+                    "class": "acceleration",
+                    "units": "mm/s\u00B2",
+                    "labels": ["acceleration"],
+                    "descriptions": [],
+                    "ids": [],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Tilt Angle",
+                    "class": "tilt",
+                    "units": "°",
+                    "labels": ["tiltAngle"],
+                    "descriptions": [],
+                    "ids": [],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Position",
+                    "class": "position",
+                    "units": "mm",
+                    "labels": ["positionX", "positionY", "positionZ"],
+                    "descriptions": ["X-Axis", "Y-Axis", "Z-Axis"],
+                    "ids": [],
+                    "configuration": {
+                        "isGraph": [false, false, false]
+                    }
+                },
+                {
+                    "name": "Orientation",
+                    "class": "orientation",
+                    "units": "°",
+                    "labels": ["pitch", "yaw", "roll"],
+                    "descriptions": ["Pitch (X)", "Yaw (Y)", "Roll (Z)"],
+                    "ids": [],
+                    "configuration": {
+                        "isGraph": [false, false, false]
+                    }
+                }
+            ],
+            "bodyMetrics": [
+                {
+                    "name": "Knee Bend",
+                    "class": "angle",
+                    "units": "°",
+                    "labels": ["kneeBend"],
+                    "descriptions": ["Angle of Bend"],
+                    "ids": [14, 15],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Forward Tilt",
+                    "class": "distance",
+                    "units": "cm",
+                    "labels": ["forwardTilt"],
+                    "descriptions": ["Head Over Hip"],
+                    "ids": [1, 5],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Ankle Twist",
+                    "class": "angle",
+                    "units": "°",
+                    "labels": ["ankleTwist"],
+                    "descriptions": ["From Knee Straight"],
+                    "ids": [15, 16],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Elbow Bend",
+                    "class": "angle",
+                    "units": "°",
+                    "labels": ["elbowBend"],
+                    "descriptions": ["Head Over Hip"],
+                    "ids": [7, 8],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Running",
+            "rigidMetrics": [
+                {
+                    "name": "Velocity",
+                    "class": "velocity",
+                    "units": "m/s",
+                    "labels": ["velocity"],
+                    "descriptions": [],
+                    "ids": ["rigidID_head"],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Acceleration",
+                    "class": "acceleration",
+                    "units": "m/s\u00B2",
+                    "labels": ["acceleration"],
+                    "descriptions": [],
+                    "ids": ["rigidID_head"],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Position",
+                    "class": "position",
+                    "units": "mm",
+                    "labels": ["positionX", "positionY", "positionZ"],
+                    "descriptions": ["X-Axis", "Y-Axis", "Z-Axis"],
+                    "ids": ["rigidID_head"],
+                    "configuration": {
+                        "isGraph": [true, true, true]
+                    }
+                }
+            ],
+            "bodyMetrics": [
+                {
+                    "name": "Left Elbow Bend",
+                    "class": "angle",
+                    "units": "°",
+                    "labels": ["leftElbowBend"],
+                    "descriptions": [],
+                    "ids": [7, 8],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Right Elbow Bend",
+                    "class": "angle",
+                    "units": "°",
+                    "labels": ["rightElbowBend"],
+                    "descriptions": [],
+                    "ids": [11, 12],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Left Knee Bend",
+                    "class": "angle",
+                    "units": "°",
+                    "labels": ["leftKneeBend"],
+                    "descriptions": [],
+                    "ids": [14, 15],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Right Knee Bend",
+                    "class": "angle",
+                    "units": "°",
+                    "labels": ["rightKneeBend"],
+                    "descriptions": [],
+                    "ids": [18, 19],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Left Hip Flexor Bend",
+                    "class": "angle",
+                    "units": "°",
+                    "labels": ["leftHipFlexorBend"],
+                    "descriptions": [],
+                    "ids": [1, 14],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Right Hip Flexor Bend",
+                    "class": "angle",
+                    "units": "°",
+                    "labels": ["rightHipFlexorBend"],
+                    "descriptions": [],
+                    "ids": [1, 18],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Basketball",
+            "rigidMetrics": [  
+                {
+                    "name": "Velocity",
+                    "class": "velocity",
+                    "units": "mm/s",
+                    "labels": ["velocity"],
+                    "descriptions": [],
+                    "ids": [],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Acceleration",
+                    "class": "acceleration",
+                    "units": "mm/s\u00B2",
+                    "labels": ["acceleration"],
+                    "descriptions": [],
+                    "ids": [],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Tilt Angle",
+                    "class": "tilt",
+                    "units": "°",
+                    "labels": ["tiltAngle"],
+                    "descriptions": [],
+                    "ids": [],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Position",
+                    "class": "position",
+                    "units": "mm",
+                    "labels": ["positionX", "positionY", "positionZ"],
+                    "descriptions": ["X-Axis", "Y-Axis", "Z-Axis"],
+                    "ids": [],
+                    "configuration": {
+                        "isGraph": [false, false, false]
+                    }
+                },
+                {
+                    "name": "Orientation",
+                    "class": "orientation",
+                    "units": "°",
+                    "labels": ["pitch", "yaw", "roll"],
+                    "descriptions": ["Pitch (X)", "Yaw (Y)", "Roll (Z)"],
+                    "ids": [],
+                    "configuration": {
+                        "isGraph": [false, false, false]
+                    }
+                }
+            ],
+            "bodyMetrics": [
+                {
+                    "name": "Knee Bend",
+                    "class": "angle",
+                    "units": "°",
+                    "labels": ["kneeBend"],
+                    "descriptions": ["Angle of Bend"],
+                    "ids": [14, 15],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Forward Tilt",
+                    "class": "distance",
+                    "units": "cm",
+                    "labels": ["forwardTilt"],
+                    "descriptions": ["Head Over Hip"],
+                    "ids": [1, 5],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Ankle Twist",
+                    "class": "angle",
+                    "units": "°",
+                    "labels": ["ankleTwist"],
+                    "descriptions": ["From Knee Straight"],
+                    "ids": [15, 16],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                },
+                {
+                    "name": "Elbow Bend",
+                    "class": "angle",
+                    "units": "°",
+                    "labels": ["elbowBend"],
+                    "descriptions": ["Angle of Bend"],
+                    "ids": [7, 8],
+                    "configuration": {
+                        "isGraph": [true]
+                    }
+                }
+            ]
+        }
+    ]
+}

@@ -1,0 +1,50 @@
+{
+  "FBX": {
+    "skeleton": "Anthony",
+    "joints": {
+      "left_knee_angle": ["Anthony_LeftUpLeg", "Anthony_LeftLeg"],
+      "right_knee_angle": ["Anthony_RightUpLeg", "Anthony_RightLeg"],
+      "forward_tilt": ["Anthony_Hips", "Anthony_Head"],
+      "left_ankle_twist": ["Anthony_LeftLeg", "Anthony_LeftFoot"],
+      "right_ankle_twist": ["Anthony_RightLeg", "Anthony_RightFoot"],
+      "left_elbow_bend": ["Anthony_LeftArm", "Anthony_LeftForeArm"],
+      "right_elbow_bend": ["Anthony_RightArm", "Anthony_RightForeArm"]
+    }
+  },
+  "Motive": {
+    "skeleton": "Anthony",
+    "joints": {
+      "left_knee_angle": ["Anthony_LThigh", "Anthony_LShin"],
+      "right_knee_angle": ["Anthony_RThigh", "Anthony_RShin"],
+      "forward_tilt": ["Anthony_Hip", "Anthony_Head"],
+      "left_ankle_twist": ["Anthony_LShin", "Anthony_LFoot"],
+      "right_ankle_twist": ["Anthony_RShin", "Anthony_RFoot"],
+      "left_elbow_bend": ["Anthony_LUArm", "Anthony_LFArm"],
+      "right_elbow_bend": ["Anthony_RUArm", "Anthony_RFArm"]
+    }
+  },
+  "BVH": {
+    "skeleton": "Anthony",
+    "joints": {
+      "left_knee_angle": ["Anthony_LeftHip", "Anthony_LeftKnee"],
+      "right_knee_angle": ["Anthony_RightHip", "Anthony_RightKnee"],
+      "forward_tilt": ["Anthony_Hips", "Anthony_Head"],
+      "left_ankle_twist": ["Anthony_LeftKnee", "Anthony_LeftAnkle"],
+      "right_ankle_twist": ["Anthony_RightKnee", "Anthony_RightAnkle"],
+      "left_elbow_bend": ["Anthony_LeftShoulder", "Anthony_LeftElbow"],
+      "right_elbow_bend": ["Anthony_RightShoulder", "Anthony_RightElbow"]
+    }
+  },
+  "UnrealEngine": {
+    "skeleton": "Anthony",
+    "joints": {
+      "left_knee_angle": ["Anthony_thigh_l", "Anthony_calf_l"],
+      "right_knee_angle": ["Anthony_thigh_r", "Anthony_calf_r"],
+      "forward_tilt": ["Anthony_pelvis", "Anthony_head"],
+      "left_ankle_twist": ["Anthony_calf_l", "Anthony_foot_l"],
+      "right_ankle_twist": ["Anthony_calf_r", "Anthony_foot_r"],
+      "left_elbow_bend": ["Anthony_upperarm_l", "Anthony_lowerarm_l"],
+      "right_elbow_bend": ["Anthony_upperarm_r", "Anthony_lowerarm_r"]
+    }
+  }
+}
