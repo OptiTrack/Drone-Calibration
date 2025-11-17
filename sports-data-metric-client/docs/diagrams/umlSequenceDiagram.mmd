@@ -1,0 +1,17 @@
+---
+config:
+  theme: neo
+  look: handDrawn
+---
+sequenceDiagram
+    participant Client
+    participant NatNet
+    participant Motive
+    Motive->>Motive: Capture Motion Data
+    Motive->>NatNet: Start Streaming Server
+    Client->>NatNet: Request Connection (TCP)
+    Note right of Client: Listening on Socket (UDP/TCP)
+    NatNet->>Client: Send Motion Data (UDP)
+    Client->>Client: Process Motion Data
+    Client->>Client: Render 3D Motion & Metrics
+    

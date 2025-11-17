@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        .page {
+            width: 100%;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family:'Courier New', Courier, monospace;
+            font-size: 8px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            padding: 0;
+            margin-bottom: 16px;
+        }
+        table.sub-table {
+            height: 100%;
+            width: 100%;
+            margin-bottom: 0px;
+            table-layout: fixed;
+            border-collapse: collapse;
+        }
+        th, tr, td {
+            margin: 0;
+            padding: 0;
+        }
+        tr.header-row {
+            height: 50px;
+        }
+        td.left-cell,
+        td.right-cell {
+            vertical-align: top;
+        }
+        td.left-cell.header {
+            width: 70%;
+            padding-right: 8px;
+        }
+        td.right-cell.header {
+            width: 30%;
+            padding-left: 8px;
+        }
+        .header-title h1,
+        .header-title h2 {
+            margin: 0;
+            padding: 0;
+            line-height: 1.2;
+        }
+        .header-title h1 {
+            font-size: 20px;
+        }
+        .header-title h2 {
+            font-size: 16px;
+            font-weight: normal;
+        }
+
+        .meta-table td {
+            padding: 2px 8px;
+            font-size: 10px;
+        }
+
+        tr.main-row {
+            height: 400px;
+        }
+        tr.sub-row {
+            height: 33.33%;
+        }
+
+        td.left-cell.main {
+            width: 70%;
+            height: 400px;;
+            padding-right: 8px;
+        }
+
+        td.right-cell.main {
+            width: 30%;
+            height: 400px;
+        }
+
+        td.sub-cell {
+            height: 33.33%;
+            padding: 0;
+            vertical-align: middle;
+        }
+        
+        td.sub-cell.first {
+            padding-top: 0;
+        }
+        td.sub-cell.last {
+            padding-bottom: 0;
+        }
+
+        td.sub-cell.last img {
+            margin-bottom: 0px;
+        }
+
+        td.sub-cell img {
+            height: 100%;
+            width: 100%;
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        img {
+            max-height: 100%;
+            max-width: 100%;
+            display: block;
+        }
+        .main-image {
+            height: 100%;
+            width: 100%;
+            display: block;
+        }
+        img.metric-graph {
+            height: auto;
+            width: 300px;
+        }
+
+        h3 {
+            margin-top: 32px;
+        }
+
+        thead th {
+            text-align: left;
+            font-weight: bold;
+            border-bottom: 1px solid black;
+        }
+
+        tbody td {
+            padding: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <table>
+            <tr class="header-row">
+                <td class="left-cell header">
+                    <div class="header-title">
+                        <h1>OptiTrack</h1>
+                        <h2>Sport Metrics Report</h2>
+                    </div>
+                </td>
+                <td class="right-cell header">
+                    <table class="meta-table">
+                        <tbody>
+                            <tr><td>Date:</td><td>05/30/2025</td></tr>
+                            <tr><td>Sport:</td><td>Basketball</td></tr>
+                            <tr><td>Skeleton:</td><td>Anthony</td></tr>
+                            <tr><td>Bat:</td><td>Basketball</td></tr>
+                        </tbody>
+                    </table>
+                </td>
+            </tr>
+        </table>
+
+        <table style="width: 100%; border: 1px solid black;">
+  <tr>
+    <td style="border: 1px solid red;">Column 1</td>
+    <td style="border: 1px solid red;">Column 2</td>
+  </tr>
+</table>
+
+        <table>
+            <tr class="main-row">
+                <td class="left-cell main">
+                    <img class="main-image" src=":/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-On.svg" alt="">
+                </td>
+                <td class="right-cell main">
+                    <table class="sub-table">
+                        <tr class="sub-row">
+                            <td class="sub-cell first">
+                                <img src=":/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-On.svg" alt="" style="height: 130px;">
+                            </td>
+                        </tr> 
+                        <tr class="sub-row">
+                            <td class="sub-cell">
+                                <img src=":/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-On.svg" alt="" style="height: 130px;">
+                            </td>
+                        </tr> 
+                        <tr class="sub-row">
+                            <td class="sub-cell last">
+                                <img src=":/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-On.svg" alt="" style="height: 130px;">
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
+        
+        <h3>Metric Summary</h3>
+        <table class="metrics-table">
+            <thead>
+                <tr>
+                    <th>Bat Metrics</th>
+                    <th>Minimum</th>
+                    <th>Maximum</th>
+                    <th>Average</th>
+                    <th>Median</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Velocity</td><td>X</td><td>X</td><td>X</td><td>X</td>
+                </tr>
+                <tr>
+                    <td>Acceleration</td><td>X</td><td>X</td><td>X</td><td>X</td>
+                </tr>
+                <tr>
+                    <td>Tilt Angle</td><td>X</td><td>X</td><td>X</td><td>X</td>
+                </tr>
+                <tr>
+                    <td>Position (X)</td><td>X</td><td>X</td><td>X</td><td>X</td>
+                </tr>
+                <tr>
+                    <td>Position (Y)</td><td>X</td><td>X</td><td>X</td><td>X</td>
+                </tr>
+                <tr>
+                    <td>Position (Z)</td><td>X</td><td>X</td><td>X</td><td>X</td>
+                </tr>
+                <tr>
+                    <td>Orientation (Pitch)</td><td>X</td><td>X</td><td>X</td><td>X</td>
+                </tr>
+                <tr>
+                    <td>Orientation (Yaw)</td><td>X</td><td>X</td><td>X</td><td>X</td>
+                </tr>
+                <tr>
+                    <td>Orientation (Roll)</td><td>X</td><td>X</td><td>X</td><td>X</td>
+                </tr>
+            </tbody>
+        </table>
+        
+        <table class="metrics-table">
+            <thead>
+                <tr>
+                    <th>Skeleton Metrics</th>
+                    <th>Minimum</th>
+                    <th>Maximum</th>
+                    <th>Average</th>
+                    <th>Median</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Knee Bend</td><td>X</td><td>X</td><td>X</td><td>X</td>
+                </tr>
+                <tr>
+                    <td>Forward Tilt</td><td>X</td><td>X</td><td>X</td><td>X</td>
+                </tr>
+                <tr>
+                    <td>Ankle Twist</td><td>X</td><td>X</td><td>X</td><td>X</td>
+                </tr>
+                <tr>
+                    <td>Elbow Bend</td><td>X</td><td>X</td><td>X</td><td>X</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>Metric Graphs</h3>
+
+        <h4>Bat Metrics</h4>
+        <table>
+            <tr>
+                <td><img class="metric-graph" src=":/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-On.svg" alt=""></td>
+                <td><img class="metric-graph" src=":/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-On.svg" alt=""></td>
+            </tr> 
+            <tr>
+                <td><img class="metric-graph" src=":/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-On.svg" alt=""></td>
+                <td><img class="metric-graph" src=":/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-On.svg" alt=""></td>
+            </tr>   
+            <tr>
+                <td><img class="metric-graph" src=":/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-On.svg" alt=""></td>
+                <td><img class="metric-graph" src=":/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-On.svg" alt=""></td>
+            </tr> 
+        </table>
+
+        <h4>Skeleton Metrics</h4>
+        <table>
+            <tr>
+                <td><img class="metric-graph" src=":/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-On.svg" alt=""></td>
+                <td><img class="metric-graph" src=":/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-On.svg" alt=""></td>
+            </tr> 
+            <tr>
+                <td><img class="metric-graph" src=":/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-On.svg" alt=""></td>
+                <td><img class="metric-graph" src=":/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-On.svg" alt=""></td>
+            </tr>   
+            <tr>
+                <td><img class="metric-graph" src=":/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-On.svg" alt=""></td>
+                <td><img class="metric-graph" src=":/large-icons/src/assets/icons/Large/Rigid Body/Rigid-Body-On.svg" alt=""></td>
+            </tr> 
+        </table> 
+    </div>
+</body>
+</html>
