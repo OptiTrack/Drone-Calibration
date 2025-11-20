@@ -1,0 +1,58 @@
+# Qt Build artifacts - DO NOT COMMIT THESE
+build/
+*_autogen/
+moc_*.cpp
+moc_*.h
+*.moc
+ui_*.h
+qrc_*.cpp
+
+# CMake build files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.ninja
+.ninja_deps
+.ninja_log
+
+# IDE files
+compile_commands.json
+.vscode/
+*.user
+*.pro.user*
+
+# Qt specific
+*.qm
+*.prl
+
+# Executables
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Debug files
+*.pdb
+*.ilk
+
+# Temporary files
+*~
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# Qt Creator
+*.autosave
+*.creator
+*.files
+*.includes
+*.config
+*.creator.user*
+
+# Visual Studio
+.vs/
+*.vcxproj*
+*.sln
+*.filters
