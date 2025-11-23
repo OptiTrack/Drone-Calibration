@@ -1,0 +1,15 @@
+{
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/qt-drone-ui/compile_commands.json",
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "cmake.sourceDirectory": "${workspaceFolder}/qt-drone-ui",
+    "cmake.buildDirectory": "${workspaceFolder}/qt-drone-ui/build/Desktop_Qt_6_10_1_MinGW_64_bit-Debug",
+    "files.associations": {
+        "*.h": "cpp",
+        "qapplication": "cpp",
+        "qwidget": "cpp",
+        "qstring": "cpp",
+        "qvector": "cpp",
+        "qlist": "cpp"
+    }
+}
+
