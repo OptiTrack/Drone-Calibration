@@ -8,10 +8,9 @@
 #include <QStandardPaths>
 #include <QListWidgetItem>
 #include <QtMath>
-#include <QOpenGLShader>
 
 // Vertex shader source
-static const char *vertexShaderSource = 
+static const char *vertexShaderSource =
     "#version 330 core\n"
     "layout (location = 0) in vec3 aPos;\n"
     "layout (location = 1) in vec3 aColor;\n"
@@ -37,28 +36,17 @@ static const char *fragmentShaderSource =
 
 // PathPlannerOpenGLWidget Implementation
 PathPlannerOpenGLWidget::PathPlannerOpenGLWidget(QWidget *parent)
-    : QOpenGLWidget(parent)
-    , m_shaderProgram(nullptr)
-    , m_cameraPosition(0, 5, 10)
-    , m_cameraTarget(0, 0, 0)
-    , m_cameraUp(0, 1, 0)
-    , m_cameraDistance(15.0f)
-    , m_cameraYaw(0.0f)
-    , m_cameraPitch(30.0f)
-    , m_selectedWaypoint(-1)
-    , m_mousePressed(false)
-    , m_isDragging(false)
-    , m_animationTime(0.0f)
+    : QOpenGLWidget(parent), m_shaderProgram(nullptr), m_cameraPosition(0, 5, 10), m_cameraTarget(0, 0, 0), m_cameraUp(0, 1, 0), m_cameraDistance(15.0f), m_cameraYaw(0.0f), m_cameraPitch(30.0f), m_viewMode(View3DMode), m_orthoZoom(10.0f), m_defaultAltitude(2.0f), m_selectedWaypoint(-1), m_mousePressed(false), m_isDragging(false), m_animationTime(0.0f)
 {
     setMinimumSize(600, 400);
     setFocusPolicy(Qt::StrongFocus);
-    
+
     m_animationTimer = new QTimer(this);
     m_animationTimer->setInterval(16); // ~60 FPS
-    connect(m_animationTimer, &QTimer::timeout, [this]() {
+    connect(m_animationTimer, &QTimer::timeout, [this]()
+            {
         m_animationTime += 0.016f;
-        update();
-    });
+        update(); });
     m_animationTimer->start();
 }
 
@@ -72,15 +60,15 @@ PathPlannerOpenGLWidget::~PathPlannerOpenGLWidget()
 void PathPlannerOpenGLWidget::initializeGL()
 {
     initializeOpenGLFunctions();
-    
+
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glEnable(GL_POINT_SMOOTH);
     glEnable(GL_LINE_SMOOTH);
-    
+
     glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
-    
+
     setupShaders();
     setupBuffers();
 }
@@ -103,80 +91,112 @@ void PathPlannerOpenGLWidget::setupBuffers()
 void PathPlannerOpenGLWidget::paintGL()
 {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    
+
     updateCamera();
-    
+
     m_shaderProgram->bind();
     m_shaderProgram->setUniformValue("projection", m_projectionMatrix);
     m_shaderProgram->setUniformValue("view", m_viewMatrix);
     m_shaderProgram->setUniformValue("model", m_modelMatrix);
-    
+
     drawGrid();
     drawAxes();
     drawPath();
     drawWaypoints();
-    
+
     m_shaderProgram->release();
 }
 
 void PathPlannerOpenGLWidget::resizeGL(int width, int height)
 {
     glViewport(0, 0, width, height);
-    
-    float aspect = float(width) / float(height);
+    updateProjection();
+}
+
+void PathPlannerOpenGLWidget::updateProjection()
+{
+    float aspect = float(width()) / float(height());
     m_projectionMatrix.setToIdentity();
-    m_projectionMatrix.perspective(45.0f, aspect, 0.1f, 100.0f);
+
+    if (m_viewMode == TopDownMode)
+    {
+        // Orthographic projection for top-down view
+        float halfWidth = m_orthoZoom * aspect;
+        float halfHeight = m_orthoZoom;
+        m_projectionMatrix.ortho(-halfWidth, halfWidth, -halfHeight, halfHeight, 0.1f, 100.0f);
+    }
+    else
+    {
+        // Perspective projection for 3D view
+        m_projectionMatrix.perspective(45.0f, aspect, 0.1f, 100.0f);
+    }
 }
 
 void PathPlannerOpenGLWidget::updateCamera()
 {
-    // Update camera position based on spherical coordinates
-    float x = m_cameraDistance * cos(qDegreesToRadians(m_cameraPitch)) * cos(qDegreesToRadians(m_cameraYaw));
-    float y = m_cameraDistance * sin(qDegreesToRadians(m_cameraPitch));
-    float z = m_cameraDistance * cos(qDegreesToRadians(m_cameraPitch)) * sin(qDegreesToRadians(m_cameraYaw));
-    
-    m_cameraPosition = QVector3D(x, y, z) + m_cameraTarget;
-    
     m_viewMatrix.setToIdentity();
-    m_viewMatrix.lookAt(m_cameraPosition, m_cameraTarget, m_cameraUp);
+
+    if (m_viewMode == TopDownMode)
+    {
+        // Top-down orthographic view: camera looking straight down
+        // Position camera above the target looking down
+        // Using standard orientation: +Z points up on screen, +X points right
+        m_cameraPosition = m_cameraTarget + QVector3D(0, 20, 0);
+        m_cameraUp = QVector3D(0, 0, 1); // +Z points up on screen in top-down view
+        m_viewMatrix.lookAt(m_cameraPosition, m_cameraTarget, m_cameraUp);
+    }
+    else
+    {
+        // 3D view: spherical coordinate camera
+        float x = m_cameraDistance * cos(qDegreesToRadians(m_cameraPitch)) * cos(qDegreesToRadians(m_cameraYaw));
+        float y = m_cameraDistance * sin(qDegreesToRadians(m_cameraPitch));
+        float z = m_cameraDistance * cos(qDegreesToRadians(m_cameraPitch)) * sin(qDegreesToRadians(m_cameraYaw));
+
+        m_cameraPosition = QVector3D(x, y, z) + m_cameraTarget;
+        m_cameraUp = QVector3D(0, 1, 0);
+        m_viewMatrix.lookAt(m_cameraPosition, m_cameraTarget, m_cameraUp);
+    }
 }
 
 void PathPlannerOpenGLWidget::drawGrid()
 {
     QVector<float> gridVertices;
     QVector<float> gridColors;
-    
+
     float gridSize = 20.0f;
     float gridSpacing = 1.0f;
-    
+
     // Grid lines parallel to X axis
-    for (float z = -gridSize; z <= gridSize; z += gridSpacing) {
+    for (float z = -gridSize; z <= gridSize; z += gridSpacing)
+    {
         gridVertices << -gridSize << 0.0f << z;
         gridVertices << gridSize << 0.0f << z;
-        
+
         float alpha = (z == 0.0f) ? 0.8f : 0.3f;
         gridColors << 0.5f << 0.5f << 0.5f;
         gridColors << 0.5f << 0.5f << 0.5f;
     }
-    
+
     // Grid lines parallel to Z axis
-    for (float x = -gridSize; x <= gridSize; x += gridSpacing) {
+    for (float x = -gridSize; x <= gridSize; x += gridSpacing)
+    {
         gridVertices << x << 0.0f << -gridSize;
         gridVertices << x << 0.0f << gridSize;
-        
+
         float alpha = (x == 0.0f) ? 0.8f : 0.3f;
         gridColors << 0.5f << 0.5f << 0.5f;
         gridColors << 0.5f << 0.5f << 0.5f;
     }
-    
-    if (!gridVertices.isEmpty()) {
+
+    if (!gridVertices.isEmpty())
+    {
         m_vao.bind();
         m_vertexBuffer.bind();
         m_vertexBuffer.allocate(gridVertices.data(), gridVertices.size() * sizeof(float));
-        
+
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
         glEnableVertexAttribArray(0);
-        
+
         // Temporarily bind color data
         QOpenGLBuffer colorBuffer;
         colorBuffer.create();
@@ -184,9 +204,9 @@ void PathPlannerOpenGLWidget::drawGrid()
         colorBuffer.allocate(gridColors.data(), gridColors.size() * sizeof(float));
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
         glEnableVertexAttribArray(1);
-        
+
         glDrawArrays(GL_LINES, 0, gridVertices.size() / 3);
-        
+
         colorBuffer.release();
         m_vertexBuffer.release();
         m_vao.release();
@@ -197,39 +217,37 @@ void PathPlannerOpenGLWidget::drawAxes()
 {
     QVector<float> axesVertices = {
         // X axis (red)
-        0.0f, 0.0f, 0.0f,  2.0f, 0.0f, 0.0f,
-        // Y axis (green) 
-        0.0f, 0.0f, 0.0f,  0.0f, 2.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f,
+        // Y axis (green)
+        0.0f, 0.0f, 0.0f, 0.0f, 2.0f, 0.0f,
         // Z axis (blue)
-        0.0f, 0.0f, 0.0f,  0.0f, 0.0f, 2.0f
-    };
-    
+        0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 2.0f};
+
     QVector<float> axesColors = {
         // X axis (red)
-        1.0f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
         // Y axis (green)
-        0.0f, 1.0f, 0.0f,  0.0f, 1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f,
         // Z axis (blue)
-        0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 1.0f
-    };
-    
+        0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+
     m_vao.bind();
     m_vertexBuffer.bind();
     m_vertexBuffer.allocate(axesVertices.data(), axesVertices.size() * sizeof(float));
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
     glEnableVertexAttribArray(0);
-    
+
     QOpenGLBuffer colorBuffer;
     colorBuffer.create();
     colorBuffer.bind();
     colorBuffer.allocate(axesColors.data(), axesColors.size() * sizeof(float));
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
     glEnableVertexAttribArray(1);
-    
+
     glLineWidth(3.0f);
     glDrawArrays(GL_LINES, 0, 6);
     glLineWidth(1.0f);
-    
+
     colorBuffer.release();
     m_vertexBuffer.release();
     m_vao.release();
@@ -237,78 +255,88 @@ void PathPlannerOpenGLWidget::drawAxes()
 
 void PathPlannerOpenGLWidget::drawWaypoints()
 {
-    if (m_waypoints.isEmpty()) return;
-    
+    if (m_waypoints.empty())
+        return;
+
     QVector<float> waypointVertices;
     QVector<float> waypointColors;
-    
-    for (int i = 0; i < m_waypoints.size(); ++i) {
-        const QVector3D &wp = m_waypoints[i];
-        waypointVertices << wp.x() << wp.y() << wp.z();
-        
-        if (i == m_selectedWaypoint) {
+
+    for (size_t i = 0; i < m_waypoints.size(); ++i)
+    {
+        const Waypoint &wp = m_waypoints[i];
+        waypointVertices << wp.x << wp.y << wp.z;
+
+        if (wp.id == m_selectedWaypoint)
+        {
             waypointColors << 0.2f << 0.6f << 1.0f; // Blue for selected
-        } else {
+        }
+        else
+        {
             waypointColors << 0.2f << 0.8f << 0.2f; // Green for normal
         }
     }
-    
+
     m_vao.bind();
     m_vertexBuffer.bind();
     m_vertexBuffer.allocate(waypointVertices.data(), waypointVertices.size() * sizeof(float));
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
     glEnableVertexAttribArray(0);
-    
+
     QOpenGLBuffer colorBuffer;
     colorBuffer.create();
     colorBuffer.bind();
     colorBuffer.allocate(waypointColors.data(), waypointColors.size() * sizeof(float));
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
     glEnableVertexAttribArray(1);
-    
-    glPointSize(10.0f);
+
+    glPointSize(12.0f);
     glDrawArrays(GL_POINTS, 0, m_waypoints.size());
-    
+
     colorBuffer.release();
     m_vertexBuffer.release();
     m_vao.release();
+
+    // Note: Text rendering would require QPainter overlay or texture-based text
+    // For simplicity, we'll rely on the table widget for waypoint identification
 }
 
 void PathPlannerOpenGLWidget::drawPath()
 {
-    if (m_waypoints.size() < 2) return;
-    
+    if (m_waypoints.size() < 2)
+        return;
+
     QVector<float> pathVertices;
     QVector<float> pathColors;
-    
-    for (int i = 0; i < m_waypoints.size() - 1; ++i) {
-        const QVector3D &wp1 = m_waypoints[i];
-        const QVector3D &wp2 = m_waypoints[i + 1];
-        
-        pathVertices << wp1.x() << wp1.y() << wp1.z();
-        pathVertices << wp2.x() << wp2.y() << wp2.z();
-        
+
+    for (size_t i = 0; i < m_waypoints.size() - 1; ++i)
+    {
+        const Waypoint &wp1 = m_waypoints[i];
+        const Waypoint &wp2 = m_waypoints[i + 1];
+
+        pathVertices << wp1.x << wp1.y << wp1.z;
+        pathVertices << wp2.x << wp2.y << wp2.z;
+
         pathColors << 1.0f << 1.0f << 0.0f; // Yellow
         pathColors << 1.0f << 1.0f << 0.0f;
     }
-    
+
     m_vao.bind();
     m_vertexBuffer.bind();
     m_vertexBuffer.allocate(pathVertices.data(), pathVertices.size() * sizeof(float));
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
     glEnableVertexAttribArray(0);
-    
+
     QOpenGLBuffer colorBuffer;
     colorBuffer.create();
     colorBuffer.bind();
     colorBuffer.allocate(pathColors.data(), pathColors.size() * sizeof(float));
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
     glEnableVertexAttribArray(1);
-    
-    glLineWidth(2.0f);
+
+    glLineWidth(3.0f);
     glDrawArrays(GL_LINES, 0, pathVertices.size() / 3);
     glLineWidth(1.0f);
-    
+
     colorBuffer.release();
     m_vertexBuffer.release();
     m_vao.release();
@@ -318,84 +346,154 @@ void PathPlannerOpenGLWidget::mousePressEvent(QMouseEvent *event)
 {
     m_lastMousePos = event->pos();
     m_mousePressed = true;
-    
-    if (event->button() == Qt::LeftButton) {
-        int waypointIndex = findWaypointAt(event->pos());
-        if (waypointIndex >= 0) {
-            setSelectedWaypoint(waypointIndex);
-            emit waypointSelected(waypointIndex);
-        } else if (event->modifiers() & Qt::ControlModifier) {
-            // Add new waypoint
-            QVector3D worldPos = screenToWorld(event->pos());
+
+    if (event->button() == Qt::LeftButton)
+    {
+        // In top-down mode, left-click adds waypoints
+        if (m_viewMode == TopDownMode)
+        {
+            // Place waypoint on ground plane (Y=0) for visual placement
+            // The depth parameter is not used in top-down mode, Y is set explicitly
+            QVector3D worldPos = screenToWorld(event->pos(), 0.0f);
+            worldPos.setY(0.0f); // Place on ground plane, user can adjust altitude in table
             addWaypoint(worldPos);
-            emit waypointAdded(worldPos);
+            // Signal is emitted in addWaypoint
+        }
+        else
+        {
+            // In 3D mode, left-click selects waypoints (no adding via mouse)
+            int waypointId = findWaypointAt(event->pos());
+            if (waypointId >= 0)
+            {
+                setSelectedWaypoint(waypointId);
+                emit waypointSelected(waypointId);
+            }
         }
     }
 }
 
 void PathPlannerOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
 {
-    if (!m_mousePressed) return;
-    
+    if (!m_mousePressed)
+        return;
+
     QPoint delta = event->pos() - m_lastMousePos;
     m_lastMousePos = event->pos();
-    
-    if (event->buttons() & Qt::RightButton) {
-        // Camera rotation
-        m_cameraYaw += delta.x() * 0.5f;
-        m_cameraPitch -= delta.y() * 0.5f;
-        
-        m_cameraPitch = qBound(-89.0f, m_cameraPitch, 89.0f);
-        
-        update();
-    } else if (event->buttons() & Qt::MiddleButton) {
-        // Camera panning
-        float sensitivity = 0.01f;
-        QVector3D right = QVector3D::crossProduct(m_cameraTarget - m_cameraPosition, m_cameraUp).normalized();
-        QVector3D up = QVector3D::crossProduct(right, m_cameraTarget - m_cameraPosition).normalized();
-        
-        m_cameraTarget += right * delta.x() * sensitivity;
-        m_cameraTarget += up * delta.y() * sensitivity;
-        
-        update();
+
+    // Only allow camera manipulation in 3D mode
+    if (m_viewMode == View3DMode)
+    {
+        if (event->buttons() & Qt::RightButton)
+        {
+            // Camera rotation
+            m_cameraYaw += delta.x() * 0.5f;
+            m_cameraPitch -= delta.y() * 0.5f;
+            m_cameraPitch = qBound(-89.0f, m_cameraPitch, 89.0f);
+            update();
+        }
+        else if (event->buttons() & Qt::MiddleButton)
+        {
+            // Camera panning
+            float sensitivity = 0.01f;
+            QVector3D right = QVector3D::crossProduct(m_cameraTarget - m_cameraPosition, m_cameraUp).normalized();
+            QVector3D up = QVector3D::crossProduct(right, m_cameraTarget - m_cameraPosition).normalized();
+            m_cameraTarget += right * delta.x() * sensitivity;
+            m_cameraTarget += up * delta.y() * sensitivity;
+            update();
+        }
+    }
+    else if (m_viewMode == TopDownMode)
+    {
+        // In top-down mode, middle button or right button pans the view
+        if (event->buttons() & (Qt::RightButton | Qt::MiddleButton))
+        {
+            float sensitivity = 0.02f * m_orthoZoom;
+            // X is flipped in screen-to-world, so flip pan direction too
+            m_cameraTarget.setX(m_cameraTarget.x() + delta.x() * sensitivity);
+            m_cameraTarget.setZ(m_cameraTarget.z() + delta.y() * sensitivity);
+            update();
+        }
     }
 }
 
 void PathPlannerOpenGLWidget::wheelEvent(QWheelEvent *event)
 {
     float delta = event->angleDelta().y() / 120.0f;
-    m_cameraDistance -= delta * 0.5f;
-    m_cameraDistance = qBound(2.0f, m_cameraDistance, 50.0f);
+
+    if (m_viewMode == TopDownMode)
+    {
+        // Zoom in/out in orthographic mode
+        m_orthoZoom -= delta * 0.5f;
+        m_orthoZoom = qBound(1.0f, m_orthoZoom, 50.0f);
+        updateProjection();
+    }
+    else
+    {
+        // Zoom in/out in perspective mode
+        m_cameraDistance -= delta * 0.5f;
+        m_cameraDistance = qBound(2.0f, m_cameraDistance, 50.0f);
+    }
     update();
 }
 
 QVector3D PathPlannerOpenGLWidget::screenToWorld(const QPoint &screenPos, float depth)
 {
-    // Simple screen to world conversion for ground plane (y=0)
-    // This is a simplified version - in a full implementation you'd use proper unprojection
-    float x = (screenPos.x() - width() / 2.0f) / (width() / 20.0f);
-    float z = (screenPos.y() - height() / 2.0f) / (height() / 20.0f);
-    return QVector3D(x, depth, -z);
+    if (m_viewMode == TopDownMode)
+    {
+        // Orthographic unprojection for top-down view
+        // Camera is looking down -Y axis, with +Z up on screen and +X right on screen
+        float aspect = float(width()) / float(height());
+        float halfWidth = m_orthoZoom * aspect;
+        float halfHeight = m_orthoZoom;
+
+        // Normalize screen coordinates to [-1, 1]
+        float ndcX = (2.0f * screenPos.x()) / width() - 1.0f;
+        float ndcY = 1.0f - (2.0f * screenPos.y()) / height();
+
+        // Map to world coordinates
+        // Screen X maps to world -X (need to flip for correct orientation)
+        // Screen Y maps to world Z (up on screen is positive Z in world)
+        float worldX = -ndcX * halfWidth + m_cameraTarget.x();
+        float worldZ = ndcY * halfHeight + m_cameraTarget.z();
+
+        return QVector3D(worldX, depth, worldZ);
+    }
+    else
+    {
+        // Simplified perspective unprojection (for ground plane y=depth)
+        float x = (screenPos.x() - width() / 2.0f) / (width() / 20.0f);
+        float z = (screenPos.y() - height() / 2.0f) / (height() / 20.0f);
+        return QVector3D(x, depth, -z);
+    }
 }
 
 int PathPlannerOpenGLWidget::findWaypointAt(const QPoint &screenPos)
 {
-    // Simple hit testing - in a full implementation you'd use proper 3D picking
-    for (int i = 0; i < m_waypoints.size(); ++i) {
-        // Project waypoint to screen and check distance
-        // This is simplified - proper implementation would use the projection matrices
-        QVector3D wp = m_waypoints[i];
-        QPoint projected(width() / 2 + wp.x() * width() / 20.0f, 
-                        height() / 2 - wp.z() * height() / 20.0f);
-        
-        if ((projected - screenPos).manhattanLength() < 20) {
-            return i;
+    // Simple hit testing - proper implementation would use GPU picking or ray casting
+    for (size_t i = 0; i < m_waypoints.size(); ++i)
+    {
+        const Waypoint &wp = m_waypoints[i];
+        QVector3D wpPos(wp.x, wp.y, wp.z);
+
+        // Project waypoint to screen (simplified)
+        QVector4D clipPos = m_projectionMatrix * m_viewMatrix * QVector4D(wpPos, 1.0f);
+        if (clipPos.w() != 0.0f)
+        {
+            QVector3D ndcPos = clipPos.toVector3D() / clipPos.w();
+            QPoint screenPoint(
+                (ndcPos.x() + 1.0f) * 0.5f * width(),
+                (1.0f - ndcPos.y()) * 0.5f * height());
+
+            if ((screenPoint - screenPos).manhattanLength() < 15)
+            {
+                return wp.id;
+            }
         }
     }
     return -1;
 }
 
-void PathPlannerOpenGLWidget::setWaypoints(const QVector<QVector3D> &waypoints)
+void PathPlannerOpenGLWidget::setWaypoints(const std::vector<Waypoint> &waypoints)
 {
     m_waypoints = waypoints;
     update();
@@ -403,18 +501,46 @@ void PathPlannerOpenGLWidget::setWaypoints(const QVector<QVector3D> &waypoints)
 
 void PathPlannerOpenGLWidget::addWaypoint(const QVector3D &point)
 {
-    m_waypoints.append(point);
+    // Generate new ID (1-based, sequential)
+    int newId = 1;
+    if (!m_waypoints.empty())
+    {
+        newId = m_waypoints.back().id + 1;
+    }
+
+    Waypoint wp(newId, point);
+    m_waypoints.push_back(wp);
+    emit waypointAdded(wp);
     update();
 }
 
-void PathPlannerOpenGLWidget::removeWaypoint(int index)
+void PathPlannerOpenGLWidget::updateWaypoint(int id, const Waypoint &wp)
 {
-    if (index >= 0 && index < m_waypoints.size()) {
-        m_waypoints.removeAt(index);
-        if (m_selectedWaypoint == index) {
+    for (auto &waypoint : m_waypoints)
+    {
+        if (waypoint.id == id)
+        {
+            waypoint = wp;
+            waypoint.id = id; // Preserve ID
+            update();
+            return;
+        }
+    }
+}
+
+void PathPlannerOpenGLWidget::removeWaypoint(int id)
+{
+    auto it = std::remove_if(m_waypoints.begin(), m_waypoints.end(),
+                             [id](const Waypoint &wp)
+                             { return wp.id == id; });
+
+    if (it != m_waypoints.end())
+    {
+        m_waypoints.erase(it, m_waypoints.end());
+
+        if (m_selectedWaypoint == id)
+        {
             m_selectedWaypoint = -1;
-        } else if (m_selectedWaypoint > index) {
-            m_selectedWaypoint--;
         }
         update();
     }
@@ -427,31 +553,46 @@ void PathPlannerOpenGLWidget::clearWaypoints()
     update();
 }
 
-void PathPlannerOpenGLWidget::setSelectedWaypoint(int index)
+void PathPlannerOpenGLWidget::setSelectedWaypoint(int id)
 {
-    m_selectedWaypoint = index;
+    m_selectedWaypoint = id;
+    update();
+}
+
+void PathPlannerOpenGLWidget::setViewMode(ViewMode mode)
+{
+    if (m_viewMode != mode)
+    {
+        m_viewMode = mode;
+        updateProjection();
+        update();
+    }
+}
+
+void PathPlannerOpenGLWidget::resetCamera()
+{
+    if (m_viewMode == TopDownMode)
+    {
+        m_cameraTarget = QVector3D(0, 0, 0);
+        m_orthoZoom = 10.0f;
+        updateProjection();
+    }
+    else
+    {
+        m_cameraTarget = QVector3D(0, 0, 0);
+        m_cameraDistance = 15.0f;
+        m_cameraYaw = 0.0f;
+        m_cameraPitch = 30.0f;
+    }
     update();
 }
 
 // PathPlannerWidget Implementation
 PathPlannerWidget::PathPlannerWidget(QWidget *parent)
-    : QWidget(parent)
-    , ui(nullptr)
-    , m_mainLayout(nullptr)
-    , m_controlsLayout(nullptr)
-    , m_openglWidget(nullptr)
-    , m_waypointGroup(nullptr)
-    , m_pathGroup(nullptr)
-    , m_viewGroup(nullptr)
-    , m_settingsGroup(nullptr)
-    , m_waypointList(nullptr)
-    , m_selectedWaypoint(-1)
-    , m_currentAnimationWaypoint(0)
-    , m_animationProgress(0.0f)
-    , m_isPlayingPath(false)
+    : QWidget(parent), ui(nullptr), m_mainLayout(nullptr), m_controlsLayout(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_pathGroup(nullptr), m_viewGroup(nullptr), m_settingsGroup(nullptr), m_waypointTable(nullptr), m_selectedWaypoint(-1), m_currentAnimationWaypoint(0), m_animationProgress(0.0f), m_isPlayingPath(false)
 {
     setupUI();
-    
+
     m_pathAnimationTimer = new QTimer(this);
     m_pathAnimationTimer->setInterval(50); // 20 FPS for path animation
     connect(m_pathAnimationTimer, &QTimer::timeout, this, &PathPlannerWidget::onPathAnimationTimer);
@@ -465,26 +606,27 @@ void PathPlannerWidget::setupUI()
 {
     m_mainLayout = new QHBoxLayout(this);
     m_mainLayout->setContentsMargins(10, 10, 10, 10);
-    
+
     // Create OpenGL widget
     m_openglWidget = new PathPlannerOpenGLWidget;
     m_mainLayout->addWidget(m_openglWidget, 3);
-    
+
     // Create controls panel
     m_controlsLayout = new QVBoxLayout;
     m_mainLayout->addLayout(m_controlsLayout, 1);
-    
+
     setupControls();
-    setupWaypointList();
-    
+    setupWaypointTable();
+
     // Connect signals
     connect(m_openglWidget, &PathPlannerOpenGLWidget::waypointSelected,
             this, &PathPlannerWidget::onWaypointSelected);
     connect(m_openglWidget, &PathPlannerOpenGLWidget::waypointAdded,
-            this, [this](const QVector3D &point) {
-                updateWaypointList();
-                onWaypointSelected(m_openglWidget->getWaypoints().size() - 1);
-            });
+            this, [this](const Waypoint &wp)
+            {
+                updateWaypointTable();
+                onWaypointSelected(wp.id);
+                emitWaypointsChanged(); });
 }
 
 void PathPlannerWidget::setupControls()
@@ -493,113 +635,102 @@ void PathPlannerWidget::setupControls()
     m_waypointGroup = new QGroupBox("Waypoints");
     m_waypointGroup->setStyleSheet(
         "QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } "
-        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }"
-    );
+        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }");
     m_controlsLayout->addWidget(m_waypointGroup);
-    
+
     QVBoxLayout *waypointLayout = new QVBoxLayout(m_waypointGroup);
-    
+
     // Waypoint count
     m_waypointCountLabel = new QLabel("Count: 0");
     waypointLayout->addWidget(m_waypointCountLabel);
-    
+
     // Waypoint buttons
     QHBoxLayout *waypointButtonsLayout = new QHBoxLayout;
     m_addWaypointButton = new QPushButton("Add");
     m_removeWaypointButton = new QPushButton("Remove");
-    
+
     waypointButtonsLayout->addWidget(m_addWaypointButton);
     waypointButtonsLayout->addWidget(m_removeWaypointButton);
     waypointLayout->addLayout(waypointButtonsLayout);
-    
-    // Position controls
-    QGridLayout *positionLayout = new QGridLayout;
-    positionLayout->addWidget(new QLabel("X:"), 0, 0);
-    positionLayout->addWidget(new QLabel("Y:"), 1, 0);
-    positionLayout->addWidget(new QLabel("Z:"), 2, 0);
-    
-    m_xSpinBox = new QDoubleSpinBox;
-    m_xSpinBox->setRange(-100, 100);
-    m_xSpinBox->setSingleStep(0.1);
-    m_xSpinBox->setDecimals(1);
-    
-    m_ySpinBox = new QDoubleSpinBox;
-    m_ySpinBox->setRange(0, 20);
-    m_ySpinBox->setSingleStep(0.1);
-    m_ySpinBox->setDecimals(1);
-    
-    m_zSpinBox = new QDoubleSpinBox;
-    m_zSpinBox->setRange(-100, 100);
-    m_zSpinBox->setSingleStep(0.1);
-    m_zSpinBox->setDecimals(1);
-    
-    positionLayout->addWidget(m_xSpinBox, 0, 1);
-    positionLayout->addWidget(m_ySpinBox, 1, 1);
-    positionLayout->addWidget(m_zSpinBox, 2, 1);
-    waypointLayout->addLayout(positionLayout);
-    
+
     // Path group
     m_pathGroup = new QGroupBox("Path");
     m_pathGroup->setStyleSheet(
         "QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } "
-        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }"
-    );
+        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }");
     m_controlsLayout->addWidget(m_pathGroup);
-    
+
     QVBoxLayout *pathLayout = new QVBoxLayout(m_pathGroup);
-    
+
     // Path name
     pathLayout->addWidget(new QLabel("Name:"));
     m_pathNameEdit = new QLineEdit("New Path");
     pathLayout->addWidget(m_pathNameEdit);
-    
+
     // Path length
     m_pathLengthLabel = new QLabel("Length: 0.0 m");
     pathLayout->addWidget(m_pathLengthLabel);
-    
+
     // Path buttons
     QGridLayout *pathButtonsLayout = new QGridLayout;
     m_clearPathButton = new QPushButton("Clear");
     m_savePathButton = new QPushButton("Save");
     m_loadPathButton = new QPushButton("Load");
-    
+
     pathButtonsLayout->addWidget(m_clearPathButton, 0, 0);
     pathButtonsLayout->addWidget(m_savePathButton, 0, 1);
     pathButtonsLayout->addWidget(m_loadPathButton, 1, 0);
-    
+
     m_playPathButton = new QPushButton("Play");
     m_stopPathButton = new QPushButton("Stop");
     pathButtonsLayout->addWidget(m_playPathButton, 1, 1);
     pathButtonsLayout->addWidget(m_stopPathButton, 2, 0);
-    
+
     pathLayout->addLayout(pathButtonsLayout);
-    
+
     // View group
     m_viewGroup = new QGroupBox("View");
     m_viewGroup->setStyleSheet(
         "QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } "
-        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }"
-    );
+        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }");
     m_controlsLayout->addWidget(m_viewGroup);
-    
+
     QVBoxLayout *viewLayout = new QVBoxLayout(m_viewGroup);
-    
+
+    // View mode toggle
+    m_viewModeButton = new QPushButton("Switch to Top-Down");
+    m_viewModeButton->setStyleSheet(
+        "QPushButton { background-color: #3b82f6; color: white; border: none; padding: 8px; border-radius: 4px; font-weight: bold; } "
+        "QPushButton:hover { background-color: #2563eb; }");
+    viewLayout->addWidget(m_viewModeButton);
+
     m_resetCameraButton = new QPushButton("Reset Camera");
     viewLayout->addWidget(m_resetCameraButton);
-    
+
+    // Default altitude for top-down planning
+    QHBoxLayout *altitudeLayout = new QHBoxLayout;
+    altitudeLayout->addWidget(new QLabel("Default Altitude:"));
+    m_defaultAltitudeSpinBox = new QDoubleSpinBox;
+    m_defaultAltitudeSpinBox->setRange(0.0, 100.0);
+    m_defaultAltitudeSpinBox->setValue(2.0);
+    m_defaultAltitudeSpinBox->setSingleStep(0.5);
+    m_defaultAltitudeSpinBox->setSuffix(" m");
+    altitudeLayout->addWidget(m_defaultAltitudeSpinBox);
+    viewLayout->addLayout(altitudeLayout);
+
     viewLayout->addWidget(new QLabel("Grid Size:"));
     m_gridSizeSlider = new QSlider(Qt::Horizontal);
     m_gridSizeSlider->setRange(5, 50);
     m_gridSizeSlider->setValue(20);
     viewLayout->addWidget(m_gridSizeSlider);
-    
+
     viewLayout->addWidget(new QLabel("Coordinate System:"));
     m_coordinateSystemCombo = new QComboBox;
     m_coordinateSystemCombo->addItems({"NED", "ENU", "Aircraft"});
     viewLayout->addWidget(m_coordinateSystemCombo);
-    
+
     m_controlsLayout->addStretch();
-    
+
     // Connect signals
     connect(m_addWaypointButton, &QPushButton::clicked, this, &PathPlannerWidget::onAddWaypoint);
     connect(m_removeWaypointButton, &QPushButton::clicked, this, &PathPlannerWidget::onRemoveWaypoint);
@@ -609,128 +740,240 @@ void PathPlannerWidget::setupControls()
     connect(m_playPathButton, &QPushButton::clicked, this, &PathPlannerWidget::onPlayPath);
     connect(m_stopPathButton, &QPushButton::clicked, this, &PathPlannerWidget::onStopPath);
     connect(m_resetCameraButton, &QPushButton::clicked, this, &PathPlannerWidget::onCameraReset);
-    
-    connect(m_xSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, &PathPlannerWidget::onWaypointPositionChanged);
-    connect(m_ySpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, &PathPlannerWidget::onWaypointPositionChanged);
-    connect(m_zSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-            this, &PathPlannerWidget::onWaypointPositionChanged);
-    
+
     connect(m_gridSizeSlider, &QSlider::valueChanged, this, &PathPlannerWidget::onGridSizeChanged);
     connect(m_coordinateSystemCombo, &QComboBox::currentTextChanged, this, &PathPlannerWidget::onCoordinateSystemChanged);
+    connect(m_viewModeButton, &QPushButton::clicked, this, &PathPlannerWidget::onViewModeChanged);
+    connect(m_defaultAltitudeSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double value)
+            { m_openglWidget->setDefaultAltitude(static_cast<float>(value)); });
 }
 
-void PathPlannerWidget::setupWaypointList()
+void PathPlannerWidget::setupWaypointTable()
 {
-    m_waypointList = new QListWidget;
-    m_waypointList->setMaximumHeight(150);
-    m_waypointList->setStyleSheet(
-        "QListWidget { background-color: #1f2937; color: white; border: 1px solid #4b5563; } "
-        "QListWidget::item { padding: 4px; border-bottom: 1px solid #374151; } "
-        "QListWidget::item:hover { background-color: #374151; } "
-        "QListWidget::item:selected { background-color: #3b82f6; }"
-    );
-    
-    // Insert waypoint list after waypoint count label
-    QVBoxLayout *waypointLayout = qobject_cast<QVBoxLayout*>(m_waypointGroup->layout());
-    waypointLayout->insertWidget(1, m_waypointList);
-    
-    connect(m_waypointList, &QListWidget::currentRowChanged, this, &PathPlannerWidget::onWaypointSelected);
+    m_waypointTable = new QTableWidget;
+    m_waypointTable->setColumnCount(7);
+    m_waypointTable->setHorizontalHeaderLabels({"ID", "X", "Y", "Z", "Yaw", "Speed", "Hold"});
+    m_waypointTable->setMaximumHeight(200);
+    m_waypointTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_waypointTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_waypointTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
+    m_waypointTable->setStyleSheet(
+        "QTableWidget { background-color: #1f2937; color: white; border: 1px solid #4b5563; gridline-color: #374151; } "
+        "QTableWidget::item { padding: 4px; } "
+        "QTableWidget::item:selected { background-color: #3b82f6; } "
+        "QHeaderView::section { background-color: #374151; color: white; padding: 4px; border: 1px solid #4b5563; }");
+
+    // Set column widths
+    m_waypointTable->setColumnWidth(0, 40); // ID
+    m_waypointTable->setColumnWidth(1, 60); // X
+    m_waypointTable->setColumnWidth(2, 60); // Y
+    m_waypointTable->setColumnWidth(3, 60); // Z
+    m_waypointTable->setColumnWidth(4, 60); // Yaw
+    m_waypointTable->setColumnWidth(5, 60); // Speed
+    m_waypointTable->setColumnWidth(6, 60); // Hold
+
+    // Insert waypoint table after waypoint count label
+    QVBoxLayout *waypointLayout = qobject_cast<QVBoxLayout *>(m_waypointGroup->layout());
+    waypointLayout->insertWidget(1, m_waypointTable);
+
+    connect(m_waypointTable, &QTableWidget::cellChanged, this, &PathPlannerWidget::onWaypointCellChanged);
+    connect(m_waypointTable, &QTableWidget::currentCellChanged,
+            this, [this](int currentRow, int, int, int)
+            {
+                if (currentRow >= 0 && currentRow < m_waypointTable->rowCount()) {
+                    QTableWidgetItem *idItem = m_waypointTable->item(currentRow, 0);
+                    if (idItem) {
+                        onWaypointSelected(idItem->text().toInt());
+                    }
+                } });
 }
 
 void PathPlannerWidget::onAddWaypoint()
 {
-    QVector3D newPoint(0, 2, 0);
+    float defaultAlt = m_defaultAltitudeSpinBox->value();
+    QVector3D newPoint(0, defaultAlt, 0);
     m_openglWidget->addWaypoint(newPoint);
-    updateWaypointList();
-    onWaypointSelected(m_openglWidget->getWaypoints().size() - 1);
+    // updateWaypointTable and signal emission handled by waypointAdded signal
 }
 
 void PathPlannerWidget::onRemoveWaypoint()
 {
-    if (m_selectedWaypoint >= 0) {
+    if (m_selectedWaypoint >= 0)
+    {
         m_openglWidget->removeWaypoint(m_selectedWaypoint);
-        updateWaypointList();
+        updateWaypointTable();
         m_selectedWaypoint = -1;
-        updateWaypointControls();
+        emitWaypointsChanged();
     }
 }
 
 void PathPlannerWidget::onClearPath()
 {
+    if (!m_openglWidget)
+        return;
+
     m_openglWidget->clearWaypoints();
-    updateWaypointList();
     m_selectedWaypoint = -1;
-    updateWaypointControls();
+
+    if (m_waypointTable)
+        updateWaypointTable();
+
+    emitWaypointsChanged();
 }
 
 void PathPlannerWidget::onSavePath()
 {
-    QString name = m_pathNameEdit->text().trimmed();
-    if (name.isEmpty()) {
-        name = "Untitled Path";
-    }
-    
-    QVector<QVector3D> waypoints = m_openglWidget->getWaypoints();
-    if (!waypoints.isEmpty()) {
-        emit pathSaved(name, waypoints);
+    QString fileName = QFileDialog::getSaveFileName(this,
+                                                    "Save Path",
+                                                    QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
+                                                    "JSON Files (*.json)");
+
+    if (!fileName.isEmpty())
+    {
+        if (!fileName.endsWith(".json", Qt::CaseInsensitive))
+        {
+            fileName += ".json";
+        }
+
+        if (saveToJson(fileName))
+        {
+            QMessageBox::information(this, "Save Path", "Path saved successfully!");
+        }
+        else
+        {
+            QMessageBox::warning(this, "Save Path", "Failed to save path.");
+        }
     }
 }
 
 void PathPlannerWidget::onLoadPath()
 {
-    QString fileName = QFileDialog::getOpenFileName(this, 
-        "Load Path", 
-        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
-        "JSON Files (*.json)");
-    
-    if (!fileName.isEmpty()) {
-        // TODO: Implement path loading from JSON
-        QMessageBox::information(this, "Load Path", "Path loading not yet implemented");
+    QString fileName = QFileDialog::getOpenFileName(this,
+                                                    "Load Path",
+                                                    QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
+                                                    "JSON Files (*.json)");
+
+    if (!fileName.isEmpty())
+    {
+        if (loadFromJson(fileName))
+        {
+            QMessageBox::information(this, "Load Path", "Path loaded successfully!");
+        }
+        else
+        {
+            QMessageBox::warning(this, "Load Path", "Failed to load path.");
+        }
     }
 }
 
-void PathPlannerWidget::onWaypointSelected(int index)
+void PathPlannerWidget::onWaypointSelected(int id)
 {
-    m_selectedWaypoint = index;
-    m_openglWidget->setSelectedWaypoint(index);
-    m_waypointList->setCurrentRow(index);
-    updateWaypointControls();
+    m_selectedWaypoint = id;
+    m_openglWidget->setSelectedWaypoint(id);
+
+    // Select the corresponding row in the table
+    for (int row = 0; row < m_waypointTable->rowCount(); ++row)
+    {
+        QTableWidgetItem *idItem = m_waypointTable->item(row, 0);
+        if (idItem && idItem->text().toInt() == id)
+        {
+            m_waypointTable->selectRow(row);
+            break;
+        }
+    }
 }
 
-void PathPlannerWidget::onWaypointPositionChanged()
+void PathPlannerWidget::onWaypointCellChanged(int row, int column)
 {
-    if (m_selectedWaypoint >= 0) {
-        QVector<QVector3D> waypoints = m_openglWidget->getWaypoints();
-        if (m_selectedWaypoint < waypoints.size()) {
-            waypoints[m_selectedWaypoint] = QVector3D(
-                m_xSpinBox->value(),
-                m_ySpinBox->value(), 
-                m_zSpinBox->value()
-            );
-            m_openglWidget->setWaypoints(waypoints);
-            updateWaypointList();
+    // Ignore ID column changes
+    if (column == 0 || row < 0 || row >= m_waypointTable->rowCount())
+        return;
+
+    QTableWidgetItem *idItem = m_waypointTable->item(row, 0);
+    if (!idItem)
+        return;
+
+    int id = idItem->text().toInt();
+
+    // Find the waypoint and update it
+    const auto &waypoints = m_openglWidget->waypoints();
+    for (const auto &wp : waypoints)
+    {
+        if (wp.id == id)
+        {
+            Waypoint updated = wp;
+
+            // Update the changed field
+            QTableWidgetItem *item = m_waypointTable->item(row, column);
+            if (!item)
+                return;
+
+            bool ok;
+            float value = item->text().toFloat(&ok);
+            if (!ok)
+                return;
+
+            switch (column)
+            {
+            case 1:
+                updated.x = value;
+                break;
+            case 2:
+                updated.y = value;
+                break;
+            case 3:
+                updated.z = value;
+                break;
+            case 4:
+                updated.yaw = value;
+                break;
+            case 5:
+                updated.speed = value;
+                break;
+            case 6:
+                updated.holdTime = value;
+                break;
+            }
+
+            m_openglWidget->updateWaypoint(id, updated);
+            emitWaypointsChanged();
+            break;
         }
     }
 }
 
 void PathPlannerWidget::onCameraReset()
 {
-    // Reset camera to default position - this would be implemented in the OpenGL widget
-    m_openglWidget->update();
+    m_openglWidget->resetCamera();
+}
+
+void PathPlannerWidget::onViewModeChanged()
+{
+    if (m_openglWidget->viewMode() == PathPlannerOpenGLWidget::TopDownMode)
+    {
+        m_openglWidget->setViewMode(PathPlannerOpenGLWidget::View3DMode);
+        m_viewModeButton->setText("Switch to Top-Down");
+    }
+    else
+    {
+        m_openglWidget->setViewMode(PathPlannerOpenGLWidget::TopDownMode);
+        m_viewModeButton->setText("Switch to 3D View");
+    }
 }
 
 void PathPlannerWidget::onPlayPath()
 {
-    if (!m_isPlayingPath && !m_openglWidget->getWaypoints().isEmpty()) {
+    if (!m_isPlayingPath && !m_openglWidget->waypoints().empty())
+    {
         startPathAnimation();
     }
 }
 
 void PathPlannerWidget::onStopPath()
 {
-    if (m_isPlayingPath) {
+    if (m_isPlayingPath)
+    {
         stopPathAnimation();
     }
 }
@@ -739,17 +982,19 @@ void PathPlannerWidget::onPathAnimationTimer()
 {
     // Simple path animation logic
     m_animationProgress += 0.02f;
-    if (m_animationProgress >= 1.0f) {
+    if (m_animationProgress >= 1.0f)
+    {
         m_animationProgress = 0.0f;
         m_currentAnimationWaypoint++;
-        
-        QVector<QVector3D> waypoints = m_openglWidget->getWaypoints();
-        if (m_currentAnimationWaypoint >= waypoints.size()) {
+
+        const auto &waypoints = m_openglWidget->waypoints();
+        if (m_currentAnimationWaypoint >= static_cast<int>(waypoints.size()))
+        {
             stopPathAnimation();
             return;
         }
     }
-    
+
     // Update visualization (this would show a moving drone along the path)
     m_openglWidget->update();
 }
@@ -766,55 +1011,63 @@ void PathPlannerWidget::onCoordinateSystemChanged(const QString &system)
     m_openglWidget->update();
 }
 
-void PathPlannerWidget::updateWaypointList()
+void PathPlannerWidget::updateWaypointTable()
 {
-    m_waypointList->clear();
-    
-    QVector<QVector3D> waypoints = m_openglWidget->getWaypoints();
-    for (int i = 0; i < waypoints.size(); ++i) {
-        const QVector3D &wp = waypoints[i];
-        QString text = QString("WP %1: (%2, %3, %4)")
-                      .arg(i + 1)
-                      .arg(wp.x(), 0, 'f', 1)
-                      .arg(wp.y(), 0, 'f', 1)
-                      .arg(wp.z(), 0, 'f', 1);
-        m_waypointList->addItem(text);
+    if (!m_waypointTable || !m_openglWidget)
+        return;
+
+    // Block signals to prevent triggering cellChanged during update
+    m_waypointTable->blockSignals(true);
+    m_waypointTable->clearContents();
+    m_waypointTable->setRowCount(0);
+
+    const auto &waypoints = m_openglWidget->waypoints();
+
+    if (!waypoints.empty())
+    {
+        m_waypointTable->setRowCount(waypoints.size());
+
+        for (size_t i = 0; i < waypoints.size(); ++i)
+        {
+            const Waypoint &wp = waypoints[i];
+
+            // ID (read-only)
+            QTableWidgetItem *idItem = new QTableWidgetItem(QString::number(wp.id));
+            idItem->setFlags(idItem->flags() & ~Qt::ItemIsEditable);
+            m_waypointTable->setItem(i, 0, idItem);
+
+            // Position and parameters (editable)
+            m_waypointTable->setItem(i, 1, new QTableWidgetItem(QString::number(wp.x, 'f', 2)));
+            m_waypointTable->setItem(i, 2, new QTableWidgetItem(QString::number(wp.y, 'f', 2)));
+            m_waypointTable->setItem(i, 3, new QTableWidgetItem(QString::number(wp.z, 'f', 2)));
+            m_waypointTable->setItem(i, 4, new QTableWidgetItem(QString::number(wp.yaw, 'f', 1)));
+            m_waypointTable->setItem(i, 5, new QTableWidgetItem(QString::number(wp.speed, 'f', 1)));
+            m_waypointTable->setItem(i, 6, new QTableWidgetItem(QString::number(wp.holdTime, 'f', 1)));
+        }
     }
-    
-    m_waypointCountLabel->setText(QString("Count: %1").arg(waypoints.size()));
-    
+
+    m_waypointTable->blockSignals(false);
+
+    if (m_waypointCountLabel)
+        m_waypointCountLabel->setText(QString("Count: %1").arg(waypoints.size()));
+
     // Calculate path length
     float totalLength = 0.0f;
-    for (int i = 0; i < waypoints.size() - 1; ++i) {
-        totalLength += waypoints[i].distanceToPoint(waypoints[i + 1]);
+    if (waypoints.size() > 1)
+    {
+        for (size_t i = 0; i < waypoints.size() - 1; ++i)
+        {
+            QVector3D p1(waypoints[i].x, waypoints[i].y, waypoints[i].z);
+            QVector3D p2(waypoints[i + 1].x, waypoints[i + 1].y, waypoints[i + 1].z);
+            totalLength += p1.distanceToPoint(p2);
+        }
     }
-    m_pathLengthLabel->setText(QString("Length: %1 m").arg(totalLength, 0, 'f', 1));
-}
 
-void PathPlannerWidget::updateWaypointControls()
-{
-    QVector<QVector3D> waypoints = m_openglWidget->getWaypoints();
-    bool hasSelection = m_selectedWaypoint >= 0 && m_selectedWaypoint < waypoints.size();
-    
-    m_removeWaypointButton->setEnabled(hasSelection);
-    m_xSpinBox->setEnabled(hasSelection);
-    m_ySpinBox->setEnabled(hasSelection);
-    m_zSpinBox->setEnabled(hasSelection);
-    
-    if (hasSelection) {
-        const QVector3D &wp = waypoints[m_selectedWaypoint];
-        m_xSpinBox->blockSignals(true);
-        m_ySpinBox->blockSignals(true);
-        m_zSpinBox->blockSignals(true);
-        
-        m_xSpinBox->setValue(wp.x());
-        m_ySpinBox->setValue(wp.y());
-        m_zSpinBox->setValue(wp.z());
-        
-        m_xSpinBox->blockSignals(false);
-        m_ySpinBox->blockSignals(false);
-        m_zSpinBox->blockSignals(false);
-    }
+    if (m_pathLengthLabel)
+        m_pathLengthLabel->setText(QString("Length: %1 m").arg(totalLength, 0, 'f', 1));
+
+    if (m_removeWaypointButton)
+        m_removeWaypointButton->setEnabled(m_selectedWaypoint >= 0);
 }
 
 void PathPlannerWidget::startPathAnimation()
@@ -823,7 +1076,7 @@ void PathPlannerWidget::startPathAnimation()
     m_currentAnimationWaypoint = 0;
     m_animationProgress = 0.0f;
     m_pathAnimationTimer->start();
-    
+
     m_playPathButton->setEnabled(false);
     m_stopPathButton->setEnabled(true);
 }
@@ -832,21 +1085,132 @@ void PathPlannerWidget::stopPathAnimation()
 {
     m_isPlayingPath = false;
     m_pathAnimationTimer->stop();
-    
+
     m_playPathButton->setEnabled(true);
     m_stopPathButton->setEnabled(false);
 }
 
 void PathPlannerWidget::loadPoints(const QVector<QVector3D> &points)
 {
-    m_openglWidget->setWaypoints(points);
-    updateWaypointList();
-    if (!points.isEmpty()) {
-        onWaypointSelected(0);
+    // Convert legacy QVector<QVector3D> to std::vector<Waypoint>
+    std::vector<Waypoint> waypoints;
+    for (int i = 0; i < points.size(); ++i)
+    {
+        waypoints.push_back(Waypoint(i + 1, points[i]));
+    }
+    m_openglWidget->setWaypoints(waypoints);
+    updateWaypointTable();
+    if (!waypoints.empty())
+    {
+        onWaypointSelected(1);
     }
 }
 
 void PathPlannerWidget::clearPath()
 {
     onClearPath();
+}
+
+// New public API methods
+
+void PathPlannerWidget::addWaypoint(const QVector3D &pos)
+{
+    m_openglWidget->addWaypoint(pos);
+}
+
+void PathPlannerWidget::updateWaypoint(int id, const Waypoint &wp)
+{
+    m_openglWidget->updateWaypoint(id, wp);
+    updateWaypointTable();
+    emitWaypointsChanged();
+}
+
+void PathPlannerWidget::removeWaypoint(int id)
+{
+    m_openglWidget->removeWaypoint(id);
+    updateWaypointTable();
+    emitWaypointsChanged();
+}
+
+const std::vector<Waypoint> &PathPlannerWidget::waypoints() const
+{
+    return m_openglWidget->waypoints();
+}
+
+void PathPlannerWidget::emitWaypointsChanged()
+{
+    emit waypointsChanged(m_openglWidget->waypoints());
+}
+
+bool PathPlannerWidget::saveToJson(const QString &path)
+{
+    QJsonObject root;
+    root["version"] = 1;
+
+    QJsonArray waypointsArray;
+    const auto &waypoints = m_openglWidget->waypoints();
+    for (const auto &wp : waypoints)
+    {
+        waypointsArray.append(wp.toJson());
+    }
+    root["waypoints"] = waypointsArray;
+
+    QJsonDocument doc(root);
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly))
+    {
+        return false;
+    }
+
+    file.write(doc.toJson(QJsonDocument::Indented));
+    file.close();
+    return true;
+}
+
+bool PathPlannerWidget::loadFromJson(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+    {
+        return false;
+    }
+
+    QByteArray data = file.readAll();
+    file.close();
+
+    QJsonDocument doc = QJsonDocument::fromJson(data);
+    if (doc.isNull() || !doc.isObject())
+    {
+        return false;
+    }
+
+    QJsonObject root = doc.object();
+    int version = root["version"].toInt();
+
+    if (version != 1)
+    {
+        return false; // Unsupported version
+    }
+
+    QJsonArray waypointsArray = root["waypoints"].toArray();
+    std::vector<Waypoint> waypoints;
+
+    for (const QJsonValue &value : waypointsArray)
+    {
+        if (value.isObject())
+        {
+            waypoints.push_back(Waypoint::fromJson(value.toObject()));
+        }
+    }
+
+    m_openglWidget->setWaypoints(waypoints);
+    updateWaypointTable();
+    emitWaypointsChanged();
+
+    if (!waypoints.empty())
+    {
+        onWaypointSelected(waypoints[0].id);
+    }
+
+    return true;
 }

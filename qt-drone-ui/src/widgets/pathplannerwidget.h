@@ -17,6 +17,7 @@
 #include <QSlider>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QTableWidget>
 #include <QGroupBox>
 #include <QSpinBox>
 #include <QDoubleSpinBox>
@@ -24,6 +25,8 @@
 #include <QTimer>
 #include <QMouseEvent>
 #include <QWheelEvent>
+#include <vector>
+#include "waypoint.h"
 
 class PathRenderer;
 
@@ -36,20 +39,36 @@ class PathPlannerOpenGLWidget : public QOpenGLWidget, protected QOpenGLFunctions
     Q_OBJECT
 
 public:
+    enum ViewMode {
+        TopDownMode,    ///< Orthographic top-down view for planning
+        View3DMode      ///< Free 3D inspection mode
+    };
+
     explicit PathPlannerOpenGLWidget(QWidget *parent = nullptr);
     ~PathPlannerOpenGLWidget();
 
-    void setWaypoints(const QVector<QVector3D> &waypoints);
+    // Waypoint management
+    void setWaypoints(const std::vector<Waypoint> &waypoints);
     void addWaypoint(const QVector3D &point);
-    void removeWaypoint(int index);
+    void updateWaypoint(int id, const Waypoint &wp);
+    void removeWaypoint(int id);
     void clearWaypoints();
-    void setSelectedWaypoint(int index);
-    QVector<QVector3D> getWaypoints() const { return m_waypoints; }
+    void setSelectedWaypoint(int id);
+    const std::vector<Waypoint>& waypoints() const { return m_waypoints; }
+    
+    // View mode
+    void setViewMode(ViewMode mode);
+    ViewMode viewMode() const { return m_viewMode; }
+    
+    // Camera control
+    void resetCamera();
+    void setDefaultAltitude(float altitude) { m_defaultAltitude = altitude; }
+    float defaultAltitude() const { return m_defaultAltitude; }
 
 signals:
-    void waypointSelected(int index);
-    void waypointAdded(const QVector3D &point);
-    void waypointMoved(int index, const QVector3D &newPosition);
+    void waypointSelected(int id);
+    void waypointAdded(const Waypoint &waypoint);
+    void waypointMoved(int id, const QVector3D &newPosition);
 
 protected:
     void initializeGL() override;
@@ -67,6 +86,7 @@ private:
     void drawPath();
     void drawAxes();
     void updateCamera();
+    void updateProjection();
     QVector3D screenToWorld(const QPoint &screenPos, float depth = 0.0f);
     int findWaypointAt(const QPoint &screenPos);
     
@@ -87,9 +107,14 @@ private:
     float m_cameraYaw;
     float m_cameraPitch;
     
+    // View mode
+    ViewMode m_viewMode;
+    float m_orthoZoom;
+    float m_defaultAltitude;
+    
     // Waypoints
-    QVector<QVector3D> m_waypoints;
-    int m_selectedWaypoint;
+    std::vector<Waypoint> m_waypoints;
+    int m_selectedWaypoint;  // ID of selected waypoint (-1 if none)
     
     // Interaction
     QPoint m_lastMousePos;
@@ -109,11 +134,23 @@ public:
     explicit PathPlannerWidget(QWidget *parent = nullptr);
     ~PathPlannerWidget();
 
+    // Waypoint management
+    void addWaypoint(const QVector3D &pos);
+    void updateWaypoint(int id, const Waypoint &wp);
+    void removeWaypoint(int id);
+    const std::vector<Waypoint>& waypoints() const;
+    
+    // Legacy support
     void loadPoints(const QVector<QVector3D> &points);
     void clearPath();
+    
+    // JSON persistence
+    bool saveToJson(const QString &path);
+    bool loadFromJson(const QString &path);
 
 signals:
     void pathSaved(const QString &name, const QVector<QVector3D> &points);
+    void waypointsChanged(const std::vector<Waypoint> &waypoints);
 
 private slots:
     void onAddWaypoint();
@@ -121,24 +158,24 @@ private slots:
     void onClearPath();
     void onSavePath();
     void onLoadPath();
-    void onWaypointSelected(int index);
-    void onWaypointPositionChanged();
+    void onWaypointSelected(int id);
+    void onWaypointCellChanged(int row, int column);
     void onCameraReset();
     void onPlayPath();
     void onStopPath();
     void onPathAnimationTimer();
     void onGridSizeChanged(int size);
     void onCoordinateSystemChanged(const QString &system);
+    void onViewModeChanged();
 
 private:
     void setupUI();
     void setupControls();
-    void setupWaypointList();
-    void updateWaypointList();
-    void updateWaypointControls();
-    void validateAndUpdateWaypoint();
+    void setupWaypointTable();
+    void updateWaypointTable();
     void startPathAnimation();
     void stopPathAnimation();
+    void emitWaypointsChanged();
     
     Ui::PathPlannerWidget *ui;
     
@@ -156,12 +193,9 @@ private:
     QGroupBox *m_settingsGroup;
     
     // Waypoint controls
-    QListWidget *m_waypointList;
+    QTableWidget *m_waypointTable;
     QPushButton *m_addWaypointButton;
     QPushButton *m_removeWaypointButton;
-    QDoubleSpinBox *m_xSpinBox;
-    QDoubleSpinBox *m_ySpinBox;
-    QDoubleSpinBox *m_zSpinBox;
     QLabel *m_waypointCountLabel;
     
     // Path controls
@@ -175,8 +209,10 @@ private:
     
     // View controls
     QPushButton *m_resetCameraButton;
+    QPushButton *m_viewModeButton;
     QSlider *m_gridSizeSlider;
     QComboBox *m_coordinateSystemCombo;
+    QDoubleSpinBox *m_defaultAltitudeSpinBox;
     
     // Animation
     QTimer *m_pathAnimationTimer;
@@ -185,7 +221,7 @@ private:
     bool m_isPlayingPath;
     
     // Current waypoint selection
-    int m_selectedWaypoint;
+    int m_selectedWaypoint;  // ID of selected waypoint (-1 if none)
 };
 
 #endif // PATHPLANNERWIDGET_H
