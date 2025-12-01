@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "widgets/dashboardwidget.h"
 #include "widgets/camerafeedwidget.h"
 #include "widgets/pathplannerwidget.h"
 #include "widgets/recordedpathswidget.h"
@@ -25,6 +26,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_drawerToggleButton(nullptr)
     , m_contentStack(nullptr)
     , m_mainSplitter(nullptr)
+    , m_dashboardWidget(nullptr)
     , m_cameraFeedWidget(nullptr)
     , m_pathPlannerWidget(nullptr)
     , m_recordedPathsWidget(nullptr)
@@ -84,12 +86,13 @@ void MainWindow::setupNavigationBar()
 {
     // Create navigation frame with Motive-inspired styling
     m_navigationFrame = new QFrame;
-    m_navigationFrame->setFrameStyle(QFrame::StyledPanel);
+    m_navigationFrame->setFrameShape(QFrame::NoFrame);
     m_navigationFrame->setMinimumWidth(220);
     m_navigationFrame->setMaximumWidth(320);
     m_navigationFrame->setStyleSheet(
         "QFrame { "
         "   background-color: #323232; "
+        "   border: none; "
         "   border-right: 2px solid #555555; "
         "}"
     );
@@ -100,10 +103,12 @@ void MainWindow::setupNavigationBar()
     
     // Create OptiTrack-style header with logo area
     QFrame *headerFrame = new QFrame;
+    headerFrame->setFrameShape(QFrame::NoFrame);
     headerFrame->setFixedHeight(60);
     headerFrame->setStyleSheet(
         "QFrame { "
         "   background-color: #2d2d2d; "
+        "   border: none; "
         "   border-bottom: 2px solid #007acc; "
         "}"
     );
@@ -145,26 +150,37 @@ void MainWindow::setupNavigationBar()
     
     // Create navigation list with Motive styling
     m_navigationList = new QListWidget;
+    m_navigationList->setFocusPolicy(Qt::NoFocus);  // Disable focus rectangle
     m_navigationList->setStyleSheet(
         "QListWidget { "
         "   background-color: #323232; "
         "   border: none; "
         "   color: #dcdcdc; "
-        "   outline: 0; "
+        "   outline: none; "
+        "} "
+        "QListWidget:focus { "
+        "   outline: none; "
+        "   border: none; "
         "} "
         "QListWidget::item { "
         "   padding: 12px 16px; "
         "   border-bottom: 1px solid #555555; "
         "   font-size: 14px; "
+        "   outline: none; "
+        "} "
+        "QListWidget::item:focus { "
+        "   outline: none; "
+        "   border: none; "
         "} "
         "QListWidget::item:hover { "
         "   background-color: #404040; "
         "   color: white; "
         "} "
         "QListWidget::item:selected { "
-        "   background-color: #007acc; "
+        "   background-color: #4a4a4a; "
         "   color: white; "
         "   font-weight: bold; "
+        "   outline: none; "
         "}"
     );
     
@@ -189,6 +205,12 @@ void MainWindow::setupNavigationBar()
         
         // Create custom widget for navigation item
         QWidget *itemWidget = new QWidget;
+        itemWidget->setStyleSheet(
+            "QWidget { "
+            "   background: transparent; "
+            "   border: none; "
+            "}"
+        );
         QHBoxLayout *itemLayout = new QHBoxLayout(itemWidget);
         itemLayout->setContentsMargins(8, 4, 8, 4);
         itemLayout->setSpacing(12);
@@ -201,6 +223,8 @@ void MainWindow::setupNavigationBar()
             "   color: #007acc; "
             "   font-size: 16px; "
             "   font-weight: bold; "
+            "   background: transparent; "
+            "   border: none; "
             "}"
         );
         iconLabel->setAlignment(Qt::AlignCenter);
@@ -216,6 +240,8 @@ void MainWindow::setupNavigationBar()
             "   color: #dcdcdc; "
             "   font-size: 14px; "
             "   font-weight: bold; "
+            "   background: transparent; "
+            "   border: none; "
             "}"
         );
         
@@ -224,6 +250,8 @@ void MainWindow::setupNavigationBar()
             "QLabel { "
             "   color: #999999; "
             "   font-size: 11px; "
+            "   background: transparent; "
+            "   border: none; "
             "}"
         );
         
@@ -243,10 +271,12 @@ void MainWindow::setupNavigationBar()
     
     // Add connection status footer
     QFrame *statusFooter = new QFrame;
+    statusFooter->setFrameShape(QFrame::NoFrame);
     statusFooter->setFixedHeight(80);
     statusFooter->setStyleSheet(
         "QFrame { "
         "   background-color: #2d2d2d; "
+        "   border: none; "
         "   border-top: 1px solid #555555; "
         "}"
     );
@@ -290,26 +320,27 @@ void MainWindow::setupMainContent()
     // Create content stack
     m_contentStack = new QStackedWidget;
     
-    // Create home page (camera feed)
+    // Index 0: Home - Dashboard
+    m_dashboardWidget = new DashboardWidget;
+    m_contentStack->addWidget(m_dashboardWidget);
+    
+    // Index 1: Live Camera
     m_cameraFeedWidget = new CameraFeedWidget;
     m_contentStack->addWidget(m_cameraFeedWidget);
     
-    // Create camera feed page (duplicate for navigation consistency)
-    m_contentStack->addWidget(m_cameraFeedWidget);
-    
-    // Create path planner page
+    // Index 2: Flight Planner
     m_pathPlannerWidget = new PathPlannerWidget;
     m_contentStack->addWidget(m_pathPlannerWidget);
     
-    // Create recorded paths page
+    // Index 3: Flight History (Recorded Paths)
     m_recordedPathsWidget = new RecordedPathsWidget;
     m_contentStack->addWidget(m_recordedPathsWidget);
     
-    // Create recorded videos page
+    // Index 4: Media Library (Recorded Videos)
     m_recordedVideosWidget = new RecordedVideosWidget;
     m_contentStack->addWidget(m_recordedVideosWidget);
     
-    // Create drone status page
+    // Index 5: System Status (Drone Status)
     m_droneStatusWidget = new DroneStatusWidget;
     m_contentStack->addWidget(m_droneStatusWidget);
 }
@@ -333,6 +364,18 @@ void MainWindow::connectSignals()
             this, &MainWindow::onNavigationItemClicked);
     connect(m_drawerToggleButton, &QPushButton::clicked,
             this, &MainWindow::onDrawerToggled);
+    
+    // Dashboard navigation signals
+    connect(m_dashboardWidget, &DashboardWidget::navigateToCamera,
+            this, [this]() { setActiveView("camera"); });
+    connect(m_dashboardWidget, &DashboardWidget::navigateToPlanner,
+            this, [this]() { setActiveView("planner"); });
+    connect(m_dashboardWidget, &DashboardWidget::navigateToHistory,
+            this, [this]() { setActiveView("paths"); });
+    connect(m_dashboardWidget, &DashboardWidget::navigateToMedia,
+            this, [this]() { setActiveView("videos"); });
+    connect(m_dashboardWidget, &DashboardWidget::navigateToStatus,
+            this, [this]() { setActiveView("status"); });
     
     // Path planner signals
     connect(m_pathPlannerWidget, &PathPlannerWidget::pathSaved,
