@@ -13,6 +13,21 @@
 #include <QDateTime>
 #include <QRegularExpression>
 #include <QtMath>
+#include <QPainter>
+#include <algorithm>
+
+// Helper function to convert waypoint ID to letter label (1=A, 2=B, etc.)
+static QString idToLetter(int id)
+{
+    if (id < 1) return "?";
+    if (id <= 26) return QString(QChar('A' + id - 1));
+    // For more than 26 waypoints: AA, AB, AC, etc.
+    int first = (id - 1) / 26;
+    int second = (id - 1) % 26;
+    if (first > 0 && first <= 26)
+        return QString(QChar('A' + first - 1)) + QString(QChar('A' + second));
+    return QString::number(id);
+}
 
 // Vertex shader source
 static const char *vertexShaderSource =
@@ -69,8 +84,8 @@ void PathPlannerOpenGLWidget::initializeGL()
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glEnable(GL_POINT_SMOOTH);
-    glEnable(GL_LINE_SMOOTH);
+    // Note: GL_POINT_SMOOTH and GL_LINE_SMOOTH are deprecated in OpenGL core profile
+    // and not supported on macOS. Multisampling is enabled via QSurfaceFormat instead.
 
     glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
 
@@ -81,9 +96,18 @@ void PathPlannerOpenGLWidget::initializeGL()
 void PathPlannerOpenGLWidget::setupShaders()
 {
     m_shaderProgram = new QOpenGLShaderProgram(this);
-    m_shaderProgram->addShaderFromSourceCode(QOpenGLShader::Vertex, vertexShaderSource);
-    m_shaderProgram->addShaderFromSourceCode(QOpenGLShader::Fragment, fragmentShaderSource);
-    m_shaderProgram->link();
+    
+    if (!m_shaderProgram->addShaderFromSourceCode(QOpenGLShader::Vertex, vertexShaderSource)) {
+        qWarning() << "PathPlanner: Failed to compile vertex shader:" << m_shaderProgram->log();
+    }
+    
+    if (!m_shaderProgram->addShaderFromSourceCode(QOpenGLShader::Fragment, fragmentShaderSource)) {
+        qWarning() << "PathPlanner: Failed to compile fragment shader:" << m_shaderProgram->log();
+    }
+    
+    if (!m_shaderProgram->link()) {
+        qWarning() << "PathPlanner: Failed to link shader program:" << m_shaderProgram->log();
+    }
 }
 
 void PathPlannerOpenGLWidget::setupBuffers()
@@ -116,6 +140,78 @@ void PathPlannerOpenGLWidget::resizeGL(int width, int height)
 {
     glViewport(0, 0, width, height);
     updateProjection();
+}
+
+void PathPlannerOpenGLWidget::paintEvent(QPaintEvent *event)
+{
+    // First, do the OpenGL rendering
+    QOpenGLWidget::paintEvent(event);
+    
+    // Then draw 2D overlays using QPainter
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    drawWaypointLabels(painter);
+    painter.end();
+}
+
+QPoint PathPlannerOpenGLWidget::worldToScreen(const QVector3D &worldPos)
+{
+    // Project 3D world position to 2D screen coordinates
+    QVector4D clipPos = m_projectionMatrix * m_viewMatrix * QVector4D(worldPos, 1.0f);
+    if (qAbs(clipPos.w()) < 0.0001f)
+        return QPoint(-1000, -1000);  // Behind camera
+    
+    QVector3D ndcPos = clipPos.toVector3D() / clipPos.w();
+    
+    int screenX = static_cast<int>((ndcPos.x() + 1.0f) * 0.5f * width());
+    int screenY = static_cast<int>((1.0f - ndcPos.y()) * 0.5f * height());
+    
+    return QPoint(screenX, screenY);
+}
+
+void PathPlannerOpenGLWidget::drawWaypointLabels(QPainter &painter)
+{
+    if (m_waypoints.empty())
+        return;
+    
+    // Set up font for labels
+    QFont font = painter.font();
+    font.setBold(true);
+    font.setPointSize(12);
+    painter.setFont(font);
+    
+    for (size_t i = 0; i < m_waypoints.size(); ++i)
+    {
+        const Waypoint &wp = m_waypoints[i];
+        QVector3D worldPos(wp.x, wp.y, wp.z);
+        QPoint screenPos = worldToScreen(worldPos);
+        
+        // Skip if off-screen
+        if (screenPos.x() < -50 || screenPos.x() > width() + 50 ||
+            screenPos.y() < -50 || screenPos.y() > height() + 50)
+            continue;
+        
+        // Get the letter label
+        QString label = idToLetter(wp.id);
+        
+        // Draw background circle
+        int radius = 14;
+        QPoint labelPos = screenPos + QPoint(radius + 5, -radius - 5);  // Offset from sphere
+        
+        // Choose colors based on selection
+        QColor bgColor = (wp.id == m_selectedWaypoint) ? QColor(51, 153, 255) : QColor(51, 204, 51);
+        QColor textColor = Qt::white;
+        
+        // Draw circle background
+        painter.setBrush(bgColor);
+        painter.setPen(QPen(Qt::white, 2));
+        painter.drawEllipse(labelPos, radius, radius);
+        
+        // Draw label text
+        painter.setPen(textColor);
+        QRect textRect(labelPos.x() - radius, labelPos.y() - radius, radius * 2, radius * 2);
+        painter.drawText(textRect, Qt::AlignCenter, label);
+    }
 }
 
 void PathPlannerOpenGLWidget::updateProjection()
@@ -218,23 +314,74 @@ void PathPlannerOpenGLWidget::drawGrid()
     }
 }
 
+// Helper function to generate cylinder vertices for thick axis lines
+static void generateCylinderVertices(const QVector3D &start, const QVector3D &end, float radius, 
+                                      const QVector3D &color, QVector<float> &vertices, QVector<float> &colors)
+{
+    const int segments = 8;
+    QVector3D dir = (end - start).normalized();
+    
+    // Find perpendicular vectors
+    QVector3D perp1 = QVector3D::crossProduct(dir, QVector3D(0, 1, 0));
+    if (perp1.length() < 0.001f)
+        perp1 = QVector3D::crossProduct(dir, QVector3D(1, 0, 0));
+    perp1.normalize();
+    QVector3D perp2 = QVector3D::crossProduct(dir, perp1).normalized();
+    
+    // Generate triangles for the cylinder
+    for (int i = 0; i < segments; ++i)
+    {
+        float angle1 = (2.0f * M_PI * i) / segments;
+        float angle2 = (2.0f * M_PI * (i + 1)) / segments;
+        
+        QVector3D offset1 = (perp1 * cos(angle1) + perp2 * sin(angle1)) * radius;
+        QVector3D offset2 = (perp1 * cos(angle2) + perp2 * sin(angle2)) * radius;
+        
+        QVector3D p1 = start + offset1;
+        QVector3D p2 = start + offset2;
+        QVector3D p3 = end + offset1;
+        QVector3D p4 = end + offset2;
+        
+        // Triangle 1
+        vertices << p1.x() << p1.y() << p1.z();
+        vertices << p2.x() << p2.y() << p2.z();
+        vertices << p3.x() << p3.y() << p3.z();
+        colors << color.x() << color.y() << color.z();
+        colors << color.x() << color.y() << color.z();
+        colors << color.x() << color.y() << color.z();
+        
+        // Triangle 2
+        vertices << p2.x() << p2.y() << p2.z();
+        vertices << p4.x() << p4.y() << p4.z();
+        vertices << p3.x() << p3.y() << p3.z();
+        colors << color.x() << color.y() << color.z();
+        colors << color.x() << color.y() << color.z();
+        colors << color.x() << color.y() << color.z();
+    }
+}
+
 void PathPlannerOpenGLWidget::drawAxes()
 {
-    QVector<float> axesVertices = {
-        // X axis (red)
-        0.0f, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f,
-        // Y axis (green)
-        0.0f, 0.0f, 0.0f, 0.0f, 2.0f, 0.0f,
-        // Z axis (blue)
-        0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 2.0f};
+    QVector<float> axesVertices;
+    QVector<float> axesColors;
+    
+    float axisLength = 2.0f;
+    float axisRadius = 0.05f;
+    
+    // X axis (red) - cylinder from origin to (axisLength, 0, 0)
+    generateCylinderVertices(QVector3D(0, 0, 0), QVector3D(axisLength, 0, 0), axisRadius,
+                             QVector3D(1.0f, 0.0f, 0.0f), axesVertices, axesColors);
+    
+    // Y axis (green) - cylinder from origin to (0, axisLength, 0)
+    generateCylinderVertices(QVector3D(0, 0, 0), QVector3D(0, axisLength, 0), axisRadius,
+                             QVector3D(0.0f, 1.0f, 0.0f), axesVertices, axesColors);
+    
+    // Z axis (blue) - cylinder from origin to (0, 0, axisLength)
+    generateCylinderVertices(QVector3D(0, 0, 0), QVector3D(0, 0, axisLength), axisRadius,
+                             QVector3D(0.0f, 0.0f, 1.0f), axesVertices, axesColors);
 
-    QVector<float> axesColors = {
-        // X axis (red)
-        1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
-        // Y axis (green)
-        0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f,
-        // Z axis (blue)
-        0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    if (axesVertices.isEmpty())
+        return;
 
     m_vao.bind();
     m_vertexBuffer.bind();
@@ -249,13 +396,69 @@ void PathPlannerOpenGLWidget::drawAxes()
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
     glEnableVertexAttribArray(1);
 
-    glLineWidth(3.0f);
-    glDrawArrays(GL_LINES, 0, 6);
-    glLineWidth(1.0f);
+    glDrawArrays(GL_TRIANGLES, 0, axesVertices.size() / 3);
 
     colorBuffer.release();
     m_vertexBuffer.release();
     m_vao.release();
+}
+
+// Helper function to generate sphere vertices for waypoint balls
+static void generateSphereVertices(const QVector3D &center, float radius,
+                                    const QVector3D &color, QVector<float> &vertices, QVector<float> &colors)
+{
+    const int latSegments = 12;
+    const int lonSegments = 16;
+    
+    for (int lat = 0; lat < latSegments; ++lat)
+    {
+        float theta1 = (M_PI * lat) / latSegments;
+        float theta2 = (M_PI * (lat + 1)) / latSegments;
+        
+        for (int lon = 0; lon < lonSegments; ++lon)
+        {
+            float phi1 = (2.0f * M_PI * lon) / lonSegments;
+            float phi2 = (2.0f * M_PI * (lon + 1)) / lonSegments;
+            
+            // Four corners of the quad
+            QVector3D p1(
+                center.x() + radius * sin(theta1) * cos(phi1),
+                center.y() + radius * cos(theta1),
+                center.z() + radius * sin(theta1) * sin(phi1)
+            );
+            QVector3D p2(
+                center.x() + radius * sin(theta1) * cos(phi2),
+                center.y() + radius * cos(theta1),
+                center.z() + radius * sin(theta1) * sin(phi2)
+            );
+            QVector3D p3(
+                center.x() + radius * sin(theta2) * cos(phi1),
+                center.y() + radius * cos(theta2),
+                center.z() + radius * sin(theta2) * sin(phi1)
+            );
+            QVector3D p4(
+                center.x() + radius * sin(theta2) * cos(phi2),
+                center.y() + radius * cos(theta2),
+                center.z() + radius * sin(theta2) * sin(phi2)
+            );
+            
+            // Triangle 1
+            vertices << p1.x() << p1.y() << p1.z();
+            vertices << p3.x() << p3.y() << p3.z();
+            vertices << p2.x() << p2.y() << p2.z();
+            colors << color.x() << color.y() << color.z();
+            colors << color.x() << color.y() << color.z();
+            colors << color.x() << color.y() << color.z();
+            
+            // Triangle 2
+            vertices << p2.x() << p2.y() << p2.z();
+            vertices << p3.x() << p3.y() << p3.z();
+            vertices << p4.x() << p4.y() << p4.z();
+            colors << color.x() << color.y() << color.z();
+            colors << color.x() << color.y() << color.z();
+            colors << color.x() << color.y() << color.z();
+        }
+    }
 }
 
 void PathPlannerOpenGLWidget::drawWaypoints()
@@ -265,21 +468,29 @@ void PathPlannerOpenGLWidget::drawWaypoints()
 
     QVector<float> waypointVertices;
     QVector<float> waypointColors;
+    
+    float sphereRadius = 0.2f;  // Radius of the waypoint balls
 
     for (size_t i = 0; i < m_waypoints.size(); ++i)
     {
         const Waypoint &wp = m_waypoints[i];
-        waypointVertices << wp.x << wp.y << wp.z;
+        QVector3D center(wp.x, wp.y, wp.z);
+        QVector3D color;
 
         if (wp.id == m_selectedWaypoint)
         {
-            waypointColors << 0.2f << 0.6f << 1.0f; // Blue for selected
+            color = QVector3D(0.2f, 0.6f, 1.0f); // Blue for selected
         }
         else
         {
-            waypointColors << 0.2f << 0.8f << 0.2f; // Green for normal
+            color = QVector3D(0.2f, 0.8f, 0.2f); // Green for normal
         }
+        
+        generateSphereVertices(center, sphereRadius, color, waypointVertices, waypointColors);
     }
+
+    if (waypointVertices.isEmpty())
+        return;
 
     m_vao.bind();
     m_vertexBuffer.bind();
@@ -294,8 +505,7 @@ void PathPlannerOpenGLWidget::drawWaypoints()
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
     glEnableVertexAttribArray(1);
 
-    glPointSize(12.0f);
-    glDrawArrays(GL_POINTS, 0, m_waypoints.size());
+    glDrawArrays(GL_TRIANGLES, 0, waypointVertices.size() / 3);
 
     colorBuffer.release();
     m_vertexBuffer.release();
@@ -594,7 +804,7 @@ void PathPlannerOpenGLWidget::resetCamera()
 
 // PathPlannerWidget Implementation
 PathPlannerWidget::PathPlannerWidget(QWidget *parent)
-    : QWidget(parent), ui(nullptr), m_mainLayout(nullptr), m_controlsLayout(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_pathGroup(nullptr), m_viewGroup(nullptr), m_settingsGroup(nullptr), m_waypointTable(nullptr), m_selectedWaypoint(-1), m_currentAnimationWaypoint(0), m_animationProgress(0.0f), m_isPlayingPath(false)
+    : QWidget(parent), ui(nullptr), m_mainLayout(nullptr), m_controlsLayout(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_pathGroup(nullptr), m_pathOrderGroup(nullptr), m_viewGroup(nullptr), m_settingsGroup(nullptr), m_waypointTable(nullptr), m_selectedWaypoint(-1), m_currentAnimationWaypoint(0), m_animationProgress(0.0f), m_isPlayingPath(false)
 {
     setupUI();
 
@@ -693,6 +903,29 @@ void PathPlannerWidget::setupControls()
 
     pathLayout->addLayout(pathButtonsLayout);
 
+    // Path Order group (visible only when 2+ waypoints exist)
+    m_pathOrderGroup = new QGroupBox("Path Order");
+    m_pathOrderGroup->setStyleSheet(
+        "QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } "
+        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }");
+    m_controlsLayout->addWidget(m_pathOrderGroup);
+    m_pathOrderGroup->setVisible(false);  // Hidden initially
+
+    QVBoxLayout *pathOrderLayout = new QVBoxLayout(m_pathOrderGroup);
+
+    m_sequentialOrderButton = new QPushButton("Sequential Order");
+    m_sequentialOrderButton->setToolTip("Visit waypoints in the order they were placed");
+    pathOrderLayout->addWidget(m_sequentialOrderButton);
+
+    m_customOrderButton = new QPushButton("Custom Order...");
+    m_customOrderButton->setToolTip("Choose a custom order to visit waypoints");
+    pathOrderLayout->addWidget(m_customOrderButton);
+
+    m_undoReorderButton = new QPushButton("Undo Reorder");
+    m_undoReorderButton->setToolTip("Restore the previous waypoint order");
+    m_undoReorderButton->setEnabled(false);
+    pathOrderLayout->addWidget(m_undoReorderButton);
+
     // View group
     m_viewGroup = new QGroupBox("View");
     m_viewGroup->setStyleSheet(
@@ -752,13 +985,18 @@ void PathPlannerWidget::setupControls()
     connect(m_defaultAltitudeSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this](double value)
             { m_openglWidget->setDefaultAltitude(static_cast<float>(value)); });
+
+    // Path order connections
+    connect(m_sequentialOrderButton, &QPushButton::clicked, this, &PathPlannerWidget::onSequentialOrder);
+    connect(m_customOrderButton, &QPushButton::clicked, this, &PathPlannerWidget::onCustomOrder);
+    connect(m_undoReorderButton, &QPushButton::clicked, this, &PathPlannerWidget::onUndoReorder);
 }
 
 void PathPlannerWidget::setupWaypointTable()
 {
     m_waypointTable = new QTableWidget;
     m_waypointTable->setColumnCount(7);
-    m_waypointTable->setHorizontalHeaderLabels({"ID", "X", "Y", "Z", "Yaw", "Speed", "Hold"});
+    m_waypointTable->setHorizontalHeaderLabels({"Order", "X", "Y", "Z", "Yaw", "Speed", "Hold"});
     m_waypointTable->setMaximumHeight(200);
     m_waypointTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_waypointTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -943,7 +1181,7 @@ void PathPlannerWidget::onWaypointSelected(int id)
     for (int row = 0; row < m_waypointTable->rowCount(); ++row)
     {
         QTableWidgetItem *idItem = m_waypointTable->item(row, 0);
-        if (idItem && idItem->text().toInt() == id)
+        if (idItem && idItem->data(Qt::UserRole).toInt() == id)
         {
             m_waypointTable->selectRow(row);
             break;
@@ -953,7 +1191,7 @@ void PathPlannerWidget::onWaypointSelected(int id)
 
 void PathPlannerWidget::onWaypointCellChanged(int row, int column)
 {
-    // Ignore ID column changes
+    // Ignore Order column changes
     if (column == 0 || row < 0 || row >= m_waypointTable->rowCount())
         return;
 
@@ -961,7 +1199,7 @@ void PathPlannerWidget::onWaypointCellChanged(int row, int column)
     if (!idItem)
         return;
 
-    int id = idItem->text().toInt();
+    int id = idItem->data(Qt::UserRole).toInt();
 
     // Find the waypoint and update it
     const auto &waypoints = m_openglWidget->waypoints();
@@ -1098,9 +1336,11 @@ void PathPlannerWidget::updateWaypointTable()
         {
             const Waypoint &wp = waypoints[i];
 
-            // ID (read-only)
-            QTableWidgetItem *idItem = new QTableWidgetItem(QString::number(wp.id));
+            // Label as letter (read-only) - shows visit order number and waypoint letter
+            QString label = QString("%1. %2").arg(i + 1).arg(idToLetter(wp.id));
+            QTableWidgetItem *idItem = new QTableWidgetItem(label);
             idItem->setFlags(idItem->flags() & ~Qt::ItemIsEditable);
+            idItem->setData(Qt::UserRole, wp.id);  // Store actual ID for reference
             m_waypointTable->setItem(i, 0, idItem);
 
             // Position and parameters (editable)
@@ -1135,6 +1375,8 @@ void PathPlannerWidget::updateWaypointTable()
 
     if (m_removeWaypointButton)
         m_removeWaypointButton->setEnabled(m_selectedWaypoint >= 0);
+
+    updatePathOrderVisibility();
 }
 
 void PathPlannerWidget::startPathAnimation()
@@ -1280,4 +1522,149 @@ bool PathPlannerWidget::loadFromJson(const QString &path)
     }
 
     return true;
+}
+
+void PathPlannerWidget::updatePathOrderVisibility()
+{
+    if (m_pathOrderGroup)
+    {
+        bool hasEnoughWaypoints = m_openglWidget->waypoints().size() >= 2;
+        m_pathOrderGroup->setVisible(hasEnoughWaypoints);
+    }
+}
+
+void PathPlannerWidget::onSequentialOrder()
+{
+    const auto &waypoints = m_openglWidget->waypoints();
+    if (waypoints.size() < 2)
+        return;
+
+    // Save current order for undo
+    m_previousWaypointOrder = waypoints;
+    m_undoReorderButton->setEnabled(true);
+
+    // Sort waypoints by their original ID (placement order: A, B, C, ...)
+    // IDs stay the same - only the array position changes
+    std::vector<Waypoint> sorted = waypoints;
+    std::sort(sorted.begin(), sorted.end(), [](const Waypoint &a, const Waypoint &b) {
+        return a.id < b.id;
+    });
+
+    m_openglWidget->setWaypoints(sorted);
+    updateWaypointTable();
+    emitWaypointsChanged();
+}
+
+void PathPlannerWidget::onCustomOrder()
+{
+    const auto &waypoints = m_openglWidget->waypoints();
+    if (waypoints.size() < 2)
+        return;
+
+    // Save current order for undo
+    m_previousWaypointOrder = waypoints;
+
+    // Create dialog for custom ordering
+    QDialog dialog(this);
+    dialog.setWindowTitle("Custom Path Order");
+    dialog.setMinimumWidth(350);
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+
+    QLabel *instructions = new QLabel("Drag items to set the visit order.\nWaypoint labels (A, B, C...) stay fixed.\nThe drone will visit waypoints in this order:");
+    layout->addWidget(instructions);
+
+    QListWidget *listWidget = new QListWidget;
+    listWidget->setDragDropMode(QAbstractItemView::InternalMove);
+    for (const auto &wp : waypoints)
+    {
+        QString text = QString("Waypoint %1 (%.1f, %.1f, %.1f)")
+                           .arg(idToLetter(wp.id))
+                           .arg(wp.x)
+                           .arg(wp.y)
+                           .arg(wp.z);
+        QListWidgetItem *item = new QListWidgetItem(text);
+        item->setData(Qt::UserRole, wp.id);
+        listWidget->addItem(item);
+    }
+    layout->addWidget(listWidget);
+
+    // Up/Down buttons
+    QHBoxLayout *buttonLayout = new QHBoxLayout;
+    QPushButton *upButton = new QPushButton("Move Up");
+    QPushButton *downButton = new QPushButton("Move Down");
+    buttonLayout->addWidget(upButton);
+    buttonLayout->addWidget(downButton);
+    layout->addLayout(buttonLayout);
+
+    connect(upButton, &QPushButton::clicked, [listWidget]() {
+        int row = listWidget->currentRow();
+        if (row > 0)
+        {
+            QListWidgetItem *item = listWidget->takeItem(row);
+            listWidget->insertItem(row - 1, item);
+            listWidget->setCurrentRow(row - 1);
+        }
+    });
+
+    connect(downButton, &QPushButton::clicked, [listWidget]() {
+        int row = listWidget->currentRow();
+        if (row >= 0 && row < listWidget->count() - 1)
+        {
+            QListWidgetItem *item = listWidget->takeItem(row);
+            listWidget->insertItem(row + 1, item);
+            listWidget->setCurrentRow(row + 1);
+        }
+    });
+
+    // OK/Cancel buttons
+    QHBoxLayout *dialogButtons = new QHBoxLayout;
+    QPushButton *okButton = new QPushButton("Apply");
+    QPushButton *cancelButton = new QPushButton("Cancel");
+    dialogButtons->addStretch();
+    dialogButtons->addWidget(okButton);
+    dialogButtons->addWidget(cancelButton);
+    layout->addLayout(dialogButtons);
+
+    connect(okButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+    connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+
+    if (dialog.exec() == QDialog::Accepted)
+    {
+        // Build new waypoint order based on list widget order
+        // IDs stay the same - only the array position changes
+        std::vector<Waypoint> newOrder;
+        for (int i = 0; i < listWidget->count(); ++i)
+        {
+            int originalId = listWidget->item(i)->data(Qt::UserRole).toInt();
+            // Find the waypoint with this ID
+            for (const auto &wp : waypoints)
+            {
+                if (wp.id == originalId)
+                {
+                    // Keep the waypoint exactly as is - ID doesn't change
+                    newOrder.push_back(wp);
+                    break;
+                }
+            }
+        }
+
+        m_openglWidget->setWaypoints(newOrder);
+        updateWaypointTable();
+        emitWaypointsChanged();
+        m_undoReorderButton->setEnabled(true);
+    }
+}
+
+void PathPlannerWidget::onUndoReorder()
+{
+    if (m_previousWaypointOrder.empty())
+        return;
+
+    m_openglWidget->setWaypoints(m_previousWaypointOrder);
+    updateWaypointTable();
+    emitWaypointsChanged();
+
+    m_previousWaypointOrder.clear();
+    m_undoReorderButton->setEnabled(false);
 }

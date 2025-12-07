@@ -25,6 +25,8 @@
 #include <QTimer>
 #include <QMouseEvent>
 #include <QWheelEvent>
+#include <QPaintEvent>
+#include <QDialog>
 #include <vector>
 #include "waypoint.h"
 
@@ -74,6 +76,7 @@ protected:
     void initializeGL() override;
     void paintGL() override;
     void resizeGL(int width, int height) override;
+    void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
@@ -85,9 +88,11 @@ private:
     void drawWaypoints();
     void drawPath();
     void drawAxes();
+    void drawWaypointLabels(QPainter &painter);
     void updateCamera();
     void updateProjection();
     QVector3D screenToWorld(const QPoint &screenPos, float depth = 0.0f);
+    QPoint worldToScreen(const QVector3D &worldPos);
     int findWaypointAt(const QPoint &screenPos);
     
     // OpenGL resources
@@ -167,6 +172,9 @@ private slots:
     void onGridSizeChanged(int size);
     void onCoordinateSystemChanged(const QString &system);
     void onViewModeChanged();
+    void onSequentialOrder();
+    void onCustomOrder();
+    void onUndoReorder();
 
 private:
     void setupUI();
@@ -176,6 +184,7 @@ private:
     void startPathAnimation();
     void stopPathAnimation();
     void emitWaypointsChanged();
+    void updatePathOrderVisibility();
     
     Ui::PathPlannerWidget *ui;
     
@@ -189,6 +198,7 @@ private:
     // Control panels
     QGroupBox *m_waypointGroup;
     QGroupBox *m_pathGroup;
+    QGroupBox *m_pathOrderGroup;
     QGroupBox *m_viewGroup;
     QGroupBox *m_settingsGroup;
     
@@ -206,6 +216,12 @@ private:
     QPushButton *m_stopPathButton;
     QLineEdit *m_pathNameEdit;
     QLabel *m_pathLengthLabel;
+    
+    // Path order controls
+    QPushButton *m_sequentialOrderButton;
+    QPushButton *m_customOrderButton;
+    QPushButton *m_undoReorderButton;
+    std::vector<Waypoint> m_previousWaypointOrder;
     
     // View controls
     QPushButton *m_resetCameraButton;

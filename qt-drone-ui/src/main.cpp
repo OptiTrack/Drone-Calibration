@@ -4,9 +4,20 @@
 #include <QTranslator>
 #include <QStyleFactory>
 #include <QDir>
+#include <QSurfaceFormat>
 
 int main(int argc, char *argv[])
 {
+    // Set OpenGL format BEFORE creating QApplication
+    // This is required on macOS to get OpenGL 3.3+ core profile
+    QSurfaceFormat format;
+    format.setVersion(3, 3);
+    format.setProfile(QSurfaceFormat::CoreProfile);
+    format.setDepthBufferSize(24);
+    format.setStencilBufferSize(8);
+    format.setSamples(4); // Enable multisampling for smoother lines
+    QSurfaceFormat::setDefaultFormat(format);
+    
     QApplication app(argc, argv);
     
     // Set application properties
