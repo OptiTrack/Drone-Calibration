@@ -2,11 +2,16 @@
 #include <QApplication>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QInputDialog>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QStandardPaths>
 #include <QListWidgetItem>
+#include <QCoreApplication>
+#include <QDir>
+#include <QDateTime>
+#include <QRegularExpression>
 #include <QtMath>
 
 // Vertex shader source
@@ -824,26 +829,88 @@ void PathPlannerWidget::onClearPath()
 
 void PathPlannerWidget::onSavePath()
 {
-    QString fileName = QFileDialog::getSaveFileName(this,
-                                                    "Save Path",
-                                                    QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
-                                                    "JSON Files (*.json)");
-
-    if (!fileName.isEmpty())
+    // Check if there are any waypoints to save
+    if (m_openglWidget->waypoints().empty())
     {
-        if (!fileName.endsWith(".json", Qt::CaseInsensitive))
+        QMessageBox::warning(this, "Save Path", "No waypoints to save. Please add at least one waypoint.");
+        return;
+    }
+
+    // Get path name from the path name edit field or prompt for one
+    QString pathName = m_pathNameEdit->text().trimmed();
+    if (pathName.isEmpty() || pathName == "New Path")
+    {
+        bool ok;
+        pathName = QInputDialog::getText(this, "Save Path",
+                                         "Enter path name:",
+                                         QLineEdit::Normal,
+                                         "Flight Path",
+                                         &ok);
+        if (!ok || pathName.trimmed().isEmpty())
         {
-            fileName += ".json";
+            return; // User cancelled
+        }
+        pathName = pathName.trimmed();
+    }
+
+    // Get the paths folder - use SOURCE_DIR defined by CMake at compile time
+    QString appDir = QCoreApplication::applicationDirPath();
+    QString pathsDir;
+    QDir dir;
+    
+    // First priority: Use the source directory paths folder (for development)
+#ifdef SOURCE_DIR
+    pathsDir = QString(SOURCE_DIR) + "/paths";
+    dir.setPath(pathsDir);
+    if (dir.exists()) {
+        // Use source paths directory
+    } else {
+        // Create it if it doesn't exist
+        dir.mkpath(pathsDir);
+    }
+#else
+    // Fallback: paths folder next to the executable (for distribution)
+    pathsDir = appDir + "/paths";
+    dir.setPath(pathsDir);
+    if (!dir.exists()) {
+        dir.mkpath(pathsDir);
+    }
+#endif
+
+    // Generate a filename from the path name (sanitize for filesystem)
+    QString sanitizedName = pathName;
+    sanitizedName.replace(QRegularExpression("[^a-zA-Z0-9_\\-\\s]"), "");
+    sanitizedName.replace(" ", "_");
+    if (sanitizedName.isEmpty())
+    {
+        sanitizedName = "path";
+    }
+
+    // Add timestamp to make filename unique
+    QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+    QString fileName = dir.absoluteFilePath(sanitizedName + "_" + timestamp + ".json");
+
+    if (saveToJson(fileName))
+    {
+        // Update the path name edit field
+        m_pathNameEdit->setText(pathName);
+
+        // Convert waypoints to QVector<QVector3D> for the signal
+        QVector<QVector3D> points;
+        for (const auto &wp : m_openglWidget->waypoints())
+        {
+            points.append(QVector3D(wp.x, wp.y, wp.z));
         }
 
-        if (saveToJson(fileName))
-        {
-            QMessageBox::information(this, "Save Path", "Path saved successfully!");
-        }
-        else
-        {
-            QMessageBox::warning(this, "Save Path", "Failed to save path.");
-        }
+        // Emit signal so Flight History can update
+        emit pathSaved(pathName, points);
+
+        QMessageBox::information(this, "Save Path", 
+                                QString("Path '%1' saved successfully to:\n%2").arg(pathName).arg(fileName));
+    }
+    else
+    {
+        QMessageBox::warning(this, "Save Path", "Failed to save path.");
     }
 }
 

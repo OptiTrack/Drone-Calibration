@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.20)
 
 project(QtDroneUI VERSION 1.0 LANGUAGES CXX)
 
+# Set default build type if not specified
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Choose the type of build." FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
+endif()
+
 # Generate compile_commands.json for IDE support
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -42,6 +48,7 @@ find_package(OpenGL REQUIRED)
 # Header files
 set(HEADERS
     src/mainwindow.h
+    src/widgets/dashboardwidget.h
     src/widgets/camerafeedwidget.h
     src/widgets/pathplannerwidget.h
     src/widgets/recordedpathswidget.h
@@ -59,6 +66,7 @@ set(HEADERS
 set(SOURCES
     src/main.cpp
     src/mainwindow.cpp
+    src/widgets/dashboardwidget.cpp
     src/widgets/camerafeedwidget.cpp
     src/widgets/pathplannerwidget.cpp
     src/widgets/recordedpathswidget.cpp
@@ -111,6 +119,11 @@ set_target_properties(QtDroneUI PROPERTIES
 
 # Include directories
 target_include_directories(QtDroneUI PRIVATE src)
+
+# Define the source directory path for finding the paths folder during development
+target_compile_definitions(QtDroneUI PRIVATE 
+    SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     qt_finalize_executable(QtDroneUI)

@@ -12,6 +12,7 @@
 #include <QFrame>
 
 // Forward declarations
+class DashboardWidget;
 class CameraFeedWidget;
 class PathPlannerWidget;
 class RecordedPathsWidget;
@@ -62,6 +63,7 @@ private:
     QSplitter *m_mainSplitter;
     
     // Widget pages
+    DashboardWidget *m_dashboardWidget;
     CameraFeedWidget *m_cameraFeedWidget;
     PathPlannerWidget *m_pathPlannerWidget;
     RecordedPathsWidget *m_recordedPathsWidget;

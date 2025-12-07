@@ -20,6 +20,7 @@ struct FlightPath {
     QVector<QVector3D> points;
     qint64 createdAt;
     QString description;
+    QString filePath;  // Full path to the JSON file on disk
     
     QJsonObject toJson() const;
     static FlightPath fromJson(const QJsonObject &json);
@@ -61,8 +62,11 @@ private:
     void clearPathDetails();
     FlightPath* getSelectedPath();
     QString generatePathId();
+    QString getPathsDirectory();
+    FlightPath loadPathFromFile(const QString &filePath);
     
     Ui::RecordedPathsWidget *ui;
+    QString m_pathsDirectory;
     
     // UI Components
     QVBoxLayout *m_mainLayout;
