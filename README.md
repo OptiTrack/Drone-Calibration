@@ -21,6 +21,13 @@ Program to use a drone calibrate Optitrack camera system. The project defines a 
 <img width="700" height="486" alt="Untitled" src="https://github.com/user-attachments/assets/b24bca2b-953a-434b-84da-572385f3b002" />
 
 
+<!-- OUR TEAM -->
+# Our Team
+Cohen Velazquez --> velazquc@oregonstate.edu
+<br>Parthiv Nair --> nairp@oregonstate.edu
+<br>Bryan Chen --> chenbry@oregonstate.edu
+<br>Andrew Nolke --> nolkea@oregonstate.edu
+
 
 <!-- GETTING STARTED -->
 # Getting Started
@@ -53,9 +60,10 @@ _Below is an example of how you can instruct your audience on installing and set
 
 <!-- LICENSE -->
 # License
+All non-third party code included in this repository is jointly owned by the team mentioned above and NaturalPoint Inc. DBA OptiTrack.
 
-Distributed under the ___ License. 
 See `LICENSE.txt` in the "licenses" folder for more information.
+
 Third party licenses can also be found in the "licenses" folder named accordingly.
 
 
