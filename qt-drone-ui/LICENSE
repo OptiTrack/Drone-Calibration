@@ -1,0 +1,28 @@
+# License Information
+
+This project uses the **[Qt](https://www.qt.io/)** framework under open source licenses.
+
+## Qt Licensing
+
+Qt is being used under the following open source license:
+
+### [GNU Lesser General Public License v3.0 (LGPLv3)](https://www.gnu.org/licenses/lgpl-3.0.html)
+
+This is the more permissive license and allows dynamic linking without requiring your entire codebase to be open source.
+
+Key points:
+- You may dynamically link against Qt without releasing your source code.
+- If you modify Qt itself, those changes must be open source under LGPL.
+- You must still provide attribution and preserve license notices.
+
+## Licensing Notes
+
+By using the Qt framework in this project, you agree to comply with the license terms above.
+
+If you require a more permissive license or wish to statically link Qt in proprietary software, please consider obtaining a **commercial Qt license** from **The Qt Company**.
+
+### Additional Resources
+
+- [Qt Licensing Overview](https://www.qt.io/licensing)
+- [Qt License Documentation](https://doc.qt.io/qt-6/licensing.html)
+- [LGPLv3 License Text](https://www.gnu.org/licenses/lgpl-3.0.txt)
