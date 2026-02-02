@@ -1,0 +1,457 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>DroneStatusWidget</class>
+ <widget class="QWidget" name="DroneStatusWidget">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>900</width>
+    <height>700</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Drone Status</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <property name="spacing">
+    <number>10</number>
+   </property>
+   <property name="leftMargin">
+    <number>10</number>
+   </property>
+   <property name="topMargin">
+    <number>10</number>
+   </property>
+   <property name="rightMargin">
+    <number>10</number>
+   </property>
+   <property name="bottomMargin">
+    <number>10</number>
+   </property>
+   <item>
+    <layout class="QHBoxLayout" name="topLayout">
+     <property name="spacing">
+      <number>10</number>
+     </property>
+     <item>
+      <layout class="QVBoxLayout" name="leftLayout">
+       <property name="spacing">
+        <number>10</number>
+       </property>
+       <item>
+        <widget class="QGroupBox" name="batteryGroup">
+         <property name="styleSheet">
+          <string notr="true">QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } 
+QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }</string>
+         </property>
+         <property name="title">
+          <string>Battery Status</string>
+         </property>
+         <layout class="QVBoxLayout" name="batteryLayout">
+          <item>
+           <widget class="QLabel" name="batteryPercentageLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { font-size: 16px; font-weight: bold; color: white; }</string>
+            </property>
+            <property name="text">
+             <string>Battery: 0%</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QProgressBar" name="batteryProgressBar">
+            <property name="styleSheet">
+             <string notr="true">QProgressBar { border: 1px solid #4b5563; border-radius: 4px; text-align: center; } 
+QProgressBar::chunk { background-color: #10b981; border-radius: 3px; }</string>
+            </property>
+            <property name="value">
+             <number>0</number>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="batteryVoltageLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>Voltage: 0.0V</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="batteryStatusLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>Status: Unknown</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="flightGroup">
+         <property name="styleSheet">
+          <string notr="true">QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } 
+QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }</string>
+         </property>
+         <property name="title">
+          <string>Flight Status</string>
+         </property>
+         <layout class="QVBoxLayout" name="flightLayout">
+          <item>
+           <widget class="QLabel" name="connectionStatusLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>Connection: Disconnected</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="flightModeLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: white; font-weight: bold; }</string>
+            </property>
+            <property name="text">
+             <string>Mode: UNKNOWN</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="armedStatusLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>Armed: No</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="gpsStatusLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>GPS: No Lock</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="altitudeLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>Altitude: 0.0 m</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="groundSpeedLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>Ground Speed: 0.0 m/s</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="verticalSpeedLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>Vertical Speed: 0.0 m/s</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="systemStatusLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>System: STANDBY</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="positionGroup">
+         <property name="styleSheet">
+          <string notr="true">QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } 
+QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }</string>
+         </property>
+         <property name="title">
+          <string>Position &amp; Attitude</string>
+         </property>
+         <layout class="QGridLayout" name="positionLayout">
+          <item row="0" column="0">
+           <widget class="QLabel" name="latitudeLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>Latitude: 0.0°</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="longitudeLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>Longitude: 0.0°</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="altitudeAbsLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>Alt (MSL): 0.0 m</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLabel" name="rollLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>Roll: 0.0°</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLabel" name="pitchLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>Pitch: 0.0°</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QLabel" name="yawLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>Yaw: 0.0°</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <spacer name="leftVerticalSpacer">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>40</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <layout class="QVBoxLayout" name="rightLayout">
+       <property name="spacing">
+        <number>10</number>
+       </property>
+       <item>
+        <widget class="QGroupBox" name="controlsGroup">
+         <property name="styleSheet">
+          <string notr="true">QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } 
+QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }</string>
+         </property>
+         <property name="title">
+          <string>Flight Controls</string>
+         </property>
+         <layout class="QVBoxLayout" name="controlsLayout">
+          <item>
+           <widget class="QLabel" name="flightModeSelectLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: white; }</string>
+            </property>
+            <property name="text">
+             <string>Flight Mode:</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QComboBox" name="flightModeCombo">
+            <property name="styleSheet">
+             <string notr="true">QComboBox { background-color: #1f2937; color: white; border: 1px solid #4b5563; padding: 5px; }
+QComboBox::drop-down { border: none; }
+QComboBox::down-arrow { image: none; }</string>
+            </property>
+            <item>
+             <property name="text">
+              <string>STABILIZE</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>ALT_HOLD</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>LOITER</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>AUTO</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>GUIDED</string>
+             </property>
+            </item>
+            <item>
+             <property name="text">
+              <string>RTL</string>
+             </property>
+            </item>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="armDisarmButton">
+            <property name="styleSheet">
+             <string notr="true">QPushButton { background-color: #059669; color: white; border: none; padding: 8px; border-radius: 4px; font-weight: bold; } 
+QPushButton:hover { background-color: #047857; }
+QPushButton:disabled { background-color: #374151; }</string>
+            </property>
+            <property name="text">
+             <string>Arm Drone</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="takeoffButton">
+            <property name="styleSheet">
+             <string notr="true">QPushButton { background-color: #3b82f6; color: white; border: none; padding: 8px; border-radius: 4px; } 
+QPushButton:hover { background-color: #2563eb; }
+QPushButton:disabled { background-color: #374151; }</string>
+            </property>
+            <property name="text">
+             <string>Takeoff</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="landButton">
+            <property name="styleSheet">
+             <string notr="true">QPushButton { background-color: #f59e0b; color: white; border: none; padding: 8px; border-radius: 4px; } 
+QPushButton:hover { background-color: #d97706; }
+QPushButton:disabled { background-color: #374151; }</string>
+            </property>
+            <property name="text">
+             <string>Land</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="rtlButton">
+            <property name="styleSheet">
+             <string notr="true">QPushButton { background-color: #8b5cf6; color: white; border: none; padding: 8px; border-radius: 4px; } 
+QPushButton:hover { background-color: #7c3aed; }
+QPushButton:disabled { background-color: #374151; }</string>
+            </property>
+            <property name="text">
+             <string>Return to Launch</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="emergencyStopButton">
+            <property name="styleSheet">
+             <string notr="true">QPushButton { background-color: #dc2626; color: white; border: none; padding: 10px; border-radius: 4px; font-weight: bold; } 
+QPushButton:hover { background-color: #b91c1c; }
+QPushButton:disabled { background-color: #374151; }</string>
+            </property>
+            <property name="text">
+             <string>EMERGENCY STOP</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <spacer name="rightVerticalSpacer">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>40</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="messagesGroup">
+     <property name="styleSheet">
+      <string notr="true">QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } 
+QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }</string>
+     </property>
+     <property name="title">
+      <string>System Messages</string>
+     </property>
+     <layout class="QVBoxLayout" name="messagesLayout">
+      <item>
+       <widget class="QListWidget" name="messagesList">
+        <property name="styleSheet">
+         <string notr="true">QListWidget { background-color: #1f2937; color: white; border: 1px solid #4b5563; } 
+QListWidget::item { padding: 4px; }</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="clearMessagesButton">
+        <property name="styleSheet">
+         <string notr="true">QPushButton { background-color: #374151; color: white; border: 1px solid #4b5563; padding: 6px; border-radius: 4px; } 
+QPushButton:hover { background-color: #4b5563; }</string>
+        </property>
+        <property name="text">
+         <string>Clear Messages</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

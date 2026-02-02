@@ -80,9 +80,18 @@ set(SOURCES
     src/utils/settings.cpp
 )
 
+# UI files
+set(UI_FILES
+    src/widgets/dashboardwidget.ui
+    src/widgets/dronestatuswidget.ui
+    src/widgets/recordedpathswidget.ui
+    src/widgets/recordedvideoswidget.ui
+)
+
 set(PROJECT_SOURCES
     ${HEADERS}
     ${SOURCES}
+    ${UI_FILES}
 )
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)

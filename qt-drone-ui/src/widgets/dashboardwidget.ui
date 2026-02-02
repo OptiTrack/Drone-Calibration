@@ -1,0 +1,697 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>DashboardWidget</class>
+ <widget class="QWidget" name="DashboardWidget">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>975</width>
+    <height>822</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Dashboard</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <property name="spacing">
+    <number>20</number>
+   </property>
+   <property name="leftMargin">
+    <number>30</number>
+   </property>
+   <property name="topMargin">
+    <number>30</number>
+   </property>
+   <property name="rightMargin">
+    <number>30</number>
+   </property>
+   <property name="bottomMargin">
+    <number>30</number>
+   </property>
+   <item>
+    <widget class="QWidget" name="headerWidget" native="true">
+     <layout class="QVBoxLayout" name="headerLayout">
+      <property name="spacing">
+       <number>8</number>
+      </property>
+      <property name="leftMargin">
+       <number>0</number>
+      </property>
+      <property name="topMargin">
+       <number>0</number>
+      </property>
+      <property name="rightMargin">
+       <number>0</number>
+      </property>
+      <property name="bottomMargin">
+       <number>0</number>
+      </property>
+      <item>
+       <widget class="QLabel" name="welcomeLabel">
+        <property name="styleSheet">
+         <string notr="true">QLabel { 
+   color: #ffffff; 
+   font-size: 28px; 
+   font-weight: bold; 
+   background: transparent; 
+}</string>
+        </property>
+        <property name="text">
+         <string>OptiTrack Drone Control</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="subtitleLabel">
+        <property name="styleSheet">
+         <string notr="true">QLabel { 
+   color: #9ca3af; 
+   font-size: 14px; 
+   background: transparent; 
+}</string>
+        </property>
+        <property name="text">
+         <string>Modal AI Starling 2 Max • Dashboard Overview</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="statusCardsLayout">
+     <property name="spacing">
+      <number>15</number>
+     </property>
+     <item>
+      <widget class="QFrame" name="connectionStatusCard">
+       <property name="minimumSize">
+        <size>
+         <width>0</width>
+         <height>100</height>
+        </size>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">QFrame { 
+   background-color: #1f2937; 
+   border: 1px solid #374151; 
+   border-radius: 8px; 
+   padding: 15px; 
+}</string>
+       </property>
+       <property name="frameShape">
+        <enum>QFrame::Shape::StyledPanel</enum>
+       </property>
+       <layout class="QVBoxLayout" name="connectionCardLayout">
+        <property name="spacing">
+         <number>4</number>
+        </property>
+        <property name="leftMargin">
+         <number>15</number>
+        </property>
+        <property name="topMargin">
+         <number>15</number>
+        </property>
+        <property name="rightMargin">
+         <number>15</number>
+        </property>
+        <property name="bottomMargin">
+         <number>15</number>
+        </property>
+        <item>
+         <widget class="QLabel" name="connectionTitleLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #9ca3af; font-size: 12px; background: transparent; }</string>
+          </property>
+          <property name="text">
+           <string>Connection</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="connectionValueLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #22c55e; font-size: 20px; font-weight: bold; background: transparent; }</string>
+          </property>
+          <property name="text">
+           <string>Online</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="connectionSubtitleLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #6b7280; font-size: 11px; background: transparent; }</string>
+          </property>
+          <property name="text">
+           <string>Drone connected</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <widget class="QFrame" name="batteryStatusCard">
+       <property name="minimumSize">
+        <size>
+         <width>0</width>
+         <height>100</height>
+        </size>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">QFrame { 
+   background-color: #1f2937; 
+   border: 1px solid #374151; 
+   border-radius: 8px; 
+   padding: 15px; 
+}</string>
+       </property>
+       <property name="frameShape">
+        <enum>QFrame::Shape::StyledPanel</enum>
+       </property>
+       <layout class="QVBoxLayout" name="batteryCardLayout">
+        <property name="spacing">
+         <number>4</number>
+        </property>
+        <property name="leftMargin">
+         <number>15</number>
+        </property>
+        <property name="topMargin">
+         <number>15</number>
+        </property>
+        <property name="rightMargin">
+         <number>15</number>
+        </property>
+        <property name="bottomMargin">
+         <number>15</number>
+        </property>
+        <item>
+         <widget class="QLabel" name="batteryTitleLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #9ca3af; font-size: 12px; background: transparent; }</string>
+          </property>
+          <property name="text">
+           <string>Battery</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="batteryValueLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #3b82f6; font-size: 20px; font-weight: bold; background: transparent; }</string>
+          </property>
+          <property name="text">
+           <string>87%</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="batterySubtitleLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #6b7280; font-size: 11px; background: transparent; }</string>
+          </property>
+          <property name="text">
+           <string>Estimated 24 min</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <widget class="QFrame" name="gpsStatusCard">
+       <property name="minimumSize">
+        <size>
+         <width>0</width>
+         <height>100</height>
+        </size>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">QFrame { 
+   background-color: #1f2937; 
+   border: 1px solid #374151; 
+   border-radius: 8px; 
+   padding: 15px; 
+}</string>
+       </property>
+       <property name="frameShape">
+        <enum>QFrame::Shape::StyledPanel</enum>
+       </property>
+       <layout class="QVBoxLayout" name="gpsCardLayout">
+        <property name="spacing">
+         <number>4</number>
+        </property>
+        <property name="leftMargin">
+         <number>15</number>
+        </property>
+        <property name="topMargin">
+         <number>15</number>
+        </property>
+        <property name="rightMargin">
+         <number>15</number>
+        </property>
+        <property name="bottomMargin">
+         <number>15</number>
+        </property>
+        <item>
+         <widget class="QLabel" name="gpsTitleLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #9ca3af; font-size: 12px; background: transparent; }</string>
+          </property>
+          <property name="text">
+           <string>GPS</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="gpsValueLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #22c55e; font-size: 20px; font-weight: bold; background: transparent; }</string>
+          </property>
+          <property name="text">
+           <string>Fixed</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="gpsSubtitleLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #6b7280; font-size: 11px; background: transparent; }</string>
+          </property>
+          <property name="text">
+           <string>12 satellites</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <widget class="QFrame" name="signalStatusCard">
+       <property name="minimumSize">
+        <size>
+         <width>0</width>
+         <height>100</height>
+        </size>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">QFrame { 
+   background-color: #1f2937; 
+   border: 1px solid #374151; 
+   border-radius: 8px; 
+   padding: 15px; 
+}</string>
+       </property>
+       <property name="frameShape">
+        <enum>QFrame::Shape::StyledPanel</enum>
+       </property>
+       <layout class="QVBoxLayout" name="signalCardLayout">
+        <property name="spacing">
+         <number>4</number>
+        </property>
+        <property name="leftMargin">
+         <number>15</number>
+        </property>
+        <property name="topMargin">
+         <number>15</number>
+        </property>
+        <property name="rightMargin">
+         <number>15</number>
+        </property>
+        <property name="bottomMargin">
+         <number>15</number>
+        </property>
+        <item>
+         <widget class="QLabel" name="signalTitleLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #9ca3af; font-size: 12px; background: transparent; }</string>
+          </property>
+          <property name="text">
+           <string>Signal</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="signalValueLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #22c55e; font-size: 20px; font-weight: bold; background: transparent; }</string>
+          </property>
+          <property name="text">
+           <string>Strong</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="signalSubtitleLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #6b7280; font-size: 11px; background: transparent; }</string>
+          </property>
+          <property name="text">
+           <string>-45 dBm</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QLabel" name="actionsLabel">
+     <property name="styleSheet">
+      <string notr="true">QLabel { 
+   color: #ffffff; 
+   font-size: 18px; 
+   font-weight: bold; 
+   background: transparent; 
+   margin-top: 10px; 
+}</string>
+     </property>
+     <property name="text">
+      <string>Quick Actions</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QGridLayout" name="actionCardsLayout">
+     <property name="spacing">
+      <number>15</number>
+     </property>
+     <item row="0" column="0">
+      <widget class="QFrame" name="cameraActionCard">
+       <property name="minimumSize">
+        <size>
+         <width>0</width>
+         <height>140</height>
+        </size>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">QFrame { 
+   background-color: #1f2937; 
+   border: 1px solid #374151; 
+   border-radius: 8px; 
+   padding: 20px; 
+}
+QFrame:hover { 
+   background-color: #374151; 
+   border: 1px solid #4b5563; 
+}</string>
+       </property>
+       <property name="frameShape">
+        <enum>QFrame::Shape::StyledPanel</enum>
+       </property>
+       <layout class="QVBoxLayout" name="cameraCardLayout">
+        <item>
+         <widget class="QLabel" name="cameraCardTitle">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #ffffff; font-size: 16px; font-weight: bold; }</string>
+          </property>
+          <property name="text">
+           <string>Camera Feed</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="cameraCardDescription">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #9ca3af; font-size: 13px; }</string>
+          </property>
+          <property name="text">
+           <string>View live video stream from drone</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <spacer name="cameraCardSpacer">
+          <property name="orientation">
+           <enum>Qt::Orientation::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+        <item>
+         <widget class="QPushButton" name="cameraButton">
+          <property name="styleSheet">
+           <string notr="true">QPushButton { background-color: #3b82f6; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-weight: bold; }
+QPushButton:hover { background-color: #2563eb; }</string>
+          </property>
+          <property name="text">
+           <string>Open Camera</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="QFrame" name="plannerActionCard">
+       <property name="minimumSize">
+        <size>
+         <width>0</width>
+         <height>140</height>
+        </size>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">QFrame { 
+   background-color: #1f2937; 
+   border: 1px solid #374151; 
+   border-radius: 8px; 
+   padding: 20px; 
+}
+QFrame:hover { 
+   background-color: #374151; 
+   border: 1px solid #4b5563; 
+}</string>
+       </property>
+       <property name="frameShape">
+        <enum>QFrame::Shape::StyledPanel</enum>
+       </property>
+       <layout class="QVBoxLayout" name="plannerCardLayout">
+        <item>
+         <widget class="QLabel" name="plannerCardTitle">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #ffffff; font-size: 16px; font-weight: bold; }</string>
+          </property>
+          <property name="text">
+           <string>Flight Planner</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="plannerCardDescription">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #9ca3af; font-size: 13px; }</string>
+          </property>
+          <property name="text">
+           <string>Create and edit waypoint flight paths</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <spacer name="plannerCardSpacer">
+          <property name="orientation">
+           <enum>Qt::Orientation::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+        <item>
+         <widget class="QPushButton" name="plannerButton">
+          <property name="styleSheet">
+           <string notr="true">QPushButton { background-color: #3b82f6; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-weight: bold; }
+QPushButton:hover { background-color: #2563eb; }</string>
+          </property>
+          <property name="text">
+           <string>Plan Flight</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item row="1" column="0">
+      <widget class="QFrame" name="historyActionCard">
+       <property name="minimumSize">
+        <size>
+         <width>0</width>
+         <height>140</height>
+        </size>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">QFrame { 
+   background-color: #1f2937; 
+   border: 1px solid #374151; 
+   border-radius: 8px; 
+   padding: 20px; 
+}
+QFrame:hover { 
+   background-color: #374151; 
+   border: 1px solid #4b5563; 
+}</string>
+       </property>
+       <property name="frameShape">
+        <enum>QFrame::Shape::StyledPanel</enum>
+       </property>
+       <layout class="QVBoxLayout" name="historyCardLayout">
+        <item>
+         <widget class="QLabel" name="historyCardTitle">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #ffffff; font-size: 16px; font-weight: bold; }</string>
+          </property>
+          <property name="text">
+           <string>Flight History</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="historyCardDescription">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #9ca3af; font-size: 13px; }</string>
+          </property>
+          <property name="text">
+           <string>View and manage recorded flight paths</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <spacer name="historyCardSpacer">
+          <property name="orientation">
+           <enum>Qt::Orientation::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+        <item>
+         <widget class="QPushButton" name="historyButton">
+          <property name="styleSheet">
+           <string notr="true">QPushButton { background-color: #3b82f6; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-weight: bold; }
+QPushButton:hover { background-color: #2563eb; }</string>
+          </property>
+          <property name="text">
+           <string>View History</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item row="1" column="1">
+      <widget class="QFrame" name="mediaActionCard">
+       <property name="minimumSize">
+        <size>
+         <width>0</width>
+         <height>140</height>
+        </size>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">QFrame { 
+   background-color: #1f2937; 
+   border: 1px solid #374151; 
+   border-radius: 8px; 
+   padding: 20px; 
+}
+QFrame:hover { 
+   background-color: #374151; 
+   border: 1px solid #4b5563; 
+}</string>
+       </property>
+       <property name="frameShape">
+        <enum>QFrame::Shape::StyledPanel</enum>
+       </property>
+       <layout class="QVBoxLayout" name="mediaCardLayout">
+        <item>
+         <widget class="QLabel" name="mediaCardTitle">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #ffffff; font-size: 16px; font-weight: bold; }</string>
+          </property>
+          <property name="text">
+           <string>Media Library</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="mediaCardDescription">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #9ca3af; font-size: 13px; }</string>
+          </property>
+          <property name="text">
+           <string>Access recorded videos and photos</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <spacer name="mediaCardSpacer">
+          <property name="orientation">
+           <enum>Qt::Orientation::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+        <item>
+         <widget class="QPushButton" name="mediaButton">
+          <property name="styleSheet">
+           <string notr="true">QPushButton { background-color: #3b82f6; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-weight: bold; }
+QPushButton:hover { background-color: #2563eb; }</string>
+          </property>
+          <property name="text">
+           <string>Browse Media</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <spacer name="verticalSpacer">
+     <property name="orientation">
+      <enum>Qt::Orientation::Vertical</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>20</width>
+       <height>40</height>
+      </size>
+     </property>
+    </spacer>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

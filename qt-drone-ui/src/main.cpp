@@ -21,7 +21,7 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     
     // Set application properties
-    app.setApplicationName("Qt Drone UI");
+    app.setApplicationName("CaliDrone UI");
     app.setApplicationVersion("1.0");
     app.setOrganizationName("OptiTrack");
     app.setOrganizationDomain("optitrack.com");

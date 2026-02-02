@@ -56,7 +56,7 @@ private slots:
     void onDuplicatePath();
 
 private:
-    void setupUI();
+    void setupConnections();
     void updatePathList();
     void updatePathDetails();
     void clearPathDetails();
@@ -67,32 +67,6 @@ private:
     
     Ui::RecordedPathsWidget *ui;
     QString m_pathsDirectory;
-    
-    // UI Components
-    QVBoxLayout *m_mainLayout;
-    QHBoxLayout *m_contentLayout;
-    
-    // Path list
-    QGroupBox *m_pathListGroup;
-    QVBoxLayout *m_pathListLayout;
-    QListWidget *m_pathList;
-    QHBoxLayout *m_pathButtonsLayout;
-    QPushButton *m_deleteButton;
-    QPushButton *m_loadButton;
-    QPushButton *m_exportButton;
-    QPushButton *m_importButton;
-    QPushButton *m_duplicateButton;
-    
-    // Path details
-    QGroupBox *m_pathDetailsGroup;
-    QVBoxLayout *m_pathDetailsLayout;
-    QLabel *m_pathNameLabel;
-    QLabel *m_pathCreatedLabel;
-    QLabel *m_pathPointCountLabel;
-    QLabel *m_pathLengthLabel;
-    QTextEdit *m_pathDescriptionEdit;
-    QPushButton *m_editPathButton;
-    QListWidget *m_waypointDetailsList;
     
     // Data
     QVector<FlightPath> m_paths;

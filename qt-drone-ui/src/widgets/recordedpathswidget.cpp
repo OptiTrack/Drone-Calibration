@@ -1,4 +1,5 @@
 #include "recordedpathswidget.h"
+#include "ui_recordedpathswidget.h"
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -62,183 +63,30 @@ FlightPath FlightPath::fromJson(const QJsonObject &json)
 // RecordedPathsWidget implementation
 RecordedPathsWidget::RecordedPathsWidget(QWidget *parent)
     : QWidget(parent)
-    , ui(nullptr)
-    , m_mainLayout(nullptr)
-    , m_contentLayout(nullptr)
-    , m_pathListGroup(nullptr)
-    , m_pathListLayout(nullptr)
-    , m_pathList(nullptr)
-    , m_pathButtonsLayout(nullptr)
-    , m_deleteButton(nullptr)
-    , m_loadButton(nullptr)
-    , m_exportButton(nullptr)
-    , m_importButton(nullptr)
-    , m_duplicateButton(nullptr)
-    , m_pathDetailsGroup(nullptr)
-    , m_pathDetailsLayout(nullptr)
-    , m_pathNameLabel(nullptr)
-    , m_pathCreatedLabel(nullptr)
-    , m_pathPointCountLabel(nullptr)
-    , m_pathLengthLabel(nullptr)
-    , m_pathDescriptionEdit(nullptr)
-    , m_editPathButton(nullptr)
-    , m_waypointDetailsList(nullptr)
+    , ui(new Ui::RecordedPathsWidget)
     , m_selectedPathIndex(-1)
 {
-    setupUI();
+    ui->setupUi(this);
+    setupConnections();
+    clearPathDetails();
     loadPaths();
 }
 
 RecordedPathsWidget::~RecordedPathsWidget()
 {
     savePaths();
+    delete ui;
 }
 
-void RecordedPathsWidget::setupUI()
+void RecordedPathsWidget::setupConnections()
 {
-    m_mainLayout = new QVBoxLayout(this);
-    m_mainLayout->setContentsMargins(10, 10, 10, 10);
-    
-    // Create content layout
-    m_contentLayout = new QHBoxLayout;
-    m_mainLayout->addLayout(m_contentLayout);
-    
-    // Create path list group
-    m_pathListGroup = new QGroupBox("Recorded Paths");
-    m_pathListGroup->setStyleSheet(
-        "QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } "
-        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }"
-    );
-    m_pathListGroup->setMinimumWidth(300);
-    m_contentLayout->addWidget(m_pathListGroup);
-    
-    m_pathListLayout = new QVBoxLayout(m_pathListGroup);
-    
-    // Path list
-    m_pathList = new QListWidget;
-    m_pathList->setStyleSheet(
-        "QListWidget { background-color: #1f2937; color: white; border: 1px solid #4b5563; } "
-        "QListWidget::item { padding: 8px; border-bottom: 1px solid #374151; } "
-        "QListWidget::item:hover { background-color: #374151; } "
-        "QListWidget::item:selected { background-color: #3b82f6; }"
-    );
-    m_pathListLayout->addWidget(m_pathList);
-    
-    // Path buttons
-    m_pathButtonsLayout = new QHBoxLayout;
-    
-    m_loadButton = new QPushButton("Load");
-    m_loadButton->setStyleSheet(
-        "QPushButton { background-color: #059669; color: white; border: none; padding: 6px 12px; border-radius: 4px; } "
-        "QPushButton:hover { background-color: #047857; } "
-        "QPushButton:disabled { background-color: #374151; }"
-    );
-    
-    m_deleteButton = new QPushButton("Delete");
-    m_deleteButton->setStyleSheet(
-        "QPushButton { background-color: #dc2626; color: white; border: none; padding: 6px 12px; border-radius: 4px; } "
-        "QPushButton:hover { background-color: #b91c1c; } "
-        "QPushButton:disabled { background-color: #374151; }"
-    );
-    
-    m_duplicateButton = new QPushButton("Duplicate");
-    m_duplicateButton->setStyleSheet(
-        "QPushButton { background-color: #374151; color: white; border: 1px solid #4b5563; padding: 6px 12px; border-radius: 4px; } "
-        "QPushButton:hover { background-color: #4b5563; } "
-        "QPushButton:disabled { background-color: #1f2937; }"
-    );
-    
-    m_pathButtonsLayout->addWidget(m_loadButton);
-    m_pathButtonsLayout->addWidget(m_deleteButton);
-    m_pathButtonsLayout->addWidget(m_duplicateButton);
-    m_pathListLayout->addLayout(m_pathButtonsLayout);
-    
-    // Import/Export buttons
-    QHBoxLayout *importExportLayout = new QHBoxLayout;
-    
-    m_importButton = new QPushButton("Import");
-    m_importButton->setStyleSheet(
-        "QPushButton { background-color: #374151; color: white; border: 1px solid #4b5563; padding: 6px 12px; border-radius: 4px; } "
-        "QPushButton:hover { background-color: #4b5563; }"
-    );
-    
-    m_exportButton = new QPushButton("Export");
-    m_exportButton->setStyleSheet(
-        "QPushButton { background-color: #374151; color: white; border: 1px solid #4b5563; padding: 6px 12px; border-radius: 4px; } "
-        "QPushButton:hover { background-color: #4b5563; } "
-        "QPushButton:disabled { background-color: #1f2937; }"
-    );
-    
-    importExportLayout->addWidget(m_importButton);
-    importExportLayout->addWidget(m_exportButton);
-    m_pathListLayout->addLayout(importExportLayout);
-    
-    // Create path details group
-    m_pathDetailsGroup = new QGroupBox("Path Details");
-    m_pathDetailsGroup->setStyleSheet(
-        "QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } "
-        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }"
-    );
-    m_contentLayout->addWidget(m_pathDetailsGroup, 1);
-    
-    m_pathDetailsLayout = new QVBoxLayout(m_pathDetailsGroup);
-    
-    // Path info labels
-    m_pathNameLabel = new QLabel("No path selected");
-    m_pathNameLabel->setStyleSheet("QLabel { font-size: 16px; font-weight: bold; color: white; }");
-    m_pathDetailsLayout->addWidget(m_pathNameLabel);
-    
-    m_pathCreatedLabel = new QLabel();
-    m_pathCreatedLabel->setStyleSheet("QLabel { color: #9ca3af; }");
-    m_pathDetailsLayout->addWidget(m_pathCreatedLabel);
-    
-    m_pathPointCountLabel = new QLabel();
-    m_pathPointCountLabel->setStyleSheet("QLabel { color: #9ca3af; }");
-    m_pathDetailsLayout->addWidget(m_pathPointCountLabel);
-    
-    m_pathLengthLabel = new QLabel();
-    m_pathLengthLabel->setStyleSheet("QLabel { color: #9ca3af; }");
-    m_pathDetailsLayout->addWidget(m_pathLengthLabel);
-    
-    // Description
-    m_pathDetailsLayout->addWidget(new QLabel("Description:"));
-    m_pathDescriptionEdit = new QTextEdit;
-    m_pathDescriptionEdit->setMaximumHeight(100);
-    m_pathDescriptionEdit->setStyleSheet(
-        "QTextEdit { background-color: #1f2937; color: white; border: 1px solid #4b5563; border-radius: 4px; padding: 4px; }"
-    );
-    m_pathDetailsLayout->addWidget(m_pathDescriptionEdit);
-    
-    // Edit button
-    m_editPathButton = new QPushButton("Edit Path");
-    m_editPathButton->setStyleSheet(
-        "QPushButton { background-color: #3b82f6; color: white; border: none; padding: 8px 16px; border-radius: 4px; } "
-        "QPushButton:hover { background-color: #2563eb; } "
-        "QPushButton:disabled { background-color: #374151; }"
-    );
-    m_pathDetailsLayout->addWidget(m_editPathButton);
-    
-    // Waypoint details list
-    m_pathDetailsLayout->addWidget(new QLabel("Waypoints:"));
-    m_waypointDetailsList = new QListWidget;
-    m_waypointDetailsList->setStyleSheet(
-        "QListWidget { background-color: #1f2937; color: white; border: 1px solid #4b5563; } "
-        "QListWidget::item { padding: 4px; border-bottom: 1px solid #374151; } "
-        "QListWidget::item:hover { background-color: #374151; }"
-    );
-    m_pathDetailsLayout->addWidget(m_waypointDetailsList);
-    
-    // Connect signals
-    connect(m_pathList, &QListWidget::currentRowChanged, this, &RecordedPathsWidget::onPathSelectionChanged);
-    connect(m_loadButton, &QPushButton::clicked, this, &RecordedPathsWidget::onLoadPath);
-    connect(m_deleteButton, &QPushButton::clicked, this, &RecordedPathsWidget::onDeletePath);
-    connect(m_duplicateButton, &QPushButton::clicked, this, &RecordedPathsWidget::onDuplicatePath);
-    connect(m_importButton, &QPushButton::clicked, this, &RecordedPathsWidget::onImportPath);
-    connect(m_exportButton, &QPushButton::clicked, this, &RecordedPathsWidget::onExportPath);
-    connect(m_editPathButton, &QPushButton::clicked, this, &RecordedPathsWidget::onEditPath);
-    
-    // Initial state
-    clearPathDetails();
+    connect(ui->pathList, &QListWidget::currentRowChanged, this, &RecordedPathsWidget::onPathSelectionChanged);
+    connect(ui->loadButton, &QPushButton::clicked, this, &RecordedPathsWidget::onLoadPath);
+    connect(ui->deleteButton, &QPushButton::clicked, this, &RecordedPathsWidget::onDeletePath);
+    connect(ui->duplicateButton, &QPushButton::clicked, this, &RecordedPathsWidget::onDuplicatePath);
+    connect(ui->importButton, &QPushButton::clicked, this, &RecordedPathsWidget::onImportPath);
+    connect(ui->exportButton, &QPushButton::clicked, this, &RecordedPathsWidget::onExportPath);
+    connect(ui->editPathButton, &QPushButton::clicked, this, &RecordedPathsWidget::onEditPath);
 }
 
 void RecordedPathsWidget::addPath(const QString &name, const QVector<QVector3D> &points)
@@ -249,7 +97,7 @@ void RecordedPathsWidget::addPath(const QString &name, const QVector<QVector3D> 
     
     // Select the newest path (should be the one just added)
     if (!m_paths.isEmpty()) {
-        m_pathList->setCurrentRow(m_paths.size() - 1);
+        ui->pathList->setCurrentRow(m_paths.size() - 1);
     }
 }
 
@@ -419,8 +267,8 @@ void RecordedPathsWidget::savePaths()
 void RecordedPathsWidget::updatePathList()
 {
     // Block signals to prevent currentRowChanged from firing during rebuild
-    m_pathList->blockSignals(true);
-    m_pathList->clear();
+    ui->pathList->blockSignals(true);
+    ui->pathList->clear();
     
     for (int i = 0; i < m_paths.size(); ++i) {
         const FlightPath &path = m_paths[i];
@@ -433,23 +281,23 @@ void RecordedPathsWidget::updatePathList()
         
         QListWidgetItem *item = new QListWidgetItem(itemText);
         item->setSizeHint(QSize(0, 50));
-        m_pathList->addItem(item);
+        ui->pathList->addItem(item);
     }
     
     // Restore selection if valid
     if (m_selectedPathIndex >= 0 && m_selectedPathIndex < m_paths.size()) {
-        m_pathList->setCurrentRow(m_selectedPathIndex);
+        ui->pathList->setCurrentRow(m_selectedPathIndex);
     }
     
-    m_pathList->blockSignals(false);
+    ui->pathList->blockSignals(false);
     
     // Update button states
     bool hasSelection = m_selectedPathIndex >= 0 && m_selectedPathIndex < m_paths.size();
-    m_loadButton->setEnabled(hasSelection);
-    m_deleteButton->setEnabled(hasSelection);
-    m_duplicateButton->setEnabled(hasSelection);
-    m_exportButton->setEnabled(hasSelection);
-    m_editPathButton->setEnabled(hasSelection);
+    ui->loadButton->setEnabled(hasSelection);
+    ui->deleteButton->setEnabled(hasSelection);
+    ui->duplicateButton->setEnabled(hasSelection);
+    ui->exportButton->setEnabled(hasSelection);
+    ui->editPathButton->setEnabled(hasSelection);
 }
 
 void RecordedPathsWidget::updatePathDetails()
@@ -460,24 +308,24 @@ void RecordedPathsWidget::updatePathDetails()
         return;
     }
     
-    m_pathNameLabel->setText(path->name);
+    ui->pathNameLabel->setText(path->name);
     
     QDateTime created = QDateTime::fromMSecsSinceEpoch(path->createdAt);
-    m_pathCreatedLabel->setText("Created: " + created.toString("MMM dd, yyyy hh:mm:ss"));
+    ui->pathCreatedLabel->setText("Created: " + created.toString("MMM dd, yyyy hh:mm:ss"));
     
-    m_pathPointCountLabel->setText(QString("Waypoints: %1").arg(path->points.size()));
+    ui->pathPointCountLabel->setText(QString("Waypoints: %1").arg(path->points.size()));
     
     // Calculate path length
     float totalLength = 0.0f;
     for (int i = 0; i < path->points.size() - 1; ++i) {
         totalLength += path->points[i].distanceToPoint(path->points[i + 1]);
     }
-    m_pathLengthLabel->setText(QString("Length: %1 m").arg(totalLength, 0, 'f', 1));
+    ui->pathLengthLabel->setText(QString("Length: %1 m").arg(totalLength, 0, 'f', 1));
     
-    m_pathDescriptionEdit->setPlainText(path->description);
+    ui->pathDescriptionEdit->setPlainText(path->description);
     
     // Update waypoint details list
-    m_waypointDetailsList->clear();
+    ui->waypointDetailsList->clear();
     for (int i = 0; i < path->points.size(); ++i) {
         const QVector3D &wp = path->points[i];
         QString text = QString("WP %1: (%2, %3, %4)")
@@ -485,18 +333,18 @@ void RecordedPathsWidget::updatePathDetails()
                       .arg(wp.x(), 0, 'f', 1)
                       .arg(wp.y(), 0, 'f', 1)
                       .arg(wp.z(), 0, 'f', 1);
-        m_waypointDetailsList->addItem(text);
+        ui->waypointDetailsList->addItem(text);
     }
 }
 
 void RecordedPathsWidget::clearPathDetails()
 {
-    m_pathNameLabel->setText("No path selected");
-    m_pathCreatedLabel->clear();
-    m_pathPointCountLabel->clear();
-    m_pathLengthLabel->clear();
-    m_pathDescriptionEdit->clear();
-    m_waypointDetailsList->clear();
+    ui->pathNameLabel->setText("No path selected");
+    ui->pathCreatedLabel->clear();
+    ui->pathPointCountLabel->clear();
+    ui->pathLengthLabel->clear();
+    ui->pathDescriptionEdit->clear();
+    ui->waypointDetailsList->clear();
 }
 
 FlightPath* RecordedPathsWidget::getSelectedPath()
@@ -514,16 +362,16 @@ QString RecordedPathsWidget::generatePathId()
 
 void RecordedPathsWidget::onPathSelectionChanged()
 {
-    m_selectedPathIndex = m_pathList->currentRow();
+    m_selectedPathIndex = ui->pathList->currentRow();
     updatePathDetails();
     
     // Update button states
     bool hasSelection = m_selectedPathIndex >= 0 && m_selectedPathIndex < m_paths.size();
-    m_loadButton->setEnabled(hasSelection);
-    m_deleteButton->setEnabled(hasSelection);
-    m_duplicateButton->setEnabled(hasSelection);
-    m_exportButton->setEnabled(hasSelection);
-    m_editPathButton->setEnabled(hasSelection);
+    ui->loadButton->setEnabled(hasSelection);
+    ui->deleteButton->setEnabled(hasSelection);
+    ui->duplicateButton->setEnabled(hasSelection);
+    ui->exportButton->setEnabled(hasSelection);
+    ui->editPathButton->setEnabled(hasSelection);
 }
 
 void RecordedPathsWidget::onLoadPath()
@@ -631,7 +479,7 @@ void RecordedPathsWidget::onImportPath()
             
             // Select the imported path (should be the newest)
             if (!m_paths.isEmpty()) {
-                m_pathList->setCurrentRow(m_paths.size() - 1);
+                ui->pathList->setCurrentRow(m_paths.size() - 1);
             }
             
             QMessageBox::information(this, "Import Successful", 
@@ -647,7 +495,7 @@ void RecordedPathsWidget::onEditPath()
     FlightPath *path = getSelectedPath();
     if (path) {
         // Save the description if it was modified
-        QString newDescription = m_pathDescriptionEdit->toPlainText();
+        QString newDescription = ui->pathDescriptionEdit->toPlainText();
         if (path->description != newDescription && !path->filePath.isEmpty()) {
             // Update the description in the file
             QFile file(path->filePath);
@@ -695,7 +543,7 @@ void RecordedPathsWidget::onDuplicatePath()
         
         // Select the duplicated path (should be the newest)
         if (!m_paths.isEmpty()) {
-            m_pathList->setCurrentRow(m_paths.size() - 1);
+            ui->pathList->setCurrentRow(m_paths.size() - 1);
         }
     } else {
         QMessageBox::warning(this, "Duplicate Failed", "Failed to duplicate path file.");
