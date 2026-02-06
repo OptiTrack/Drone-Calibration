@@ -1,0 +1,307 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>RecordedVideosWidget</class>
+ <widget class="QWidget" name="RecordedVideosWidget">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>900</width>
+    <height>600</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Recorded Videos</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <property name="spacing">
+    <number>10</number>
+   </property>
+   <property name="leftMargin">
+    <number>10</number>
+   </property>
+   <property name="topMargin">
+    <number>10</number>
+   </property>
+   <property name="rightMargin">
+    <number>10</number>
+   </property>
+   <property name="bottomMargin">
+    <number>10</number>
+   </property>
+   <item>
+    <layout class="QHBoxLayout" name="contentLayout">
+     <property name="spacing">
+      <number>10</number>
+     </property>
+     <item>
+      <widget class="QGroupBox" name="recordingListGroup">
+       <property name="minimumSize">
+        <size>
+         <width>300</width>
+         <height>0</height>
+        </size>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } 
+QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }</string>
+       </property>
+       <property name="title">
+        <string>Recorded Videos</string>
+       </property>
+       <layout class="QVBoxLayout" name="recordingListLayout">
+        <item>
+         <widget class="QListWidget" name="recordingList">
+          <property name="styleSheet">
+           <string notr="true">QListWidget { background-color: #1f2937; color: white; border: 1px solid #4b5563; } 
+QListWidget::item { padding: 8px; border-bottom: 1px solid #374151; } 
+QListWidget::item:hover { background-color: #374151; } 
+QListWidget::item:selected { background-color: #3b82f6; }</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="recordingButtonsLayout">
+          <property name="spacing">
+           <number>5</number>
+          </property>
+          <item>
+           <widget class="QPushButton" name="playButton">
+            <property name="styleSheet">
+             <string notr="true">QPushButton { background-color: #059669; color: white; border: none; padding: 6px 12px; border-radius: 4px; } 
+QPushButton:hover { background-color: #047857; } 
+QPushButton:disabled { background-color: #374151; }</string>
+            </property>
+            <property name="text">
+             <string>Play</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="deleteButton">
+            <property name="styleSheet">
+             <string notr="true">QPushButton { background-color: #dc2626; color: white; border: none; padding: 6px 12px; border-radius: 4px; } 
+QPushButton:hover { background-color: #b91c1c; } 
+QPushButton:disabled { background-color: #374151; }</string>
+            </property>
+            <property name="text">
+             <string>Delete</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="recordingActionsLayout">
+          <property name="spacing">
+           <number>5</number>
+          </property>
+          <item>
+           <widget class="QPushButton" name="exportButton">
+            <property name="styleSheet">
+             <string notr="true">QPushButton { background-color: #374151; color: white; border: 1px solid #4b5563; padding: 6px 12px; border-radius: 4px; } 
+QPushButton:hover { background-color: #4b5563; } 
+QPushButton:disabled { background-color: #1f2937; }</string>
+            </property>
+            <property name="text">
+             <string>Export</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="importButton">
+            <property name="styleSheet">
+             <string notr="true">QPushButton { background-color: #374151; color: white; border: 1px solid #4b5563; padding: 6px 12px; border-radius: 4px; } 
+QPushButton:hover { background-color: #4b5563; } 
+QPushButton:disabled { background-color: #1f2937; }</string>
+            </property>
+            <property name="text">
+             <string>Import</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="refreshButton">
+            <property name="styleSheet">
+             <string notr="true">QPushButton { background-color: #374151; color: white; border: 1px solid #4b5563; padding: 6px 12px; border-radius: 4px; } 
+QPushButton:hover { background-color: #4b5563; } 
+QPushButton:disabled { background-color: #1f2937; }</string>
+            </property>
+            <property name="text">
+             <string>Refresh</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <widget class="QGroupBox" name="recordingDetailsGroup">
+       <property name="styleSheet">
+        <string notr="true">QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } 
+QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }</string>
+       </property>
+       <property name="title">
+        <string>Recording Details</string>
+       </property>
+       <layout class="QVBoxLayout" name="recordingDetailsLayout">
+        <item>
+         <widget class="QLabel" name="recordingNameLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: white; font-size: 16px; font-weight: bold; }</string>
+          </property>
+          <property name="text">
+           <string>No recording selected</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="recordingDateLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #9ca3af; font-size: 12px; }</string>
+          </property>
+          <property name="text">
+           <string>Created: --</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <layout class="QGridLayout" name="recordingInfoGrid">
+          <property name="spacing">
+           <number>10</number>
+          </property>
+          <item row="0" column="0">
+           <widget class="QLabel" name="recordingDurationLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>Duration: 0:00</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QLabel" name="recordingFileSizeLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>Size: 0 MB</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="recordingFormatLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>Format: --</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QLabel" name="recordingQualityLabel">
+            <property name="styleSheet">
+             <string notr="true">QLabel { color: #9ca3af; }</string>
+            </property>
+            <property name="text">
+             <string>Quality: --</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <widget class="QLabel" name="thumbnailLabel">
+          <property name="minimumSize">
+           <size>
+            <width>0</width>
+            <height>200</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>16777215</width>
+            <height>300</height>
+           </size>
+          </property>
+          <property name="styleSheet">
+           <string notr="true">QLabel { background-color: #1f2937; border: 1px solid #4b5563; border-radius: 4px; }</string>
+          </property>
+          <property name="text">
+           <string>No preview available</string>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignCenter</set>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="recordingPathLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #6b7280; font-size: 11px; }</string>
+          </property>
+          <property name="text">
+           <string>Path: --</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <spacer name="verticalSpacer">
+          <property name="orientation">
+           <enum>Qt::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+        <item>
+         <widget class="QProgressBar" name="storageProgressBar">
+          <property name="styleSheet">
+           <string notr="true">QProgressBar { border: 1px solid #4b5563; border-radius: 4px; text-align: center; height: 20px; } 
+QProgressBar::chunk { background-color: #3b82f6; border-radius: 3px; }</string>
+          </property>
+          <property name="value">
+           <number>0</number>
+          </property>
+          <property name="format">
+           <string>Storage: %p% used</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="storageLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #9ca3af; font-size: 11px; }</string>
+          </property>
+          <property name="text">
+           <string>0 MB used of 0 MB total</string>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignCenter</set>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

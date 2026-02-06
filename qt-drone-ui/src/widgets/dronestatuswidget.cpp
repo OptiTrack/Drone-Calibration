@@ -1,4 +1,5 @@
 #include "dronestatuswidget.h"
+#include "ui_dronestatuswidget.h"
 #include <QDateTime>
 #include <QMessageBox>
 #include <QListWidgetItem>
@@ -6,47 +7,7 @@
 
 DroneStatusWidget::DroneStatusWidget(QWidget *parent)
     : QWidget(parent)
-    , ui(nullptr)
-    , m_mainLayout(nullptr)
-    , m_topLayout(nullptr)
-    , m_leftLayout(nullptr)
-    , m_rightLayout(nullptr)
-    , m_batteryGroup(nullptr)
-    , m_batteryLayout(nullptr)
-    , m_batteryPercentageLabel(nullptr)
-    , m_batteryProgressBar(nullptr)
-    , m_batteryVoltageLabel(nullptr)
-    , m_batteryStatusLabel(nullptr)
-    , m_flightGroup(nullptr)
-    , m_flightLayout(nullptr)
-    , m_connectionStatusLabel(nullptr)
-    , m_flightModeLabel(nullptr)
-    , m_armedStatusLabel(nullptr)
-    , m_gpsStatusLabel(nullptr)
-    , m_altitudeLabel(nullptr)
-    , m_groundSpeedLabel(nullptr)
-    , m_verticalSpeedLabel(nullptr)
-    , m_systemStatusLabel(nullptr)
-    , m_positionGroup(nullptr)
-    , m_positionLayout(nullptr)
-    , m_latitudeLabel(nullptr)
-    , m_longitudeLabel(nullptr)
-    , m_altitudeAbsLabel(nullptr)
-    , m_rollLabel(nullptr)
-    , m_pitchLabel(nullptr)
-    , m_yawLabel(nullptr)
-    , m_controlsGroup(nullptr)
-    , m_controlsLayout(nullptr)
-    , m_flightModeCombo(nullptr)
-    , m_armDisarmButton(nullptr)
-    , m_takeoffButton(nullptr)
-    , m_landButton(nullptr)
-    , m_rtlButton(nullptr)
-    , m_emergencyStopButton(nullptr)
-    , m_messagesGroup(nullptr)
-    , m_messagesLayout(nullptr)
-    , m_messagesList(nullptr)
-    , m_clearMessagesButton(nullptr)
+    , ui(new Ui::DroneStatusWidget)
     , m_statusUpdateTimer(nullptr)
     , m_simulationTimer(nullptr)
     , m_simulationMode(true)
@@ -54,6 +15,9 @@ DroneStatusWidget::DroneStatusWidget(QWidget *parent)
     , m_simArmed(false)
     , m_simFlightMode("STABILIZE")
 {
+    ui->setupUi(this);
+    ui->setupUi(this);
+    
     // Initialize status
     m_currentStatus.connected = false;
     m_currentStatus.batteryPercentage = 0.0f;
@@ -70,7 +34,7 @@ DroneStatusWidget::DroneStatusWidget(QWidget *parent)
     m_currentStatus.attitude = QVector3D(0, 0, 0);
     m_currentStatus.systemStatus = "STANDBY";
     
-    setupUI();
+    setupConnections();
     
     // Set up timers
     m_statusUpdateTimer = new QTimer(this);
@@ -121,290 +85,23 @@ DroneStatusWidget::DroneStatusWidget(QWidget *parent)
 
 DroneStatusWidget::~DroneStatusWidget()
 {
+    delete ui;
 }
 
-void DroneStatusWidget::setupUI()
+void DroneStatusWidget::setupConnections()
 {
-    m_mainLayout = new QVBoxLayout(this);
-    m_mainLayout->setContentsMargins(10, 10, 10, 10);
+    // Connect flight mode combo
+    connect(ui->flightModeCombo, &QComboBox::currentTextChanged, this, &DroneStatusWidget::onFlightModeChanged);
     
-    // Create top layout for main content
-    m_topLayout = new QHBoxLayout;
-    m_mainLayout->addLayout(m_topLayout);
+    // Connect control buttons
+    connect(ui->armDisarmButton, &QPushButton::clicked, this, &DroneStatusWidget::onArmDisarmClicked);
+    connect(ui->takeoffButton, &QPushButton::clicked, this, &DroneStatusWidget::onTakeoffClicked);
+    connect(ui->landButton, &QPushButton::clicked, this, &DroneStatusWidget::onLandClicked);
+    connect(ui->rtlButton, &QPushButton::clicked, this, &DroneStatusWidget::onRTLClicked);
+    connect(ui->emergencyStopButton, &QPushButton::clicked, this, &DroneStatusWidget::onEmergencyStopClicked);
     
-    // Create left and right columns
-    m_leftLayout = new QVBoxLayout;
-    m_rightLayout = new QVBoxLayout;
-    m_topLayout->addLayout(m_leftLayout, 1);
-    m_topLayout->addLayout(m_rightLayout, 1);
-    
-    setupBatteryGroup();
-    setupFlightGroup();
-    setupPositionGroup();
-    setupControlsGroup();
-    setupMessagesGroup();
-    
-    // Add groups to layouts
-    m_leftLayout->addWidget(m_batteryGroup);
-    m_leftLayout->addWidget(m_flightGroup);
-    m_leftLayout->addWidget(m_positionGroup);
-    m_leftLayout->addStretch();
-    
-    m_rightLayout->addWidget(m_controlsGroup);
-    m_rightLayout->addStretch();
-    
-    // Messages at the bottom
-    m_mainLayout->addWidget(m_messagesGroup);
-}
-
-void DroneStatusWidget::setupBatteryGroup()
-{
-    m_batteryGroup = new QGroupBox("Battery Status");
-    m_batteryGroup->setStyleSheet(
-        "QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } "
-        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }"
-    );
-    
-    m_batteryLayout = new QVBoxLayout(m_batteryGroup);
-    
-    // Battery percentage
-    m_batteryPercentageLabel = new QLabel("Battery: 0%");
-    m_batteryPercentageLabel->setStyleSheet("QLabel { font-size: 16px; font-weight: bold; color: white; }");
-    m_batteryLayout->addWidget(m_batteryPercentageLabel);
-    
-    // Battery progress bar
-    m_batteryProgressBar = new QProgressBar;
-    m_batteryProgressBar->setRange(0, 100);
-    m_batteryProgressBar->setStyleSheet(
-        "QProgressBar { border: 1px solid #4b5563; border-radius: 4px; text-align: center; } "
-        "QProgressBar::chunk { background-color: #10b981; border-radius: 3px; }"
-    );
-    m_batteryLayout->addWidget(m_batteryProgressBar);
-    
-    // Battery voltage
-    m_batteryVoltageLabel = new QLabel("Voltage: 0.0V");
-    m_batteryVoltageLabel->setStyleSheet("QLabel { color: #9ca3af; }");
-    m_batteryLayout->addWidget(m_batteryVoltageLabel);
-    
-    // Battery status
-    m_batteryStatusLabel = new QLabel("Status: Unknown");
-    m_batteryStatusLabel->setStyleSheet("QLabel { color: #9ca3af; }");
-    m_batteryLayout->addWidget(m_batteryStatusLabel);
-}
-
-void DroneStatusWidget::setupFlightGroup()
-{
-    m_flightGroup = new QGroupBox("Flight Status");
-    m_flightGroup->setStyleSheet(
-        "QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } "
-        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }"
-    );
-    
-    m_flightLayout = new QGridLayout(m_flightGroup);
-    
-    // Connection status
-    m_flightLayout->addWidget(new QLabel("Connection:"), 0, 0);
-    m_connectionStatusLabel = new QLabel("Disconnected");
-    m_connectionStatusLabel->setStyleSheet("QLabel { color: #ef4444; font-weight: bold; }");
-    m_flightLayout->addWidget(m_connectionStatusLabel, 0, 1);
-    
-    // Flight mode
-    m_flightLayout->addWidget(new QLabel("Flight Mode:"), 1, 0);
-    m_flightModeLabel = new QLabel("UNKNOWN");
-    m_flightModeLabel->setStyleSheet("QLabel { color: #3b82f6; font-weight: bold; }");
-    m_flightLayout->addWidget(m_flightModeLabel, 1, 1);
-    
-    // Armed status
-    m_flightLayout->addWidget(new QLabel("Armed:"), 2, 0);
-    m_armedStatusLabel = new QLabel("Disarmed");
-    m_armedStatusLabel->setStyleSheet("QLabel { color: #10b981; }");
-    m_flightLayout->addWidget(m_armedStatusLabel, 2, 1);
-    
-    // GPS status
-    m_flightLayout->addWidget(new QLabel("GPS:"), 3, 0);
-    m_gpsStatusLabel = new QLabel("No Lock (0 sats)");
-    m_gpsStatusLabel->setStyleSheet("QLabel { color: #ef4444; }");
-    m_flightLayout->addWidget(m_gpsStatusLabel, 3, 1);
-    
-    // Altitude
-    m_flightLayout->addWidget(new QLabel("Altitude:"), 4, 0);
-    m_altitudeLabel = new QLabel("0.0 m");
-    m_altitudeLabel->setStyleSheet("QLabel { color: #9ca3af; }");
-    m_flightLayout->addWidget(m_altitudeLabel, 4, 1);
-    
-    // Ground speed
-    m_flightLayout->addWidget(new QLabel("Ground Speed:"), 5, 0);
-    m_groundSpeedLabel = new QLabel("0.0 m/s");
-    m_groundSpeedLabel->setStyleSheet("QLabel { color: #9ca3af; }");
-    m_flightLayout->addWidget(m_groundSpeedLabel, 5, 1);
-    
-    // Vertical speed
-    m_flightLayout->addWidget(new QLabel("Vertical Speed:"), 6, 0);
-    m_verticalSpeedLabel = new QLabel("0.0 m/s");
-    m_verticalSpeedLabel->setStyleSheet("QLabel { color: #9ca3af; }");
-    m_flightLayout->addWidget(m_verticalSpeedLabel, 6, 1);
-    
-    // System status
-    m_flightLayout->addWidget(new QLabel("System Status:"), 7, 0);
-    m_systemStatusLabel = new QLabel("STANDBY");
-    m_systemStatusLabel->setStyleSheet("QLabel { color: #f59e0b; font-weight: bold; }");
-    m_flightLayout->addWidget(m_systemStatusLabel, 7, 1);
-}
-
-void DroneStatusWidget::setupPositionGroup()
-{
-    m_positionGroup = new QGroupBox("Position & Attitude");
-    m_positionGroup->setStyleSheet(
-        "QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } "
-        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }"
-    );
-    
-    m_positionLayout = new QGridLayout(m_positionGroup);
-    
-    // Position
-    m_positionLayout->addWidget(new QLabel("Latitude:"), 0, 0);
-    m_latitudeLabel = new QLabel("0.000000°");
-    m_latitudeLabel->setStyleSheet("QLabel { color: #9ca3af; font-family: monospace; }");
-    m_positionLayout->addWidget(m_latitudeLabel, 0, 1);
-    
-    m_positionLayout->addWidget(new QLabel("Longitude:"), 1, 0);
-    m_longitudeLabel = new QLabel("0.000000°");
-    m_longitudeLabel->setStyleSheet("QLabel { color: #9ca3af; font-family: monospace; }");
-    m_positionLayout->addWidget(m_longitudeLabel, 1, 1);
-    
-    m_positionLayout->addWidget(new QLabel("Altitude (ABS):"), 2, 0);
-    m_altitudeAbsLabel = new QLabel("0.0 m");
-    m_altitudeAbsLabel->setStyleSheet("QLabel { color: #9ca3af; font-family: monospace; }");
-    m_positionLayout->addWidget(m_altitudeAbsLabel, 2, 1);
-    
-    // Attitude
-    m_positionLayout->addWidget(new QLabel("Roll:"), 3, 0);
-    m_rollLabel = new QLabel("0.0°");
-    m_rollLabel->setStyleSheet("QLabel { color: #9ca3af; font-family: monospace; }");
-    m_positionLayout->addWidget(m_rollLabel, 3, 1);
-    
-    m_positionLayout->addWidget(new QLabel("Pitch:"), 4, 0);
-    m_pitchLabel = new QLabel("0.0°");
-    m_pitchLabel->setStyleSheet("QLabel { color: #9ca3af; font-family: monospace; }");
-    m_positionLayout->addWidget(m_pitchLabel, 4, 1);
-    
-    m_positionLayout->addWidget(new QLabel("Yaw:"), 5, 0);
-    m_yawLabel = new QLabel("0.0°");
-    m_yawLabel->setStyleSheet("QLabel { color: #9ca3af; font-family: monospace; }");
-    m_positionLayout->addWidget(m_yawLabel, 5, 1);
-}
-
-void DroneStatusWidget::setupControlsGroup()
-{
-    m_controlsGroup = new QGroupBox("Flight Controls");
-    m_controlsGroup->setStyleSheet(
-        "QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } "
-        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }"
-    );
-    
-    m_controlsLayout = new QVBoxLayout(m_controlsGroup);
-    
-    // Flight mode selector
-    m_controlsLayout->addWidget(new QLabel("Flight Mode:"));
-    m_flightModeCombo = new QComboBox;
-    m_flightModeCombo->addItems({"STABILIZE", "ALT_HOLD", "LOITER", "AUTO", "RTL", "LAND", "GUIDED"});
-    m_flightModeCombo->setStyleSheet(
-        "QComboBox { background-color: #374151; color: white; border: 1px solid #4b5563; padding: 4px; border-radius: 4px; } "
-        "QComboBox::drop-down { border: none; } "
-        "QComboBox QAbstractItemView { background-color: #374151; color: white; selection-background-color: #3b82f6; }"
-    );
-    m_controlsLayout->addWidget(m_flightModeCombo);
-    
-    m_controlsLayout->addWidget(new QLabel("")); // Spacer
-    
-    // Arm/Disarm button
-    m_armDisarmButton = new QPushButton("ARM");
-    m_armDisarmButton->setStyleSheet(
-        "QPushButton { background-color: #dc2626; color: white; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; } "
-        "QPushButton:hover { background-color: #b91c1c; } "
-        "QPushButton:disabled { background-color: #374151; }"
-    );
-    m_controlsLayout->addWidget(m_armDisarmButton);
-    
-    // Takeoff button
-    m_takeoffButton = new QPushButton("TAKEOFF");
-    m_takeoffButton->setStyleSheet(
-        "QPushButton { background-color: #059669; color: white; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; } "
-        "QPushButton:hover { background-color: #047857; } "
-        "QPushButton:disabled { background-color: #374151; }"
-    );
-    m_takeoffButton->setEnabled(false);
-    m_controlsLayout->addWidget(m_takeoffButton);
-    
-    // Land button
-    m_landButton = new QPushButton("LAND");
-    m_landButton->setStyleSheet(
-        "QPushButton { background-color: #f59e0b; color: white; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; } "
-        "QPushButton:hover { background-color: #d97706; } "
-        "QPushButton:disabled { background-color: #374151; }"
-    );
-    m_landButton->setEnabled(false);
-    m_controlsLayout->addWidget(m_landButton);
-    
-    // RTL button
-    m_rtlButton = new QPushButton("RETURN TO LAUNCH");
-    m_rtlButton->setStyleSheet(
-        "QPushButton { background-color: #3b82f6; color: white; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; } "
-        "QPushButton:hover { background-color: #2563eb; } "
-        "QPushButton:disabled { background-color: #374151; }"
-    );
-    m_rtlButton->setEnabled(false);
-    m_controlsLayout->addWidget(m_rtlButton);
-    
-    m_controlsLayout->addWidget(new QLabel("")); // Spacer
-    
-    // Emergency stop button
-    m_emergencyStopButton = new QPushButton("🚨 EMERGENCY STOP");
-    m_emergencyStopButton->setStyleSheet(
-        "QPushButton { background-color: #7c2d12; color: white; border: 2px solid #dc2626; padding: 8px 16px; border-radius: 4px; font-weight: bold; } "
-        "QPushButton:hover { background-color: #92400e; } "
-        "QPushButton:disabled { background-color: #374151; }"
-    );
-    m_controlsLayout->addWidget(m_emergencyStopButton);
-    
-    // Connect signals
-    connect(m_flightModeCombo, &QComboBox::currentTextChanged, this, &DroneStatusWidget::onFlightModeChanged);
-    connect(m_armDisarmButton, &QPushButton::clicked, this, &DroneStatusWidget::onArmDisarmClicked);
-    connect(m_takeoffButton, &QPushButton::clicked, this, &DroneStatusWidget::onTakeoffClicked);
-    connect(m_landButton, &QPushButton::clicked, this, &DroneStatusWidget::onLandClicked);
-    connect(m_rtlButton, &QPushButton::clicked, this, &DroneStatusWidget::onRTLClicked);
-    connect(m_emergencyStopButton, &QPushButton::clicked, this, &DroneStatusWidget::onEmergencyStopClicked);
-}
-
-void DroneStatusWidget::setupMessagesGroup()
-{
-    m_messagesGroup = new QGroupBox("System Messages");
-    m_messagesGroup->setStyleSheet(
-        "QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } "
-        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }"
-    );
-    m_messagesGroup->setMaximumHeight(200);
-    
-    m_messagesLayout = new QVBoxLayout(m_messagesGroup);
-    
-    // Messages list
-    m_messagesList = new QListWidget;
-    m_messagesList->setStyleSheet(
-        "QListWidget { background-color: #1f2937; color: white; border: 1px solid #4b5563; } "
-        "QListWidget::item { padding: 4px; border-bottom: 1px solid #374151; } "
-        "QListWidget::item:hover { background-color: #374151; }"
-    );
-    m_messagesLayout->addWidget(m_messagesList);
-    
-    // Clear button
-    m_clearMessagesButton = new QPushButton("Clear Messages");
-    m_clearMessagesButton->setStyleSheet(
-        "QPushButton { background-color: #374151; color: white; border: 1px solid #4b5563; padding: 6px 12px; border-radius: 4px; } "
-        "QPushButton:hover { background-color: #4b5563; }"
-    );
-    m_messagesLayout->addWidget(m_clearMessagesButton);
-    
-    connect(m_clearMessagesButton, &QPushButton::clicked, this, &DroneStatusWidget::onClearMessages);
+    // Connect clear messages button
+    connect(ui->clearMessagesButton, &QPushButton::clicked, this, &DroneStatusWidget::onClearMessages);
 }
 
 void DroneStatusWidget::updateDroneStatus(const DroneStatus &status)
@@ -436,9 +133,9 @@ void DroneStatusWidget::updateBatteryDisplay()
 {
     float percentage = m_currentStatus.batteryPercentage;
     
-    m_batteryPercentageLabel->setText(QString("Battery: %1%").arg(percentage, 0, 'f', 1));
-    m_batteryProgressBar->setValue(static_cast<int>(percentage));
-    m_batteryVoltageLabel->setText(QString("Voltage: %1V").arg(m_currentStatus.batteryVoltage, 0, 'f', 2));
+    ui->batteryPercentageLabel->setText(QString("Battery: %1%").arg(percentage, 0, 'f', 1));
+    ui->batteryProgressBar->setValue(static_cast<int>(percentage));
+    ui->batteryVoltageLabel->setText(QString("Voltage: %1V").arg(m_currentStatus.batteryVoltage, 0, 'f', 2));
     
     // Update battery status color based on level
     QString statusText;
@@ -446,87 +143,87 @@ void DroneStatusWidget::updateBatteryDisplay()
     if (percentage > 50) {
         statusText = "Good";
         color = "#10b981";
-        m_batteryProgressBar->setStyleSheet(
+        ui->batteryProgressBar->setStyleSheet(
             "QProgressBar { border: 1px solid #4b5563; border-radius: 4px; text-align: center; } "
             "QProgressBar::chunk { background-color: #10b981; border-radius: 3px; }"
         );
     } else if (percentage > 25) {
         statusText = "Warning";
         color = "#f59e0b";
-        m_batteryProgressBar->setStyleSheet(
+        ui->batteryProgressBar->setStyleSheet(
             "QProgressBar { border: 1px solid #4b5563; border-radius: 4px; text-align: center; } "
             "QProgressBar::chunk { background-color: #f59e0b; border-radius: 3px; }"
         );
     } else {
         statusText = "Critical";
         color = "#ef4444";
-        m_batteryProgressBar->setStyleSheet(
+        ui->batteryProgressBar->setStyleSheet(
             "QProgressBar { border: 1px solid #4b5563; border-radius: 4px; text-align: center; } "
             "QProgressBar::chunk { background-color: #ef4444; border-radius: 3px; }"
         );
     }
     
-    m_batteryStatusLabel->setText(QString("Status: %1").arg(statusText));
-    m_batteryStatusLabel->setStyleSheet(QString("QLabel { color: %1; font-weight: bold; }").arg(color));
+    ui->batteryStatusLabel->setText(QString("Status: %1").arg(statusText));
+    ui->batteryStatusLabel->setStyleSheet(QString("QLabel { color: %1; font-weight: bold; }").arg(color));
 }
 
 void DroneStatusWidget::updateFlightDisplay()
 {
     // Connection status
     if (m_currentStatus.connected) {
-        m_connectionStatusLabel->setText("Connected");
-        m_connectionStatusLabel->setStyleSheet("QLabel { color: #10b981; font-weight: bold; }");
+        ui->connectionStatusLabel->setText("Connected");
+        ui->connectionStatusLabel->setStyleSheet("QLabel { color: #10b981; font-weight: bold; }");
     } else {
-        m_connectionStatusLabel->setText("Disconnected");
-        m_connectionStatusLabel->setStyleSheet("QLabel { color: #ef4444; font-weight: bold; }");
+        ui->connectionStatusLabel->setText("Disconnected");
+        ui->connectionStatusLabel->setStyleSheet("QLabel { color: #ef4444; font-weight: bold; }");
     }
     
     // Flight mode
-    m_flightModeLabel->setText(m_currentStatus.flightMode);
+    ui->flightModeLabel->setText(m_currentStatus.flightMode);
     
     // Armed status
     if (m_currentStatus.armed) {
-        m_armedStatusLabel->setText("Armed");
-        m_armedStatusLabel->setStyleSheet("QLabel { color: #ef4444; font-weight: bold; }");
+        ui->armedStatusLabel->setText("Armed");
+        ui->armedStatusLabel->setStyleSheet("QLabel { color: #ef4444; font-weight: bold; }");
     } else {
-        m_armedStatusLabel->setText("Disarmed");
-        m_armedStatusLabel->setStyleSheet("QLabel { color: #10b981; }");
+        ui->armedStatusLabel->setText("Disarmed");
+        ui->armedStatusLabel->setStyleSheet("QLabel { color: #10b981; }");
     }
     
     // GPS status
     if (m_currentStatus.gpsLock) {
-        m_gpsStatusLabel->setText(QString("3D Lock (%1 sats)").arg(m_currentStatus.gpsNumSats));
-        m_gpsStatusLabel->setStyleSheet("QLabel { color: #10b981; }");
+        ui->gpsStatusLabel->setText(QString("3D Lock (%1 sats)").arg(m_currentStatus.gpsNumSats));
+        ui->gpsStatusLabel->setStyleSheet("QLabel { color: #10b981; }");
     } else {
-        m_gpsStatusLabel->setText(QString("No Lock (%1 sats)").arg(m_currentStatus.gpsNumSats));
-        m_gpsStatusLabel->setStyleSheet("QLabel { color: #ef4444; }");
+        ui->gpsStatusLabel->setText(QString("No Lock (%1 sats)").arg(m_currentStatus.gpsNumSats));
+        ui->gpsStatusLabel->setStyleSheet("QLabel { color: #ef4444; }");
     }
     
     // Flight data
-    m_altitudeLabel->setText(QString("%1 m").arg(m_currentStatus.altitude, 0, 'f', 1));
-    m_groundSpeedLabel->setText(QString("%1 m/s").arg(m_currentStatus.groundSpeed, 0, 'f', 1));
-    m_verticalSpeedLabel->setText(QString("%1 m/s").arg(m_currentStatus.verticalSpeed, 0, 'f', 1));
+    ui->altitudeLabel->setText(QString("%1 m").arg(m_currentStatus.altitude, 0, 'f', 1));
+    ui->groundSpeedLabel->setText(QString("%1 m/s").arg(m_currentStatus.groundSpeed, 0, 'f', 1));
+    ui->verticalSpeedLabel->setText(QString("%1 m/s").arg(m_currentStatus.verticalSpeed, 0, 'f', 1));
     
     // System status
-    m_systemStatusLabel->setText(m_currentStatus.systemStatus);
+    ui->systemStatusLabel->setText(m_currentStatus.systemStatus);
     if (m_currentStatus.systemStatus == "ACTIVE") {
-        m_systemStatusLabel->setStyleSheet("QLabel { color: #10b981; font-weight: bold; }");
+        ui->systemStatusLabel->setStyleSheet("QLabel { color: #10b981; font-weight: bold; }");
     } else if (m_currentStatus.systemStatus == "STANDBY") {
-        m_systemStatusLabel->setStyleSheet("QLabel { color: #f59e0b; font-weight: bold; }");
+        ui->systemStatusLabel->setStyleSheet("QLabel { color: #f59e0b; font-weight: bold; }");
     } else {
-        m_systemStatusLabel->setStyleSheet("QLabel { color: #ef4444; font-weight: bold; }");
+        ui->systemStatusLabel->setStyleSheet("QLabel { color: #ef4444; font-weight: bold; }");
     }
 }
 
 void DroneStatusWidget::updatePositionDisplay()
 {
-    m_latitudeLabel->setText(formatCoordinate(m_currentStatus.position.x(), "°"));
-    m_longitudeLabel->setText(formatCoordinate(m_currentStatus.position.y(), "°"));
-    m_altitudeAbsLabel->setText(QString("%1 m").arg(m_currentStatus.position.z(), 0, 'f', 1));
+    ui->latitudeLabel->setText(formatCoordinate(m_currentStatus.position.x(), "°"));
+    ui->longitudeLabel->setText(formatCoordinate(m_currentStatus.position.y(), "°"));
+    ui->altitudeAbsLabel->setText(QString("%1 m").arg(m_currentStatus.position.z(), 0, 'f', 1));
     
-    m_rollLabel->setText(formatCoordinate(m_currentStatus.attitude.x(), "°"));
-    m_pitchLabel->setText(formatCoordinate(m_currentStatus.attitude.y(), "°"));
-    m_yawLabel->setText(formatCoordinate(m_currentStatus.attitude.z(), "°"));
+    ui->rollLabel->setText(formatCoordinate(m_currentStatus.attitude.x(), "°"));
+    ui->pitchLabel->setText(formatCoordinate(m_currentStatus.attitude.y(), "°"));
+    ui->yawLabel->setText(formatCoordinate(m_currentStatus.attitude.z(), "°"));
 }
 
 void DroneStatusWidget::updateControlsDisplay()
@@ -535,31 +232,31 @@ void DroneStatusWidget::updateControlsDisplay()
     bool armed = m_currentStatus.armed;
     
     // Update flight mode combo
-    m_flightModeCombo->setEnabled(connected && !armed);
+    ui->flightModeCombo->setEnabled(connected && !armed);
     
     // Update arm/disarm button
     if (armed) {
-        m_armDisarmButton->setText("DISARM");
-        m_armDisarmButton->setStyleSheet(
+        ui->armDisarmButton->setText("DISARM");
+        ui->armDisarmButton->setStyleSheet(
             "QPushButton { background-color: #10b981; color: white; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; } "
             "QPushButton:hover { background-color: #047857; } "
             "QPushButton:disabled { background-color: #374151; }"
         );
     } else {
-        m_armDisarmButton->setText("ARM");
-        m_armDisarmButton->setStyleSheet(
+        ui->armDisarmButton->setText("ARM");
+        ui->armDisarmButton->setStyleSheet(
             "QPushButton { background-color: #dc2626; color: white; border: none; padding: 8px 16px; border-radius: 4px; font-weight: bold; } "
             "QPushButton:hover { background-color: #b91c1c; } "
             "QPushButton:disabled { background-color: #374151; }"
         );
     }
-    m_armDisarmButton->setEnabled(connected);
+    ui->armDisarmButton->setEnabled(connected);
     
     // Update other buttons
-    m_takeoffButton->setEnabled(connected && armed && m_currentStatus.gpsLock);
-    m_landButton->setEnabled(connected && armed);
-    m_rtlButton->setEnabled(connected && armed);
-    m_emergencyStopButton->setEnabled(connected);
+    ui->takeoffButton->setEnabled(connected && armed && m_currentStatus.gpsLock);
+    ui->landButton->setEnabled(connected && armed);
+    ui->rtlButton->setEnabled(connected && armed);
+    ui->emergencyStopButton->setEnabled(connected);
 }
 
 void DroneStatusWidget::addMessage(const QString &message, const QString &type)
@@ -587,11 +284,11 @@ void DroneStatusWidget::addMessage(const QString &message, const QString &type)
     QListWidgetItem *item = new QListWidgetItem(formattedMessage);
     item->setForeground(QColor(color));
     
-    m_messagesList->insertItem(0, item); // Add to top
+    ui->messagesList->insertItem(0, item); // Add to top
     
     // Limit message history to 100 items
-    while (m_messagesList->count() > 100) {
-        delete m_messagesList->takeItem(m_messagesList->count() - 1);
+    while (ui->messagesList->count() > 100) {
+        delete ui->messagesList->takeItem(ui->messagesList->count() - 1);
     }
 }
 
@@ -690,6 +387,6 @@ void DroneStatusWidget::onStatusUpdateTimer()
 
 void DroneStatusWidget::onClearMessages()
 {
-    m_messagesList->clear();
+    ui->messagesList->clear();
     addMessage("Messages cleared", "info");
 }

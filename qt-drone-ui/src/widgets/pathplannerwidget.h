@@ -28,9 +28,11 @@
 #include <QPaintEvent>
 #include <QDialog>
 #include <vector>
-#include "waypoint.h"
+#include "../models/waypoint.h"
+#include "../models/flightpath.h"
 
 class PathRenderer;
+class DroneController;
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class PathPlannerWidget; }
@@ -139,6 +141,9 @@ public:
     explicit PathPlannerWidget(QWidget *parent = nullptr);
     ~PathPlannerWidget();
 
+    // Drone controller
+    void setDroneController(DroneController *controller);
+
     // Waypoint management
     void addWaypoint(const QVector3D &pos);
     void updateWaypoint(int id, const Waypoint &wp);
@@ -163,6 +168,11 @@ private slots:
     void onClearPath();
     void onSavePath();
     void onLoadPath();
+    void onUploadMission();
+    void onRunMission();
+    void onCancelMission();
+    void onMissionUploadComplete(bool success, const QString &message);
+    void onMissionStatusReceived(const QString &status);
     void onWaypointSelected(int id);
     void onWaypointCellChanged(int row, int column);
     void onCameraReset();
@@ -212,10 +222,14 @@ private:
     QPushButton *m_clearPathButton;
     QPushButton *m_savePathButton;
     QPushButton *m_loadPathButton;
+    QPushButton *m_uploadMissionButton;
+    QPushButton *m_runMissionButton;
+    QPushButton *m_cancelMissionButton;
     QPushButton *m_playPathButton;
     QPushButton *m_stopPathButton;
     QLineEdit *m_pathNameEdit;
     QLabel *m_pathLengthLabel;
+    QLabel *m_missionStatusLabel;
     
     // Path order controls
     QPushButton *m_sequentialOrderButton;
@@ -238,6 +252,9 @@ private:
     
     // Current waypoint selection
     int m_selectedWaypoint;  // ID of selected waypoint (-1 if none)
+    
+    // Drone connection
+    DroneController *m_droneController;
 };
 
 #endif // PATHPLANNERWIDGET_H

@@ -26,10 +26,22 @@ public:
     QDateTime modifiedAt() const { return m_modifiedAt; }
     bool isValid() const;
     
+    // Mission parameters for VOXL2/PX4
+    bool homeRelative() const { return m_homeRelative; }
+    float takeoffAltM() const { return m_takeoffAltM; }
+    float cruiseSpeedMS() const { return m_cruiseSpeedMS; }
+    bool autoLand() const { return m_autoLand; }
+    
     // Setters
     void setName(const QString &name);
     void setDescription(const QString &description);
     void setWaypoints(const QVector<Waypoint> &waypoints);
+    
+    // Mission parameter setters
+    void setHomeRelative(bool homeRelative) { m_homeRelative = homeRelative; }
+    void setTakeoffAltM(float alt) { m_takeoffAltM = alt; }
+    void setCruiseSpeedMS(float speed) { m_cruiseSpeedMS = speed; }
+    void setAutoLand(bool autoLand) { m_autoLand = autoLand; }
     
     // Waypoint management
     void addWaypoint(const Waypoint &waypoint);
@@ -67,6 +79,12 @@ private:
     QVector<Waypoint> m_waypoints;
     QDateTime m_createdAt;
     QDateTime m_modifiedAt;
+    
+    // Mission parameters for VOXL2/PX4 execution
+    bool m_homeRelative;     // Altitude relative to home position
+    float m_takeoffAltM;     // Takeoff altitude in meters
+    float m_cruiseSpeedMS;   // Cruise speed in m/s
+    bool m_autoLand;         // Auto-land at end of mission
 };
 
 Q_DECLARE_METATYPE(FlightPath)

@@ -1,0 +1,255 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>RecordedPathsWidget</class>
+ <widget class="QWidget" name="RecordedPathsWidget">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>900</width>
+    <height>600</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Recorded Paths</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <property name="spacing">
+    <number>10</number>
+   </property>
+   <property name="leftMargin">
+    <number>10</number>
+   </property>
+   <property name="topMargin">
+    <number>10</number>
+   </property>
+   <property name="rightMargin">
+    <number>10</number>
+   </property>
+   <property name="bottomMargin">
+    <number>10</number>
+   </property>
+   <item>
+    <layout class="QHBoxLayout" name="contentLayout">
+     <property name="spacing">
+      <number>10</number>
+     </property>
+     <item>
+      <widget class="QGroupBox" name="pathListGroup">
+       <property name="minimumSize">
+        <size>
+         <width>300</width>
+         <height>0</height>
+        </size>
+       </property>
+       <property name="styleSheet">
+        <string notr="true">QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } 
+QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }</string>
+       </property>
+       <property name="title">
+        <string>Recorded Paths</string>
+       </property>
+       <layout class="QVBoxLayout" name="pathListLayout">
+        <item>
+         <widget class="QListWidget" name="pathList">
+          <property name="styleSheet">
+           <string notr="true">QListWidget { background-color: #1f2937; color: white; border: 1px solid #4b5563; } 
+QListWidget::item { padding: 8px; border-bottom: 1px solid #374151; } 
+QListWidget::item:hover { background-color: #374151; } 
+QListWidget::item:selected { background-color: #3b82f6; }</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="pathButtonsLayout">
+          <property name="spacing">
+           <number>5</number>
+          </property>
+          <item>
+           <widget class="QPushButton" name="loadButton">
+            <property name="styleSheet">
+             <string notr="true">QPushButton { background-color: #059669; color: white; border: none; padding: 6px 12px; border-radius: 4px; } 
+QPushButton:hover { background-color: #047857; } 
+QPushButton:disabled { background-color: #374151; }</string>
+            </property>
+            <property name="text">
+             <string>Load</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="deleteButton">
+            <property name="styleSheet">
+             <string notr="true">QPushButton { background-color: #dc2626; color: white; border: none; padding: 6px 12px; border-radius: 4px; } 
+QPushButton:hover { background-color: #b91c1c; } 
+QPushButton:disabled { background-color: #374151; }</string>
+            </property>
+            <property name="text">
+             <string>Delete</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="duplicateButton">
+            <property name="styleSheet">
+             <string notr="true">QPushButton { background-color: #374151; color: white; border: 1px solid #4b5563; padding: 6px 12px; border-radius: 4px; } 
+QPushButton:hover { background-color: #4b5563; } 
+QPushButton:disabled { background-color: #1f2937; }</string>
+            </property>
+            <property name="text">
+             <string>Duplicate</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="pathActionsLayout">
+          <property name="spacing">
+           <number>5</number>
+          </property>
+          <item>
+           <widget class="QPushButton" name="exportButton">
+            <property name="styleSheet">
+             <string notr="true">QPushButton { background-color: #374151; color: white; border: 1px solid #4b5563; padding: 6px 12px; border-radius: 4px; } 
+QPushButton:hover { background-color: #4b5563; } 
+QPushButton:disabled { background-color: #1f2937; }</string>
+            </property>
+            <property name="text">
+             <string>Export</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="importButton">
+            <property name="styleSheet">
+             <string notr="true">QPushButton { background-color: #374151; color: white; border: 1px solid #4b5563; padding: 6px 12px; border-radius: 4px; } 
+QPushButton:hover { background-color: #4b5563; } 
+QPushButton:disabled { background-color: #1f2937; }</string>
+            </property>
+            <property name="text">
+             <string>Import</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <widget class="QGroupBox" name="pathDetailsGroup">
+       <property name="styleSheet">
+        <string notr="true">QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } 
+QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }</string>
+       </property>
+       <property name="title">
+        <string>Path Details</string>
+       </property>
+       <layout class="QVBoxLayout" name="pathDetailsLayout">
+        <item>
+         <widget class="QLabel" name="pathNameLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: white; font-size: 16px; font-weight: bold; }</string>
+          </property>
+          <property name="text">
+           <string>No path selected</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="pathCreatedLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #9ca3af; font-size: 12px; }</string>
+          </property>
+          <property name="text">
+           <string>Created: --</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="pathPointCountLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #9ca3af; }</string>
+          </property>
+          <property name="text">
+           <string>Waypoints: 0</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="pathLengthLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: #9ca3af; }</string>
+          </property>
+          <property name="text">
+           <string>Total Length: 0.0 m</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="pathDescriptionTitleLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: white; font-weight: bold; margin-top: 10px; }</string>
+          </property>
+          <property name="text">
+           <string>Description:</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QTextEdit" name="pathDescriptionEdit">
+          <property name="maximumSize">
+           <size>
+            <width>16777215</width>
+            <height>80</height>
+           </size>
+          </property>
+          <property name="styleSheet">
+           <string notr="true">QTextEdit { background-color: #1f2937; color: white; border: 1px solid #4b5563; padding: 5px; }</string>
+          </property>
+          <property name="readOnly">
+           <bool>true</bool>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="editPathButton">
+          <property name="styleSheet">
+           <string notr="true">QPushButton { background-color: #3b82f6; color: white; border: none; padding: 8px; border-radius: 4px; } 
+QPushButton:hover { background-color: #2563eb; } 
+QPushButton:disabled { background-color: #374151; }</string>
+          </property>
+          <property name="text">
+           <string>Edit Path</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="waypointsTitleLabel">
+          <property name="styleSheet">
+           <string notr="true">QLabel { color: white; font-weight: bold; margin-top: 10px; }</string>
+          </property>
+          <property name="text">
+           <string>Waypoints:</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QListWidget" name="waypointDetailsList">
+          <property name="styleSheet">
+           <string notr="true">QListWidget { background-color: #1f2937; color: white; border: 1px solid #4b5563; font-family: monospace; font-size: 11px; } 
+QListWidget::item { padding: 4px; }</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

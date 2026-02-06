@@ -57,7 +57,7 @@ private slots:
     void onRefreshRecordings();
 
 private:
-    void setupUI();
+    void setupConnections();
     void updateRecordingList();
     void updateRecordingDetails();
     void clearRecordingDetails();
@@ -65,41 +65,9 @@ private:
     QString generateRecordingId();
     QString formatFileSize(qint64 bytes);
     QString formatDuration(qint64 seconds);
+    void updateStorageInfo();
     
     Ui::RecordedVideosWidget *ui;
-    
-    // UI Components
-    QVBoxLayout *m_mainLayout;
-    QHBoxLayout *m_contentLayout;
-    
-    // Recording list
-    QGroupBox *m_recordingListGroup;
-    QVBoxLayout *m_recordingListLayout;
-    QListWidget *m_recordingList;
-    QHBoxLayout *m_recordingButtonsLayout;
-    QPushButton *m_playButton;
-    QPushButton *m_deleteButton;
-    QPushButton *m_exportButton;
-    QPushButton *m_importButton;
-    QPushButton *m_refreshButton;
-    
-    // Recording details
-    QGroupBox *m_recordingDetailsGroup;
-    QVBoxLayout *m_recordingDetailsLayout;
-    QLabel *m_recordingNameLabel;
-    QLabel *m_recordingCreatedLabel;
-    QLabel *m_recordingFilePathLabel;
-    QLabel *m_recordingFileSizeLabel;
-    QLabel *m_recordingDurationLabel;
-    QLabel *m_recordingFormatLabel;
-    QLabel *m_recordingQualityLabel;
-    
-    // Storage info
-    QGroupBox *m_storageGroup;
-    QVBoxLayout *m_storageLayout;
-    QLabel *m_totalRecordingsLabel;
-    QLabel *m_totalSizeLabel;
-    QProgressBar *m_storageUsageBar;
     
     // Data
     QVector<Recording> m_recordings;

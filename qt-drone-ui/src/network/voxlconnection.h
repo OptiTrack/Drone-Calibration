@@ -10,6 +10,7 @@
 #include <QJsonObject>
 #include <QJsonDocument>
 #include <QBuffer>
+#include <QProcess>
 
 class VOXLConnection : public QObject
 {
@@ -45,11 +46,19 @@ public:
     void stopRecording();
     void takePicture();
     void setCameraParameters(const QJsonObject &params);
+    
+    // Mission upload and control (VOXL2 Runner API)
+    void uploadMissionFile(const QString &localFilePath, const QString &remotePath = "/data/trajectories/inbox/trajectory.json");
+    void runMission(const QString &missionFileName);
+    void getMissionStatus();
+    void cancelMission();
 
     // Configuration
     void setConnectionType(ConnectionType type) { m_connectionType = type; }
     void setConnectionTimeout(int timeoutMs) { m_connectionTimeout = timeoutMs; }
     void setHeartbeatInterval(int intervalMs);
+    void setVoxlHost(const QString &host) { m_voxlHost = host; }
+    void setRunnerApiPort(int port) { m_runnerApiPort = port; }
 
 signals:
     void connected();
@@ -59,6 +68,14 @@ signals:
     void telemetryReceived(const QJsonObject &telemetry);
     void errorOccurred(const QString &error);
     void statusChanged(const QString &status);
+    
+    // Mission signals
+    void missionUploadProgress(int percent);
+    void missionUploadComplete();
+    void missionUploadFailed(const QString &error);
+    void missionStatusReceived(const QJsonObject &status);
+    void missionCompleted();
+    void missionCancelled();
 
 private slots:
     void onTcpConnected();
@@ -80,6 +97,12 @@ private slots:
     
     void onHeartbeatTimer();
     void onConnectionTimer();
+    
+    // Mission-related slots
+    void onScpProcessFinished(int exitCode);
+    void onScpProcessError();
+    void onMissionApiReplyFinished();
+    void onMissionApiError(QNetworkReply::NetworkError error);
 
 private:
     void initializeConnections();
@@ -123,6 +146,13 @@ private:
     bool m_telemetryStreamActive;
     int m_videoStreamPort;
     int m_telemetryStreamPort;
+    
+    // Mission upload management (VOXL2 Runner API)
+    QString m_voxlHost;
+    int m_runnerApiPort;  // Default: 8080
+    QProcess *m_scpProcess;
+    QNetworkReply *m_missionApiReply;
+    QString m_currentMissionFile;
 };
 
 #endif // VOXLCONNECTION_H

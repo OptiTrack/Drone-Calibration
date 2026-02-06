@@ -2,13 +2,8 @@
 #define DASHBOARDWIDGET_H
 
 #include <QWidget>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QGridLayout>
-#include <QLabel>
-#include <QPushButton>
 #include <QFrame>
-#include <QGroupBox>
+#include <QLabel>
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class DashboardWidget; }
@@ -30,20 +25,12 @@ signals:
     void navigateToStatus();
 
 private:
-    void setupUI();
-    QFrame* createQuickActionCard(const QString &title, const QString &description, 
-                                   const QString &icon, const QString &buttonText);
+    void setupStatusCards();
+    void setupConnections();
     QFrame* createStatusCard(const QString &title, const QString &value, 
                              const QString &subtitle, const QString &color);
     
     Ui::DashboardWidget *ui;
-    
-    // UI Components
-    QVBoxLayout *m_mainLayout;
-    QLabel *m_welcomeLabel;
-    QLabel *m_subtitleLabel;
-    QGridLayout *m_cardsLayout;
-    QHBoxLayout *m_statusLayout;
 };
 
 #endif // DASHBOARDWIDGET_H
