@@ -6,6 +6,10 @@
 #include <QDir>
 #include <QSurfaceFormat>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 int main(int argc, char *argv[])
 {
     // Set OpenGL format BEFORE creating QApplication
@@ -213,3 +217,40 @@ int main(int argc, char *argv[])
     
     return app.exec();
 }
+
+#ifdef _WIN32
+// Windows entry point for GUI application (no console)
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
+{
+    (void)hInstance;
+    (void)hPrevInstance;
+    (void)nCmdShow;
+    
+    int argc = 0;
+    char **argv = nullptr;
+    
+    // Parse command line
+    LPWSTR *szArglist = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (szArglist != nullptr && argc > 0) {
+        argv = new char*[argc];
+        for (int i = 0; i < argc; i++) {
+            int size = WideCharToMultiByte(CP_UTF8, 0, szArglist[i], -1, nullptr, 0, nullptr, nullptr);
+            argv[i] = new char[size];
+            WideCharToMultiByte(CP_UTF8, 0, szArglist[i], -1, argv[i], size, nullptr, nullptr);
+        }
+        LocalFree(szArglist);
+    }
+    
+    int result = main(argc, argv);
+    
+    // Cleanup
+    if (argv) {
+        for (int i = 0; i < argc; i++) {
+            delete[] argv[i];
+        }
+        delete[] argv;
+    }
+    
+    return result;
+}
+#endif

@@ -10,6 +10,12 @@
     <height>822</height>
    </rect>
   </property>
+  <property name="minimumSize">
+   <size>
+    <width>800</width>
+    <height>600</height>
+   </size>
+  </property>
   <property name="windowTitle">
    <string>Dashboard</string>
   </property>
@@ -88,8 +94,8 @@
       <widget class="QFrame" name="connectionStatusCard">
        <property name="minimumSize">
         <size>
-         <width>0</width>
-         <height>100</height>
+         <width>150</width>
+         <height>120</height>
         </size>
        </property>
        <property name="styleSheet">
@@ -127,6 +133,9 @@
           <property name="text">
            <string>Connection</string>
           </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
          </widget>
         </item>
         <item>
@@ -136,6 +145,9 @@
           </property>
           <property name="text">
            <string>Online</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
           </property>
          </widget>
         </item>
@@ -147,6 +159,9 @@
           <property name="text">
            <string>Drone connected</string>
           </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
          </widget>
         </item>
        </layout>
@@ -156,8 +171,8 @@
       <widget class="QFrame" name="batteryStatusCard">
        <property name="minimumSize">
         <size>
-         <width>0</width>
-         <height>100</height>
+         <width>150</width>
+         <height>120</height>
         </size>
        </property>
        <property name="styleSheet">
@@ -195,6 +210,9 @@
           <property name="text">
            <string>Battery</string>
           </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
          </widget>
         </item>
         <item>
@@ -204,6 +222,9 @@
           </property>
           <property name="text">
            <string>87%</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
           </property>
          </widget>
         </item>
@@ -215,6 +236,9 @@
           <property name="text">
            <string>Estimated 24 min</string>
           </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
          </widget>
         </item>
        </layout>
@@ -224,8 +248,8 @@
       <widget class="QFrame" name="gpsStatusCard">
        <property name="minimumSize">
         <size>
-         <width>0</width>
-         <height>100</height>
+         <width>150</width>
+         <height>120</height>
         </size>
        </property>
        <property name="styleSheet">
@@ -257,11 +281,20 @@
         </property>
         <item>
          <widget class="QLabel" name="gpsTitleLabel">
+          <property name="minimumSize">
+           <size>
+            <width>0</width>
+            <height>15</height>
+           </size>
+          </property>
           <property name="styleSheet">
            <string notr="true">QLabel { color: #9ca3af; font-size: 12px; background: transparent; }</string>
           </property>
           <property name="text">
            <string>GPS</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
           </property>
          </widget>
         </item>
@@ -273,6 +306,9 @@
           <property name="text">
            <string>Fixed</string>
           </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
          </widget>
         </item>
         <item>
@@ -283,6 +319,9 @@
           <property name="text">
            <string>12 satellites</string>
           </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
          </widget>
         </item>
        </layout>
@@ -292,8 +331,8 @@
       <widget class="QFrame" name="signalStatusCard">
        <property name="minimumSize">
         <size>
-         <width>0</width>
-         <height>100</height>
+         <width>150</width>
+         <height>120</height>
         </size>
        </property>
        <property name="styleSheet">
@@ -331,6 +370,9 @@
           <property name="text">
            <string>Signal</string>
           </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
          </widget>
         </item>
         <item>
@@ -341,6 +383,9 @@
           <property name="text">
            <string>Strong</string>
           </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
          </widget>
         </item>
         <item>
@@ -350,6 +395,9 @@
           </property>
           <property name="text">
            <string>-45 dBm</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
           </property>
          </widget>
         </item>
@@ -383,8 +431,8 @@
       <widget class="QFrame" name="cameraActionCard">
        <property name="minimumSize">
         <size>
-         <width>0</width>
-         <height>140</height>
+         <width>250</width>
+         <height>160</height>
         </size>
        </property>
        <property name="styleSheet">
@@ -410,6 +458,9 @@ QFrame:hover {
           </property>
           <property name="text">
            <string>Camera Feed</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
           </property>
          </widget>
         </item>
@@ -457,8 +508,8 @@ QPushButton:hover { background-color: #2563eb; }</string>
       <widget class="QFrame" name="plannerActionCard">
        <property name="minimumSize">
         <size>
-         <width>0</width>
-         <height>140</height>
+         <width>250</width>
+         <height>160</height>
         </size>
        </property>
        <property name="styleSheet">
@@ -484,6 +535,9 @@ QFrame:hover {
           </property>
           <property name="text">
            <string>Flight Planner</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
           </property>
          </widget>
         </item>
@@ -531,8 +585,8 @@ QPushButton:hover { background-color: #2563eb; }</string>
       <widget class="QFrame" name="historyActionCard">
        <property name="minimumSize">
         <size>
-         <width>0</width>
-         <height>140</height>
+         <width>250</width>
+         <height>160</height>
         </size>
        </property>
        <property name="styleSheet">
@@ -558,6 +612,9 @@ QFrame:hover {
           </property>
           <property name="text">
            <string>Flight History</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
           </property>
          </widget>
         </item>
@@ -605,8 +662,8 @@ QPushButton:hover { background-color: #2563eb; }</string>
       <widget class="QFrame" name="mediaActionCard">
        <property name="minimumSize">
         <size>
-         <width>0</width>
-         <height>140</height>
+         <width>250</width>
+         <height>160</height>
         </size>
        </property>
        <property name="styleSheet">
@@ -632,6 +689,9 @@ QFrame:hover {
           </property>
           <property name="text">
            <string>Media Library</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
           </property>
          </widget>
         </item>

@@ -1,4 +1,5 @@
 #include "pathplannerwidget.h"
+#include "../controllers/dronecontroller.h"
 #include <QApplication>
 #include <QFileDialog>
 #include <QMessageBox>
@@ -183,7 +184,7 @@ void PathPlannerOpenGLWidget::drawWaypointLabels(QPainter &painter)
     for (size_t i = 0; i < m_waypoints.size(); ++i)
     {
         const Waypoint &wp = m_waypoints[i];
-        QVector3D worldPos(wp.x, wp.y, wp.z);
+        QVector3D worldPos(wp.x(), wp.y(), wp.z());
         QPoint screenPos = worldToScreen(worldPos);
         
         // Skip if off-screen
@@ -192,14 +193,14 @@ void PathPlannerOpenGLWidget::drawWaypointLabels(QPainter &painter)
             continue;
         
         // Get the letter label
-        QString label = idToLetter(wp.id);
+        QString label = idToLetter(wp.sequence());
         
         // Draw background circle
         int radius = 14;
         QPoint labelPos = screenPos + QPoint(radius + 5, -radius - 5);  // Offset from sphere
         
         // Choose colors based on selection
-        QColor bgColor = (wp.id == m_selectedWaypoint) ? QColor(51, 153, 255) : QColor(51, 204, 51);
+        QColor bgColor = (wp.sequence() == m_selectedWaypoint) ? QColor(51, 153, 255) : QColor(51, 204, 51);
         QColor textColor = Qt::white;
         
         // Draw circle background
@@ -474,10 +475,10 @@ void PathPlannerOpenGLWidget::drawWaypoints()
     for (size_t i = 0; i < m_waypoints.size(); ++i)
     {
         const Waypoint &wp = m_waypoints[i];
-        QVector3D center(wp.x, wp.y, wp.z);
+        QVector3D center(wp.x(), wp.y(), wp.z());
         QVector3D color;
 
-        if (wp.id == m_selectedWaypoint)
+        if (wp.sequence() == m_selectedWaypoint)
         {
             color = QVector3D(0.2f, 0.6f, 1.0f); // Blue for selected
         }
@@ -528,8 +529,8 @@ void PathPlannerOpenGLWidget::drawPath()
         const Waypoint &wp1 = m_waypoints[i];
         const Waypoint &wp2 = m_waypoints[i + 1];
 
-        pathVertices << wp1.x << wp1.y << wp1.z;
-        pathVertices << wp2.x << wp2.y << wp2.z;
+        pathVertices << wp1.x() << wp1.y() << wp1.z();
+        pathVertices << wp2.x() << wp2.y() << wp2.z();
 
         pathColors << 1.0f << 1.0f << 0.0f; // Yellow
         pathColors << 1.0f << 1.0f << 0.0f;
@@ -688,7 +689,7 @@ int PathPlannerOpenGLWidget::findWaypointAt(const QPoint &screenPos)
     for (size_t i = 0; i < m_waypoints.size(); ++i)
     {
         const Waypoint &wp = m_waypoints[i];
-        QVector3D wpPos(wp.x, wp.y, wp.z);
+        QVector3D wpPos(wp.x(), wp.y(), wp.z());
 
         // Project waypoint to screen (simplified)
         QVector4D clipPos = m_projectionMatrix * m_viewMatrix * QVector4D(wpPos, 1.0f);
@@ -701,7 +702,7 @@ int PathPlannerOpenGLWidget::findWaypointAt(const QPoint &screenPos)
 
             if ((screenPoint - screenPos).manhattanLength() < 15)
             {
-                return wp.id;
+                return wp.sequence();
             }
         }
     }
@@ -716,14 +717,15 @@ void PathPlannerOpenGLWidget::setWaypoints(const std::vector<Waypoint> &waypoint
 
 void PathPlannerOpenGLWidget::addWaypoint(const QVector3D &point)
 {
-    // Generate new ID (1-based, sequential)
-    int newId = 1;
+    // Generate new sequence number (1-based, sequential)
+    int newSequence = 1;
     if (!m_waypoints.empty())
     {
-        newId = m_waypoints.back().id + 1;
+        newSequence = m_waypoints.back().sequence() + 1;
     }
 
-    Waypoint wp(newId, point);
+    Waypoint wp(point);
+    wp.setSequence(newSequence);
     m_waypoints.push_back(wp);
     emit waypointAdded(wp);
     update();
@@ -733,10 +735,10 @@ void PathPlannerOpenGLWidget::updateWaypoint(int id, const Waypoint &wp)
 {
     for (auto &waypoint : m_waypoints)
     {
-        if (waypoint.id == id)
+        if (waypoint.sequence() == id)
         {
             waypoint = wp;
-            waypoint.id = id; // Preserve ID
+            waypoint.setSequence(id); // Preserve sequence number
             update();
             return;
         }
@@ -747,7 +749,7 @@ void PathPlannerOpenGLWidget::removeWaypoint(int id)
 {
     auto it = std::remove_if(m_waypoints.begin(), m_waypoints.end(),
                              [id](const Waypoint &wp)
-                             { return wp.id == id; });
+                             { return wp.sequence() == id; });
 
     if (it != m_waypoints.end())
     {
@@ -804,7 +806,7 @@ void PathPlannerOpenGLWidget::resetCamera()
 
 // PathPlannerWidget Implementation
 PathPlannerWidget::PathPlannerWidget(QWidget *parent)
-    : QWidget(parent), ui(nullptr), m_mainLayout(nullptr), m_controlsLayout(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_pathGroup(nullptr), m_pathOrderGroup(nullptr), m_viewGroup(nullptr), m_settingsGroup(nullptr), m_waypointTable(nullptr), m_selectedWaypoint(-1), m_currentAnimationWaypoint(0), m_animationProgress(0.0f), m_isPlayingPath(false)
+    : QWidget(parent), ui(nullptr), m_mainLayout(nullptr), m_controlsLayout(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_pathGroup(nullptr), m_pathOrderGroup(nullptr), m_viewGroup(nullptr), m_settingsGroup(nullptr), m_waypointTable(nullptr), m_selectedWaypoint(-1), m_currentAnimationWaypoint(0), m_animationProgress(0.0f), m_isPlayingPath(false), m_droneController(nullptr)
 {
     setupUI();
 
@@ -840,7 +842,7 @@ void PathPlannerWidget::setupUI()
             this, [this](const Waypoint &wp)
             {
                 updateWaypointTable();
-                onWaypointSelected(wp.id);
+                onWaypointSelected(wp.sequence());
                 emitWaypointsChanged(); });
 }
 
@@ -902,6 +904,34 @@ void PathPlannerWidget::setupControls()
     pathButtonsLayout->addWidget(m_stopPathButton, 2, 0);
 
     pathLayout->addLayout(pathButtonsLayout);
+    
+    // Mission control buttons
+    pathLayout->addWidget(new QLabel("Mission Control:"));
+    QGridLayout *missionButtonsLayout = new QGridLayout;
+    
+    m_uploadMissionButton = new QPushButton("Upload Mission");
+    m_uploadMissionButton->setStyleSheet(
+        "QPushButton { background-color: #10b981; color: white; border: none; padding: 6px; border-radius: 4px; font-weight: bold; } "
+        "QPushButton:hover { background-color: #059669; } "
+        "QPushButton:disabled { background-color: #6b7280; }");
+    m_uploadMissionButton->setEnabled(false);
+    missionButtonsLayout->addWidget(m_uploadMissionButton, 0, 0, 1, 2);
+    
+    m_runMissionButton = new QPushButton("Run");
+    m_runMissionButton->setEnabled(false);
+    missionButtonsLayout->addWidget(m_runMissionButton, 1, 0);
+    
+    m_cancelMissionButton = new QPushButton("Cancel");
+    m_cancelMissionButton->setEnabled(false);
+    missionButtonsLayout->addWidget(m_cancelMissionButton, 1, 1);
+    
+    pathLayout->addLayout(missionButtonsLayout);
+    
+    // Mission status
+    m_missionStatusLabel = new QLabel("Status: No mission uploaded");
+    m_missionStatusLabel->setStyleSheet("color: #9ca3af; font-size: 11px;");
+    m_missionStatusLabel->setWordWrap(true);
+    pathLayout->addWidget(m_missionStatusLabel);
 
     // Path Order group (visible only when 2+ waypoints exist)
     m_pathOrderGroup = new QGroupBox("Path Order");
@@ -975,6 +1005,9 @@ void PathPlannerWidget::setupControls()
     connect(m_clearPathButton, &QPushButton::clicked, this, &PathPlannerWidget::onClearPath);
     connect(m_savePathButton, &QPushButton::clicked, this, &PathPlannerWidget::onSavePath);
     connect(m_loadPathButton, &QPushButton::clicked, this, &PathPlannerWidget::onLoadPath);
+    connect(m_uploadMissionButton, &QPushButton::clicked, this, &PathPlannerWidget::onUploadMission);
+    connect(m_runMissionButton, &QPushButton::clicked, this, &PathPlannerWidget::onRunMission);
+    connect(m_cancelMissionButton, &QPushButton::clicked, this, &PathPlannerWidget::onCancelMission);
     connect(m_playPathButton, &QPushButton::clicked, this, &PathPlannerWidget::onPlayPath);
     connect(m_stopPathButton, &QPushButton::clicked, this, &PathPlannerWidget::onStopPath);
     connect(m_resetCameraButton, &QPushButton::clicked, this, &PathPlannerWidget::onCameraReset);
@@ -1137,7 +1170,7 @@ void PathPlannerWidget::onSavePath()
         QVector<QVector3D> points;
         for (const auto &wp : m_openglWidget->waypoints())
         {
-            points.append(QVector3D(wp.x, wp.y, wp.z));
+            points.append(QVector3D(wp.x(), wp.y(), wp.z()));
         }
 
         // Emit signal so Flight History can update
@@ -1205,7 +1238,7 @@ void PathPlannerWidget::onWaypointCellChanged(int row, int column)
     const auto &waypoints = m_openglWidget->waypoints();
     for (const auto &wp : waypoints)
     {
-        if (wp.id == id)
+        if (wp.sequence() == id)
         {
             Waypoint updated = wp;
 
@@ -1222,22 +1255,22 @@ void PathPlannerWidget::onWaypointCellChanged(int row, int column)
             switch (column)
             {
             case 1:
-                updated.x = value;
+                updated.setX(value);
                 break;
             case 2:
-                updated.y = value;
+                updated.setY(value);
                 break;
             case 3:
-                updated.z = value;
+                updated.setZ(value);
                 break;
             case 4:
-                updated.yaw = value;
+                updated.setYawAngle(value);
                 break;
             case 5:
-                updated.speed = value;
+                // Speed is not in the new Waypoint model - skip
                 break;
             case 6:
-                updated.holdTime = value;
+                updated.setHoldTime(value);
                 break;
             }
 
@@ -1337,19 +1370,19 @@ void PathPlannerWidget::updateWaypointTable()
             const Waypoint &wp = waypoints[i];
 
             // Label as letter (read-only) - shows visit order number and waypoint letter
-            QString label = QString("%1. %2").arg(i + 1).arg(idToLetter(wp.id));
+            QString label = QString("%1. %2").arg(i + 1).arg(idToLetter(wp.sequence()));
             QTableWidgetItem *idItem = new QTableWidgetItem(label);
             idItem->setFlags(idItem->flags() & ~Qt::ItemIsEditable);
-            idItem->setData(Qt::UserRole, wp.id);  // Store actual ID for reference
+            idItem->setData(Qt::UserRole, wp.sequence());  // Store actual sequence for reference
             m_waypointTable->setItem(i, 0, idItem);
 
             // Position and parameters (editable)
-            m_waypointTable->setItem(i, 1, new QTableWidgetItem(QString::number(wp.x, 'f', 2)));
-            m_waypointTable->setItem(i, 2, new QTableWidgetItem(QString::number(wp.y, 'f', 2)));
-            m_waypointTable->setItem(i, 3, new QTableWidgetItem(QString::number(wp.z, 'f', 2)));
-            m_waypointTable->setItem(i, 4, new QTableWidgetItem(QString::number(wp.yaw, 'f', 1)));
-            m_waypointTable->setItem(i, 5, new QTableWidgetItem(QString::number(wp.speed, 'f', 1)));
-            m_waypointTable->setItem(i, 6, new QTableWidgetItem(QString::number(wp.holdTime, 'f', 1)));
+            m_waypointTable->setItem(i, 1, new QTableWidgetItem(QString::number(wp.x(), 'f', 2)));
+            m_waypointTable->setItem(i, 2, new QTableWidgetItem(QString::number(wp.y(), 'f', 2)));
+            m_waypointTable->setItem(i, 3, new QTableWidgetItem(QString::number(wp.z(), 'f', 2)));
+            m_waypointTable->setItem(i, 4, new QTableWidgetItem(QString::number(wp.yawAngle(), 'f', 1)));
+            m_waypointTable->setItem(i, 5, new QTableWidgetItem("0.0")); // Speed not in new model
+            m_waypointTable->setItem(i, 6, new QTableWidgetItem(QString::number(wp.holdTime(), 'f', 1)));
         }
     }
 
@@ -1364,8 +1397,8 @@ void PathPlannerWidget::updateWaypointTable()
     {
         for (size_t i = 0; i < waypoints.size() - 1; ++i)
         {
-            QVector3D p1(waypoints[i].x, waypoints[i].y, waypoints[i].z);
-            QVector3D p2(waypoints[i + 1].x, waypoints[i + 1].y, waypoints[i + 1].z);
+            QVector3D p1(waypoints[i].x(), waypoints[i].y(), waypoints[i].z());
+            QVector3D p2(waypoints[i + 1].x(), waypoints[i + 1].y(), waypoints[i + 1].z());
             totalLength += p1.distanceToPoint(p2);
         }
     }
@@ -1405,7 +1438,9 @@ void PathPlannerWidget::loadPoints(const QVector<QVector3D> &points)
     std::vector<Waypoint> waypoints;
     for (int i = 0; i < points.size(); ++i)
     {
-        waypoints.push_back(Waypoint(i + 1, points[i]));
+        Waypoint wp(points[i]);
+        wp.setSequence(i + 1);
+        waypoints.push_back(wp);
     }
     m_openglWidget->setWaypoints(waypoints);
     updateWaypointTable();
@@ -1518,7 +1553,7 @@ bool PathPlannerWidget::loadFromJson(const QString &path)
 
     if (!waypoints.empty())
     {
-        onWaypointSelected(waypoints[0].id);
+        onWaypointSelected(waypoints[0].sequence());
     }
 
     return true;
@@ -1547,7 +1582,7 @@ void PathPlannerWidget::onSequentialOrder()
     // IDs stay the same - only the array position changes
     std::vector<Waypoint> sorted = waypoints;
     std::sort(sorted.begin(), sorted.end(), [](const Waypoint &a, const Waypoint &b) {
-        return a.id < b.id;
+        return a.sequence() < b.sequence();
     });
 
     m_openglWidget->setWaypoints(sorted);
@@ -1579,12 +1614,12 @@ void PathPlannerWidget::onCustomOrder()
     for (const auto &wp : waypoints)
     {
         QString text = QString("Waypoint %1 (%.1f, %.1f, %.1f)")
-                           .arg(idToLetter(wp.id))
-                           .arg(wp.x)
-                           .arg(wp.y)
-                           .arg(wp.z);
+                           .arg(idToLetter(wp.sequence()))
+                           .arg(wp.x())
+                           .arg(wp.y())
+                           .arg(wp.z());
         QListWidgetItem *item = new QListWidgetItem(text);
-        item->setData(Qt::UserRole, wp.id);
+        item->setData(Qt::UserRole, wp.sequence());
         listWidget->addItem(item);
     }
     layout->addWidget(listWidget);
@@ -1632,17 +1667,17 @@ void PathPlannerWidget::onCustomOrder()
     if (dialog.exec() == QDialog::Accepted)
     {
         // Build new waypoint order based on list widget order
-        // IDs stay the same - only the array position changes
+        // Sequence numbers stay the same - only the array position changes
         std::vector<Waypoint> newOrder;
         for (int i = 0; i < listWidget->count(); ++i)
         {
-            int originalId = listWidget->item(i)->data(Qt::UserRole).toInt();
-            // Find the waypoint with this ID
+            int originalSequence = listWidget->item(i)->data(Qt::UserRole).toInt();
+            // Find the waypoint with this sequence
             for (const auto &wp : waypoints)
             {
-                if (wp.id == originalId)
+                if (wp.sequence() == originalSequence)
                 {
-                    // Keep the waypoint exactly as is - ID doesn't change
+                    // Keep the waypoint exactly as is - sequence doesn't change
                     newOrder.push_back(wp);
                     break;
                 }
@@ -1667,4 +1702,140 @@ void PathPlannerWidget::onUndoReorder()
 
     m_previousWaypointOrder.clear();
     m_undoReorderButton->setEnabled(false);
+}
+
+void PathPlannerWidget::setDroneController(DroneController *controller)
+{
+    m_droneController = controller;
+    
+    if (m_droneController) {
+        // Enable upload button when waypoints exist
+        connect(this, &PathPlannerWidget::waypointsChanged,
+                this, [this](const std::vector<Waypoint> &waypoints) {
+                    m_uploadMissionButton->setEnabled(!waypoints.empty() && m_droneController != nullptr);
+                });
+    }
+}
+
+void PathPlannerWidget::onUploadMission()
+{
+    if (!m_droneController) {
+        QMessageBox::warning(this, "Upload Failed", "Drone controller not initialized.");
+        return;
+    }
+    
+    const auto &waypoints = m_openglWidget->waypoints();
+    if (waypoints.empty()) {
+        QMessageBox::warning(this, "Upload Failed", "No waypoints to upload.");
+        return;
+    }
+    
+    // Create FlightPath from current waypoints
+    FlightPath missionPath;
+    missionPath.setName(m_pathNameEdit->text());
+    missionPath.setHomeRelative(true);
+    missionPath.setTakeoffAltM(m_defaultAltitudeSpinBox->value());
+    missionPath.setCruiseSpeedMS(5.0f);  // Default cruise speed
+    missionPath.setAutoLand(true);
+    
+    for (const Waypoint &wp : waypoints) {
+        missionPath.addWaypoint(wp);
+    }
+    
+    // Save mission to temporary JSON file
+    QString tempDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    QString missionFileName = QString("mission_%1.json").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
+    QString missionFilePath = QDir(tempDir).filePath(missionFileName);
+    
+    QFile file(missionFilePath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        QMessageBox::warning(this, "Upload Failed", "Failed to create mission file.");
+        return;
+    }
+    
+    file.write(QJsonDocument(missionPath.toJson()).toJson(QJsonDocument::Indented));
+    file.close();
+    
+    // Upload via VOXLConnection
+    m_missionStatusLabel->setText("Status: Uploading mission...");
+    m_missionStatusLabel->setStyleSheet("color: #fbbf24;");  // Yellow
+    m_uploadMissionButton->setEnabled(false);
+    
+    // Convert waypoints to legacy format for DroneController
+    QVector<QVector3D> legacyWaypoints;
+    for (const Waypoint &wp : waypoints) {
+        legacyWaypoints.append(QVector3D(wp.x(), wp.y(), wp.z()));
+    }
+    
+    m_droneController->uploadMission(legacyWaypoints);
+    
+    // Show success message
+    QMessageBox::information(this, "Mission Upload", 
+        QString("Mission uploaded successfully!\n\nWaypoints: %1\nTotal Distance: %2 m")
+        .arg(waypoints.size())
+        .arg(missionPath.totalDistance(), 0, 'f', 2));
+    
+    m_missionStatusLabel->setText("Status: Mission uploaded");
+    m_missionStatusLabel->setStyleSheet("color: #10b981;");  // Green
+    m_uploadMissionButton->setEnabled(true);
+    m_runMissionButton->setEnabled(true);
+    
+    // Clean up temp file
+    QFile::remove(missionFilePath);
+}
+
+void PathPlannerWidget::onRunMission()
+{
+    if (!m_droneController) {
+        return;
+    }
+    
+    QMessageBox::StandardButton reply = QMessageBox::question(this, "Run Mission", 
+        "Are you sure you want to start the mission?\n\nThe drone will take off and follow the uploaded waypoints.",
+        QMessageBox::Yes | QMessageBox::No);
+    
+    if (reply == QMessageBox::Yes) {
+        m_droneController->startMission();
+        m_missionStatusLabel->setText("Status: Mission running...");
+        m_missionStatusLabel->setStyleSheet("color: #3b82f6;");  // Blue
+        m_runMissionButton->setEnabled(false);
+        m_cancelMissionButton->setEnabled(true);
+    }
+}
+
+void PathPlannerWidget::onCancelMission()
+{
+    if (!m_droneController) {
+        return;
+    }
+    
+    QMessageBox::StandardButton reply = QMessageBox::question(this, "Cancel Mission", 
+        "Are you sure you want to cancel the mission?\n\nThe drone will stop following the mission and hover.",
+        QMessageBox::Yes | QMessageBox::No);
+    
+    if (reply == QMessageBox::Yes) {
+        m_droneController->abortMission();
+        m_missionStatusLabel->setText("Status: Mission cancelled");
+        m_missionStatusLabel->setStyleSheet("color: #ef4444;");  // Red
+        m_runMissionButton->setEnabled(true);
+        m_cancelMissionButton->setEnabled(false);
+    }
+}
+
+void PathPlannerWidget::onMissionUploadComplete(bool success, const QString &message)
+{
+    if (success) {
+        m_missionStatusLabel->setText("Status: " + message);
+        m_missionStatusLabel->setStyleSheet("color: #10b981;");  // Green
+        m_runMissionButton->setEnabled(true);
+    } else {
+        m_missionStatusLabel->setText("Status: Upload failed - " + message);
+        m_missionStatusLabel->setStyleSheet("color: #ef4444;");  // Red
+    }
+    m_uploadMissionButton->setEnabled(true);
+}
+
+void PathPlannerWidget::onMissionStatusReceived(const QString &status)
+{
+    m_missionStatusLabel->setText("Status: " + status);
 }

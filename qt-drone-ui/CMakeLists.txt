@@ -18,6 +18,12 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Suppress Qt Vulkan feature warnings (we use OpenGL instead)
+set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS ON CACHE BOOL "Suppress developer warnings" FORCE)
+set(QT_FEATURE_vulkan OFF CACHE BOOL "Disable Vulkan" FORCE)
+set(CMAKE_DISABLE_FIND_PACKAGE_Vulkan TRUE)
+set(CMAKE_DISABLE_FIND_PACKAGE_WrapVulkanHeaders TRUE)
+
 # Find required Qt modules 
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS 
     Core 
@@ -97,15 +103,16 @@ set(PROJECT_SOURCES
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     qt_add_executable(QtDroneUI
         MANUAL_FINALIZATION
+        WIN32
         ${PROJECT_SOURCES}
     )
     qt_create_translation(QM_FILES ${CMAKE_SOURCE_DIR} ${TS_FILES})
 else()
-    add_executable(QtDroneUI ${PROJECT_SOURCES})
+    add_executable(QtDroneUI WIN32 ${PROJECT_SOURCES})
     qt5_create_translation(QM_FILES ${CMAKE_SOURCE_DIR} ${TS_FILES})
 endif()
 
-# Link libraries
+# Link libraries (skip Qt6EntryPoint for MinGW compatibility)
 target_link_libraries(QtDroneUI PRIVATE
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::Widgets
@@ -117,13 +124,18 @@ target_link_libraries(QtDroneUI PRIVATE
     ${OPENGL_LIBRARIES}
 )
 
+# Workaround for MinGW linking issue with Qt6 EntryPoint
+if(MINGW AND ${QT_VERSION_MAJOR} GREATER_EQUAL 6)
+    # Don't link Qt6EntryPoint - we provide our own WinMain
+    set_target_properties(QtDroneUI PROPERTIES QT_NO_ENTRYPOINT ON)
+endif()
+
 # Set target properties
 set_target_properties(QtDroneUI PROPERTIES
     MACOSX_BUNDLE_GUI_IDENTIFIER com.optitrakc.qtdroneui
     MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
     MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
     MACOSX_BUNDLE TRUE
-    WIN32_EXECUTABLE TRUE
 )
 
 # Include directories

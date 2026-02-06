@@ -205,3 +205,135 @@ void DroneController::onVOXLError(const QString &error)
 {
     emit errorOccurred(QString("VOXL Error: %1").arg(error));
 }
+
+void DroneController::uploadMission(const QVector<QVector3D> &waypoints)
+{
+    if (!m_connected) {
+        emit errorOccurred("Cannot upload mission: Not connected to drone");
+        return;
+    }
+    
+    // Convert waypoints to mission items
+    QVector<MissionItem> items = waypointsToMissionItems(waypoints);
+    
+    // Store current mission
+    m_currentMission.id = QUuid::createUuid().toString();
+    m_currentMission.name = QString("Mission_%1").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
+    m_currentMission.items = items;
+    m_currentMission.uploaded = false;
+    
+    // Create mission JSON
+    QJsonArray waypointsArray;
+    for (const MissionItem &item : items) {
+        QJsonObject wpObj;
+        wpObj["sequence"] = item.sequence;
+        wpObj["command"] = item.command;
+        wpObj["latitude"] = item.position.x();
+        wpObj["longitude"] = item.position.y();
+        wpObj["altitude"] = item.position.z();
+        wpObj["param1"] = item.param1;
+        wpObj["param2"] = item.param2;
+        wpObj["param3"] = item.param3;
+        wpObj["param4"] = item.param4;
+        wpObj["autocontinue"] = item.autocontinue;
+        waypointsArray.append(wpObj);
+    }
+    
+    QJsonObject missionData;
+    missionData["waypoints"] = waypointsArray;
+    missionData["mission_id"] = m_currentMission.id;
+    missionData["mission_name"] = m_currentMission.name;
+    
+    sendCommand("upload_mission", missionData);
+    
+    m_currentMission.uploaded = true;
+    emit missionStatusChanged("Mission uploaded successfully");
+    emit messageReceived(QString("Uploaded mission with %1 waypoints").arg(items.size()));
+}
+
+void DroneController::startMission()
+{
+    if (!m_connected) {
+        emit errorOccurred("Cannot start mission: Not connected to drone");
+        return;
+    }
+    
+    if (!m_currentMission.uploaded) {
+        emit errorOccurred("Cannot start mission: No mission uploaded");
+        return;
+    }
+    
+    sendCommand("start_mission");
+    m_missionActive = true;
+    m_currentMissionItem = 0;
+    
+    emit missionStatusChanged("Mission started");
+    emit messageReceived("Mission execution started");
+}
+
+void DroneController::pauseMission()
+{
+    if (!m_connected || !m_missionActive) {
+        return;
+    }
+    
+    sendCommand("pause_mission");
+    emit missionStatusChanged("Mission paused");
+}
+
+void DroneController::resumeMission()
+{
+    if (!m_connected || !m_currentMission.uploaded) {
+        return;
+    }
+    
+    sendCommand("resume_mission");
+    m_missionActive = true;
+    emit missionStatusChanged("Mission resumed");
+}
+
+void DroneController::abortMission()
+{
+    if (!m_connected) {
+        return;
+    }
+    
+    sendCommand("abort_mission");
+    m_missionActive = false;
+    
+    emit missionStatusChanged("Mission aborted");
+    emit messageReceived("Mission execution aborted");
+}
+
+void DroneController::clearMission()
+{
+    m_currentMission.items.clear();
+    m_currentMission.uploaded = false;
+    m_missionActive = false;
+    
+    if (m_connected) {
+        sendCommand("clear_mission");
+    }
+    
+    emit missionStatusChanged("Mission cleared");
+}
+
+QVector<MissionItem> DroneController::waypointsToMissionItems(const QVector<QVector3D> &waypoints)
+{
+    QVector<MissionItem> items;
+    
+    for (int i = 0; i < waypoints.size(); ++i) {
+        MissionItem item;
+        item.sequence = i;
+        item.command = "NAV_WAYPOINT";
+        item.position = waypoints[i];
+        item.param1 = 0.0f;  // Hold time
+        item.param2 = 2.0f;  // Acceptance radius
+        item.param3 = 0.0f;  // Pass through
+        item.param4 = qDegreesToRadians(0.0f);  // Yaw angle
+        item.autocontinue = true;
+        items.append(item);
+    }
+    
+    return items;
+}

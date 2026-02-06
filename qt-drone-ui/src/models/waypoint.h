@@ -18,6 +18,12 @@ public:
     float x() const { return m_position.x(); }
     float y() const { return m_position.y(); }
     float z() const { return m_position.z(); }
+    
+    // GPS coordinates (for mission upload to PX4)
+    double latitude() const { return m_latitude; }
+    double longitude() const { return m_longitude; }
+    float relativeAltitudeM() const { return m_relativeAltitudeM; }
+    
     QString name() const { return m_name; }
     QString description() const { return m_description; }
     int sequence() const { return m_sequence; }
@@ -34,6 +40,17 @@ public:
     void setX(float x) { m_position.setX(x); }
     void setY(float y) { m_position.setY(y); }
     void setZ(float z) { m_position.setZ(z); }
+    
+    // GPS coordinate setters
+    void setLatitude(double lat) { m_latitude = lat; }
+    void setLongitude(double lon) { m_longitude = lon; }
+    void setRelativeAltitudeM(float alt) { m_relativeAltitudeM = alt; }
+    void setGpsCoordinates(double lat, double lon, float relAlt) {
+        m_latitude = lat;
+        m_longitude = lon;
+        m_relativeAltitudeM = relAlt;
+    }
+    
     void setName(const QString &name) { m_name = name; }
     void setDescription(const QString &description) { m_description = description; }
     void setSequence(int sequence) { m_sequence = sequence; }
@@ -55,14 +72,21 @@ public:
     bool operator!=(const Waypoint &other) const;
     
 private:
+    // Local position (for UI visualization)
     QVector3D m_position;
+    
+    // GPS coordinates (for PX4 mission upload)
+    double m_latitude;      // degrees
+    double m_longitude;     // degrees
+    float m_relativeAltitudeM;  // meters above home
+    
     QString m_name;
     QString m_description;
     int m_sequence;
     QString m_waypointType; // NAV_WAYPOINT, LOITER_UNLIM, LAND, etc.
     float m_acceptanceRadius;
-    float m_holdTime;
-    float m_yawAngle;
+    float m_holdTime;       // seconds to hold at waypoint
+    float m_yawAngle;       // degrees
     bool m_passThrough;
     QDateTime m_createdAt;
 };

@@ -330,6 +330,7 @@ void MainWindow::setupMainContent()
     
     // Index 2: Flight Planner
     m_pathPlannerWidget = new PathPlannerWidget;
+    m_pathPlannerWidget->setDroneController(m_droneController);  // Connect drone controller
     m_contentStack->addWidget(m_pathPlannerWidget);
     
     // Index 3: Flight History (Recorded Paths)

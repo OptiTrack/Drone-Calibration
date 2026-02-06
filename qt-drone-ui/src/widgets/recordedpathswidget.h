@@ -13,18 +13,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QVector3D>
-
-struct FlightPath {
-    QString id;
-    QString name;
-    QVector<QVector3D> points;
-    qint64 createdAt;
-    QString description;
-    QString filePath;  // Full path to the JSON file on disk
-    
-    QJsonObject toJson() const;
-    static FlightPath fromJson(const QJsonObject &json);
-};
+#include "../models/flightpath.h"
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class RecordedPathsWidget; }
