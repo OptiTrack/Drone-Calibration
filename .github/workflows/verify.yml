@@ -26,7 +26,7 @@ jobs:
           arch: 'win64_mingw'
           modules: 'qtmultimedia'
           cache: true
-          tools: 'tools_mingw1310 qt.tools.win64_mingw1310'
+          tools: 'tools_mingw1310'
       
       - name: Install dependencies
         run: |
