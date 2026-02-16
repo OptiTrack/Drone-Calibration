@@ -24,7 +24,7 @@ jobs:
           host: 'windows'
           target: 'desktop'
           arch: 'win64_mingw'
-          modules: 'qtmultimedia qtnetwork'
+          modules: 'qtmultimedia'
           cache: true
       
       - name: Install dependencies
