@@ -11,11 +11,7 @@ on:
 jobs:
   build-qt-drone-ui:
     name: Build Qt Drone UI
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        qt-version: ['6.10.0']
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     
     steps:
       - name: Checkout code
@@ -24,23 +20,14 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v3
         with:
-          version: ${{ matrix.qt-version }}
-          host: ${{ runner.os == 'Windows' && 'windows' || 'linux' }}
+          version: '6.10.0'
+          host: 'windows'
           target: 'desktop'
-          arch: ${{ runner.os == 'Windows' && 'win64_mingw' || 'gcc_64' }}
+          arch: 'win64_mingw'
           modules: 'qtmultimedia qtnetwork'
           cache: true
       
-      - name: Install dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build libgl1-mesa-dev libglu1-mesa-dev \
-            libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
-            libxcb-randr0 libxcb-render-util0 libxcb-xinerama0 libxcb-shape0
-      
-      - name: Install dependencies (Windows)
-        if: runner.os == 'Windows'
+      - name: Install dependencies
         run: |
           choco install cmake ninja -y
       
@@ -56,19 +43,18 @@ jobs:
       
       - name: Verify executable exists
         working-directory: qt-drone-ui
-        shell: bash
         run: |
-          if [ -f "build/QtDroneUI.exe" ] || [ -f "build/QtDroneUI" ]; then
-            echo "QtDroneUI executable built successfully"
-          else
-            echo "QtDroneUI executable not found"
+          if (Test-Path "build/QtDroneUI.exe") {
+            Write-Host "✓ QtDroneUI executable built successfully"
+          } else {
+            Write-Host "✗ QtDroneUI executable not found"
             exit 1
-          fi
+          }
       
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: QtDroneUI-${{ matrix.os }}-Qt${{ matrix.qt-version }}
+          name: QtDroneUI-Windows-Qt6.10.0
           path: |
-            qt-drone-ui/build/QtDroneUI*
+            qt-drone-ui/build/QtDroneUI.exe
           retention-days: 7 
