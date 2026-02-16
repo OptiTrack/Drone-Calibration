@@ -1,4 +1,4 @@
-name: Verify Run
+name: Verify Qt Drone UI
 
 on:
   pull_request:
@@ -9,20 +9,60 @@ on:
       - main
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./ui-design-js/ui
+  build-qt-drone-ui:
+    name: Build Qt Drone UI
+    runs-on: windows-latest
+    
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v3
         with:
-          node-version: 20
-          cache: 'npm'
-          cache-dependency-path: './ui-design-js/ui/package-lock.json'
+          version: '6.10.0'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_mingw'
+          modules: 'qtmultimedia'
+          cache: true
+          tools: 'tools_mingw1310'
       
-      - run: npm ci
+      - name: Install dependencies
+        run: |
+          choco install cmake ninja -y
       
-      - run: npm run build
-        continue-on-error: true 
+      - name: Setup MinGW PATH
+        run: |
+          $mingwPath = "D:\a\Drone-Calibration\Qt\Tools\mingw1310_64\bin"
+          echo "$mingwPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "CC=$mingwPath\gcc.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "CXX=$mingwPath\g++.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      
+      - name: Configure CMake
+        working-directory: qt-drone-ui
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      
+      - name: Build
+        working-directory: qt-drone-ui
+        run: |
+          cmake --build build --config Release
+      
+      - name: Verify executable exists
+        working-directory: qt-drone-ui
+        run: |
+          if (Test-Path "build/QtDroneUI.exe") {
+            Write-Host "✓ QtDroneUI executable built successfully"
+          } else {
+            Write-Host "✗ QtDroneUI executable not found"
+            exit 1
+          }
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: QtDroneUI-Windows-Qt6.10.0
+          path: |
+            qt-drone-ui/build/QtDroneUI.exe
+          retention-days: 7 
