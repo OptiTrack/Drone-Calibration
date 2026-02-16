@@ -26,10 +26,18 @@ jobs:
           arch: 'win64_mingw'
           modules: 'qtmultimedia'
           cache: true
+          tools: 'tools_mingw1310 qt.tools.win64_mingw1310'
       
       - name: Install dependencies
         run: |
           choco install cmake ninja -y
+      
+      - name: Setup MinGW PATH
+        run: |
+          $mingwPath = "D:\a\Drone-Calibration\Qt\Tools\mingw1310_64\bin"
+          echo "$mingwPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "CC=$mingwPath\gcc.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "CXX=$mingwPath\g++.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       
       - name: Configure CMake
         working-directory: qt-drone-ui
