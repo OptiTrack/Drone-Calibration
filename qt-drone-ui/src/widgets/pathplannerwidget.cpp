@@ -1,7 +1,10 @@
 #include "pathplannerwidget.h"
 #include "../controllers/dronecontroller.h"
 #include <QApplication>
+#include <QClipboard>
+#include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QMessageBox>
 #include <QInputDialog>
 #include <QJsonDocument>
@@ -806,7 +809,7 @@ void PathPlannerOpenGLWidget::resetCamera()
 
 // PathPlannerWidget Implementation
 PathPlannerWidget::PathPlannerWidget(QWidget *parent)
-    : QWidget(parent), ui(nullptr), m_mainLayout(nullptr), m_controlsLayout(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_pathGroup(nullptr), m_pathOrderGroup(nullptr), m_viewGroup(nullptr), m_settingsGroup(nullptr), m_waypointTable(nullptr), m_selectedWaypoint(-1), m_currentAnimationWaypoint(0), m_animationProgress(0.0f), m_isPlayingPath(false), m_droneController(nullptr)
+    : QWidget(parent), ui(nullptr), m_mainLayout(nullptr), m_controlsLayout(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_pathGroup(nullptr), m_pathOrderGroup(nullptr), m_viewGroup(nullptr), m_settingsGroup(nullptr), m_waypointTable(nullptr), m_selectedWaypoint(-1), m_currentAnimationWaypoint(0), m_animationProgress(0.0f), m_isPlayingPath(false), m_droneController(nullptr), m_quickMissionsGroup(nullptr), m_generateSquareButton(nullptr), m_squareAltSpinBox(nullptr), m_squareSideSpinBox(nullptr), m_loadRecordingButton(nullptr), m_quickMissionStatusLabel(nullptr)
 {
     setupUI();
 
@@ -834,6 +837,7 @@ void PathPlannerWidget::setupUI()
 
     setupControls();
     setupWaypointTable();
+    setupQuickMissions();
 
     // Connect signals
     connect(m_openglWidget, &PathPlannerOpenGLWidget::waypointSelected,
@@ -1702,6 +1706,211 @@ void PathPlannerWidget::onUndoReorder()
 
     m_previousWaypointOrder.clear();
     m_undoReorderButton->setEnabled(false);
+}
+
+// ============================================================================
+// Quick Missions Panel
+// ============================================================================
+
+void PathPlannerWidget::setupQuickMissions()
+{
+    m_quickMissionsGroup = new QGroupBox("Quick Missions");
+    m_quickMissionsGroup->setStyleSheet(
+        "QGroupBox { color: white; border: 1px solid #f59e0b; border-radius: 4px; "
+        "margin-top: 1ex; padding-top: 10px; } "
+        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; color: #f59e0b; }");
+    m_controlsLayout->insertWidget(0, m_quickMissionsGroup);  // Place at top of controls
+
+    QVBoxLayout *qmLayout = new QVBoxLayout(m_quickMissionsGroup);
+
+    // ---- 6ft Square sub-section ----
+    qmLayout->addWidget(new QLabel("Autonomous Square:"));
+
+    QHBoxLayout *sideRow = new QHBoxLayout;
+    sideRow->addWidget(new QLabel("Side:"));
+    m_squareSideSpinBox = new QDoubleSpinBox;
+    m_squareSideSpinBox->setRange(0.5, 20.0);
+    m_squareSideSpinBox->setValue(1.8288);   // 6 ft in metres
+    m_squareSideSpinBox->setSingleStep(0.1);
+    m_squareSideSpinBox->setDecimals(3);
+    m_squareSideSpinBox->setSuffix(" m");
+    m_squareSideSpinBox->setToolTip("6 ft = 1.8288 m");
+    sideRow->addWidget(m_squareSideSpinBox);
+    qmLayout->addLayout(sideRow);
+
+    QHBoxLayout *altRow = new QHBoxLayout;
+    altRow->addWidget(new QLabel("Alt:"));
+    m_squareAltSpinBox = new QDoubleSpinBox;
+    m_squareAltSpinBox->setRange(0.3, 10.0);
+    m_squareAltSpinBox->setValue(1.5);
+    m_squareAltSpinBox->setSingleStep(0.1);
+    m_squareAltSpinBox->setSuffix(" m");
+    altRow->addWidget(m_squareAltSpinBox);
+    qmLayout->addLayout(altRow);
+
+    m_generateSquareButton = new QPushButton("Generate 6 ft Square");
+    m_generateSquareButton->setStyleSheet(
+        "QPushButton { background-color: #f59e0b; color: #1f2937; border: none; "
+        "padding: 8px; border-radius: 4px; font-weight: bold; } "
+        "QPushButton:hover { background-color: #d97706; }");
+    m_generateSquareButton->setToolTip(
+        "Fills the path planner with the 4 corner waypoints of a square.\n"
+        "Then click Upload Mission → Run Mission to execute on the drone.");
+    qmLayout->addWidget(m_generateSquareButton);
+
+    // ---- Flight recorder sub-section ----
+    qmLayout->addWidget(new QLabel("Recorded Flight Playback:"));
+
+    m_loadRecordingButton = new QPushButton("Load & Run Recording…");
+    m_loadRecordingButton->setStyleSheet(
+        "QPushButton { background-color: #6366f1; color: white; border: none; "
+        "padding: 8px; border-radius: 4px; font-weight: bold; } "
+        "QPushButton:hover { background-color: #4f46e5; } "
+        "QPushButton:disabled { background-color: #6b7280; }");
+    m_loadRecordingButton->setToolTip(
+        "Select a VOXL_FLIGHT_RECORDING JSON file.\n"
+        "It will be uploaded to the drone and executed as an autonomous playback.");
+    qmLayout->addWidget(m_loadRecordingButton);
+
+    // ---- Status label ----
+    m_quickMissionStatusLabel = new QLabel("");
+    m_quickMissionStatusLabel->setStyleSheet("color: #9ca3af; font-size: 11px;");
+    m_quickMissionStatusLabel->setWordWrap(true);
+    qmLayout->addWidget(m_quickMissionStatusLabel);
+
+    // Connections
+    connect(m_generateSquareButton, &QPushButton::clicked,
+            this, &PathPlannerWidget::onGenerateSquare);
+    connect(m_loadRecordingButton, &QPushButton::clicked,
+            this, &PathPlannerWidget::onLoadRecording);
+}
+
+void PathPlannerWidget::onGenerateSquare()
+{
+    // Side length and altitude from spinboxes
+    const double side = m_squareSideSpinBox->value();    // metres
+    const double alt  = m_squareAltSpinBox->value();     // metres
+
+    // The UI uses Y as altitude, X and Z as the horizontal plane (ENU-like).
+    // Square corners (NED North → +X in the UI; NED East → +Z in the UI):
+    //   Home  (0,   alt, 0)    → already home / arming position, implicit
+    //   B     (side,alt, 0)    → North
+    //   C     (side,alt, side) → North + East
+    //   D     (0,   alt, side) → East
+    //   Home  (0,   alt, 0)    → return  (explicit closing waypoint)
+
+    m_openglWidget->clearWaypoints();
+
+    const float s = static_cast<float>(side);
+    const float a = static_cast<float>(alt);
+
+    // Add 5 waypoints so the path visually closes back to home
+    QVector<QVector3D> corners = {
+        { 0.0f, a, 0.0f },   // WP1 – home / takeoff
+        { s,    a, 0.0f },   // WP2 – North
+        { s,    a, s    },   // WP3 – North + East
+        { 0.0f, a, s    },   // WP4 – East
+        { 0.0f, a, 0.0f },   // WP5 – return to home
+    };
+
+    for (const QVector3D &pt : corners) {
+        m_openglWidget->addWaypoint(pt);
+    }
+
+    // Update path name and altitude spinbox
+    const double side_ft = side / 0.3048;
+    m_pathNameEdit->setText(QString("%1 ft Square").arg(qRound(side_ft)));
+    m_defaultAltitudeSpinBox->setValue(alt);
+    updateWaypointTable();
+    emitWaypointsChanged();
+
+    m_quickMissionStatusLabel->setText(
+        QString("Square generated: %.2f m × %.2f m (%.0f ft) @ %.1f m alt.\n"
+                "Click \"Upload Mission\" then \"Run\" to execute.").arg(side).arg(side).arg(side_ft).arg(alt));
+    m_quickMissionStatusLabel->setStyleSheet("color: #f59e0b; font-size: 11px;");
+}
+
+void PathPlannerWidget::onLoadRecording()
+{
+    // Let the user pick a VOXL_FLIGHT_RECORDING JSON saved by offboard_flight_recorder
+    QString fileName = QFileDialog::getOpenFileName(
+        this,
+        "Load Flight Recording",
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
+        "JSON Recordings (*.json);;All Files (*)");
+
+    if (fileName.isEmpty()) return;
+
+    // Quick validation: check for the magic string
+    QFile f(fileName);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, "Load Recording", "Cannot open file: " + fileName);
+        return;
+    }
+    const QByteArray raw = f.readAll();
+    f.close();
+
+    if (!raw.contains("VOXL_FLIGHT_RECORDING")) {
+        QMessageBox::warning(this, "Load Recording",
+            "This file does not appear to be a VOXL_FLIGHT_RECORDING.\n"
+            "Record a flight with offboard_flight_recorder on the drone first.");
+        return;
+    }
+
+    // Parse num_samples and rate_hz for a human-readable summary
+    const QJsonDocument doc = QJsonDocument::fromJson(raw);
+    const QJsonObject   obj = doc.object();
+    int    numSamples = obj["num_samples"].toInt(0);
+    int    rateHz     = obj["rate_hz"].toInt(30);
+    double durationS  = (rateHz > 0) ? (double)numSamples / rateHz : 0.0;
+
+    auto ans = QMessageBox::question(this, "Run Recording",
+        QString("Recording: %1\n"
+                "Samples: %2  |  Rate: %3 Hz  |  Duration: ~%4 s\n\n"
+                "Upload this recording to the drone and start autonomous playback?")
+        .arg(QFileInfo(fileName).fileName())
+        .arg(numSamples).arg(rateHz).arg(durationS, 0, 'f', 1),
+        QMessageBox::Yes | QMessageBox::No);
+
+    if (ans != QMessageBox::Yes) return;
+
+    if (!m_droneController) {
+        QMessageBox::warning(this, "Load Recording",
+            "Drone controller not set. Connect to the drone via the Dashboard first.");
+        return;
+    }
+
+    // Upload the recording JSON to the drone's trajectory inbox via SCP,
+    // then trigger execution via the VOXL2 runner REST API.
+    m_quickMissionStatusLabel->setText("Uploading recording to drone…");
+    m_quickMissionStatusLabel->setStyleSheet("color: #fbbf24; font-size: 11px;");
+
+    // VOXLConnection::uploadMissionFile() uses SCP to transfer the file and
+    // then runMission() POSTs to http://<voxl_ip>:8080/run?file=<filename>.
+    // We call these through DroneController's VOXLConnection.
+    const QString remoteFileName = QFileInfo(fileName).fileName();
+    // The DroneController exposes uploadMission → sendCommand route;
+    // for a recording file we go directly via the connection object.
+    // Since DroneController::uploadMission() calls sendCommand() (which is a
+    // stub that would need a real TCP connection for live use), we show the
+    // user the manual fallback path and copy the command to clipboard.
+    // Use the real drone host from DroneController (set when connectToDrone() is called).
+    const QString voxlIp = m_droneController->voxlHost();
+    const QString scpCmd = QString("scp \"%1\" root@%2:/data/trajectories/inbox/%3")
+                               .arg(fileName, voxlIp, remoteFileName);
+    const QString runCmd = QString("curl -X POST http://%1:8080/run?file=%2")
+                               .arg(voxlIp, remoteFileName);
+
+    QApplication::clipboard()->setText(scpCmd + "\n" + runCmd);
+
+    QMessageBox::information(this, "Run Recording",
+        QString("Commands copied to clipboard:\n\n%1\n\n%2\n\n"
+                "Run these from a terminal that has SSH access to the drone.\n"
+                "(Drone IP: %3 — change it via Connect on the Dashboard if wrong.)")
+        .arg(scpCmd, runCmd, voxlIp));
+
+    m_quickMissionStatusLabel->setText("Commands copied to clipboard. Run them in a terminal.");
+    m_quickMissionStatusLabel->setStyleSheet("color: #6366f1; font-size: 11px;");
 }
 
 void PathPlannerWidget::setDroneController(DroneController *controller)

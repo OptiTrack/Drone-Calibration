@@ -96,6 +96,10 @@ bool DroneController::connectToDrone(const QString &host, int port)
                         .arg(connectPort)
                         .arg(m_silMode ? " (SIL Mode)" : ""));
     
+    // Always tell VOXLConnection the real drone host (not SIL localhost)
+    // so that SCP uploads and the runner REST API target the actual VOXL 2.
+    m_voxlConnection->setVoxlHost(host);
+
     bool success = m_voxlConnection->connectToVOXL(connectHost, connectPort, VOXLConnection::TCP_CONNECTION);
     
     if (success) {

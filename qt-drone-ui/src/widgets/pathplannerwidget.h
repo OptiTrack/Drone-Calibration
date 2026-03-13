@@ -24,6 +24,7 @@
 #include <QComboBox>
 #include <QTimer>
 #include <QMouseEvent>
+#include <QLineEdit>
 #include <QWheelEvent>
 #include <QPaintEvent>
 #include <QDialog>
@@ -186,10 +187,15 @@ private slots:
     void onCustomOrder();
     void onUndoReorder();
 
+    // Quick Missions
+    void onGenerateSquare();
+    void onLoadRecording();
+
 private:
     void setupUI();
     void setupControls();
     void setupWaypointTable();
+    void setupQuickMissions();
     void updateWaypointTable();
     void startPathAnimation();
     void stopPathAnimation();
@@ -255,6 +261,14 @@ private:
     
     // Drone connection
     DroneController *m_droneController;
+
+    // Quick Missions panel
+    QGroupBox       *m_quickMissionsGroup;
+    QPushButton     *m_generateSquareButton;
+    QDoubleSpinBox  *m_squareAltSpinBox;
+    QDoubleSpinBox  *m_squareSideSpinBox;
+    QPushButton     *m_loadRecordingButton;
+    QLabel          *m_quickMissionStatusLabel;
 };
 
 #endif // PATHPLANNERWIDGET_H

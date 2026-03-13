@@ -36,6 +36,7 @@ public:
     bool connectToDrone(const QString &host = "192.168.1.10", int port = 14550);
     void disconnectFromDrone();
     bool isConnected() const { return m_connected; }
+    QString voxlHost() const { return m_droneHost; }
 
     // Flight control
     void armDrone(bool arm);
