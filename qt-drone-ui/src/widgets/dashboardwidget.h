@@ -17,6 +17,9 @@ public:
     explicit DashboardWidget(QWidget *parent = nullptr);
     ~DashboardWidget();
 
+protected:
+    void resizeEvent(QResizeEvent *event) override;
+
 signals:
     void navigateToCamera();
     void navigateToPlanner();
@@ -27,6 +30,7 @@ signals:
 private:
     void setupStatusCards();
     void setupConnections();
+    void updateActionCardFonts();
     QFrame* createStatusCard(const QString &title, const QString &value, 
                              const QString &subtitle, const QString &color);
     

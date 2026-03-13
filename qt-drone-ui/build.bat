@@ -3,7 +3,7 @@ REM Simple build script for Qt Drone UI
 echo Building Qt Drone UI...
 
 REM Set Qt environment
-set PATH=C:\Qt\6.10.0\mingw_64\bin;C:\Qt\Tools\mingw1310_64\bin;%PATH%
+set PATH=C:\Qt\6.10.2\mingw_64\bin;C:\Qt\Tools\mingw1310_64\bin;C:\Qt\Tools\CMake_64\bin;C:\Qt\Tools\Ninja;%PATH%
 set CC=C:\Qt\Tools\mingw1310_64\bin\gcc.exe
 set CXX=C:\Qt\Tools\mingw1310_64\bin\g++.exe
 
@@ -28,4 +28,3 @@ if %ERRORLEVEL% NEQ 0 (
 
 echo Build successful!
 echo Executable: build\QtDroneUI.exe
-pause

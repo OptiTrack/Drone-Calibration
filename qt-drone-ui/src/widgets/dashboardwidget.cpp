@@ -1,5 +1,7 @@
 #include "dashboardwidget.h"
 #include "ui_dashboardwidget.h"
+#include <QResizeEvent>
+#include <QDebug>
 
 DashboardWidget::DashboardWidget(QWidget *parent)
     : QWidget(parent)
@@ -8,11 +10,52 @@ DashboardWidget::DashboardWidget(QWidget *parent)
     ui->setupUi(this);
     setupStatusCards();
     setupConnections();
+    updateActionCardFonts();
 }
 
 DashboardWidget::~DashboardWidget()
 {
     delete ui;
+}
+
+void DashboardWidget::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    updateActionCardFonts();
+}
+
+void DashboardWidget::updateActionCardFonts()
+{
+    // Calculate font sizes based on widget width
+    // Base scaling factor: width / 80 for titles, width / 100 for descriptions
+    int width = this->width();
+    
+    // Clamp values to ensure readability
+    // Minimum 8px, Maximum 20px for titles
+    int titleFontSize = qBound(8, width / 80, 20);
+    
+    // Minimum 6px, Maximum 14px for descriptions
+    int descFontSize = qBound(6, width / 100, 14);
+    
+    QString titleStyle = QString("QLabel { color: #ffffff; font-size: %1px; font-weight: bold; }").arg(titleFontSize);
+    QString descStyle = QString("QLabel { color: #9ca3af; font-size: %1px; }").arg(descFontSize);
+    
+    // Apply to all cards
+    // Camera
+    if (ui->cameraCardTitle) ui->cameraCardTitle->setStyleSheet(titleStyle);
+    if (ui->cameraCardDescription) ui->cameraCardDescription->setStyleSheet(descStyle);
+    
+    // Planner
+    if (ui->plannerCardTitle) ui->plannerCardTitle->setStyleSheet(titleStyle);
+    if (ui->plannerCardDescription) ui->plannerCardDescription->setStyleSheet(descStyle);
+    
+    // History
+    if (ui->historyCardTitle) ui->historyCardTitle->setStyleSheet(titleStyle);
+    if (ui->historyCardDescription) ui->historyCardDescription->setStyleSheet(descStyle);
+    
+    // Media
+    if (ui->mediaCardTitle) ui->mediaCardTitle->setStyleSheet(titleStyle);
+    if (ui->mediaCardDescription) ui->mediaCardDescription->setStyleSheet(descStyle);
 }
 
 void DashboardWidget::setupStatusCards()
