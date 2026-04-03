@@ -1,6 +1,23 @@
 #include "flightpath.h"
 #include <QJsonArray>
-#include <cmath>
+#include <QRegularExpression>
+
+QString FlightPath::fileBaseFromDisplayName(const QString &displayName)
+{
+    QString s = displayName.trimmed();
+    s.replace(QRegularExpression(QStringLiteral("[^a-zA-Z0-9_\\-\\s]")), QString());
+    s.replace(QLatin1Char(' '), QLatin1Char('_'));
+    if (s.isEmpty())
+        s = QStringLiteral("path");
+    return s;
+}
+
+QString FlightPath::displayNameFromFileBase(const QString &fileBase)
+{
+    QString s = fileBase;
+    s.replace(QLatin1Char('_'), QLatin1Char(' '));
+    return s;
+}
 
 FlightPath::FlightPath()
     : m_id(generateNewId())
@@ -36,6 +53,16 @@ void FlightPath::setDescription(const QString &description)
 {
     m_description = description;
     updateModificationTime();
+}
+
+void FlightPath::setCreatedAt(const QDateTime &dt)
+{
+    m_createdAt = dt;
+}
+
+void FlightPath::setModifiedAt(const QDateTime &dt)
+{
+    m_modifiedAt = dt;
 }
 
 void FlightPath::setWaypoints(const QVector<Waypoint> &waypoints)

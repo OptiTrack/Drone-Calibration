@@ -36,6 +36,8 @@ public:
     void setName(const QString &name);
     void setDescription(const QString &description);
     void setWaypoints(const QVector<Waypoint> &waypoints);
+    void setCreatedAt(const QDateTime &dt);
+    void setModifiedAt(const QDateTime &dt);
     
     // Mission parameter setters
     void setHomeRelative(bool homeRelative) { m_homeRelative = homeRelative; }
@@ -58,6 +60,13 @@ public:
     Waypoint& operator[](int index);
     const Waypoint& operator[](int index) const;
     
+    // Disk filename helpers (must match PathPlannerWidget save rules)
+    static QString fileBaseFromDisplayName(const QString &displayName);
+    static QString displayNameFromFileBase(const QString &fileBase);
+
+    QString sourceFilePath() const { return m_sourceFilePath; }
+    void setSourceFilePath(const QString &path) { m_sourceFilePath = path; }
+
     // Utility functions
     QJsonObject toJson() const;
     static FlightPath fromJson(const QJsonObject &json);
@@ -76,6 +85,7 @@ private:
     QString m_id;
     QString m_name;
     QString m_description;
+    QString m_sourceFilePath;
     QVector<Waypoint> m_waypoints;
     QDateTime m_createdAt;
     QDateTime m_modifiedAt;

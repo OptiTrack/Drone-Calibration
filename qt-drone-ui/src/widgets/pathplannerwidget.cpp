@@ -1,7 +1,6 @@
 #include "pathplannerwidget.h"
 #include "../controllers/dronecontroller.h"
-#include <QApplication>
-#include <QClipboard>
+#include "../models/flightpath.h"
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -11,27 +10,79 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QStandardPaths>
-#include <QListWidgetItem>
 #include <QCoreApplication>
 #include <QDir>
 #include <QDateTime>
-#include <QRegularExpression>
 #include <QtMath>
 #include <QPainter>
+#include <QPainterPath>
+#include <QLineF>
+#include <QScrollArea>
+#include <QShortcut>
+#include <QHeaderView>
+#include <QAbstractItemModel>
+#include <QVector2D>
+#include <QToolButton>
+#include <QMenu>
+#include <QAction>
 #include <algorithm>
+#include <cmath>
 
-// Helper function to convert waypoint ID to letter label (1=A, 2=B, etc.)
-static QString idToLetter(int id)
+static QString plannerPathsDirectory()
 {
-    if (id < 1) return "?";
-    if (id <= 26) return QString(QChar('A' + id - 1));
-    // For more than 26 waypoints: AA, AB, AC, etc.
-    int first = (id - 1) / 26;
-    int second = (id - 1) % 26;
-    if (first > 0 && first <= 26)
-        return QString(QChar('A' + first - 1)) + QString(QChar('A' + second));
-    return QString::number(id);
+#ifdef SOURCE_DIR
+    QString sourcePathsDir = QString(SOURCE_DIR) + "/paths";
+    QDir sourceDir(sourcePathsDir);
+    if (!sourceDir.exists())
+        QDir().mkpath(sourcePathsDir);
+    return sourceDir.absolutePath();
+#else
+    const QString exePathsDir = QCoreApplication::applicationDirPath() + "/paths";
+    QDir exeDir(exePathsDir);
+    if (!exeDir.exists())
+        QDir().mkpath(exePathsDir);
+    return exeDir.absolutePath();
+#endif
 }
+
+// Logical waypoint coordinates use:
+//   X = forward axis (maps to world +Z),
+//   Y = right axis   (maps to world +X),
+//   Z = altitude     (maps to world +Y, vertical).
+static QVector3D logicalToWorld(const QVector3D &logicalPos)
+{
+    return QVector3D(logicalPos.y(), logicalPos.z(), logicalPos.x());
+}
+
+static QVector3D worldToLogical(const QVector3D &worldPos)
+{
+    return QVector3D(worldPos.z(), worldPos.x(), worldPos.y());
+}
+
+static QVector3D waypointToWorld(const Waypoint &wp)
+{
+    return logicalToWorld(QVector3D(wp.x(), wp.y(), wp.z()));
+}
+
+// Heading in world XZ from logical yaw (degrees). 0° = world +Z (logical +X / forward).
+static QVector3D logicalYawHeadingWorld(float yawDeg)
+{
+    const float rad = qDegreesToRadians(yawDeg);
+    return QVector3D(std::sin(rad), 0.0f, std::cos(rad));
+}
+
+static float wrapYawDegrees180(float deg)
+{
+    deg = std::fmod(deg + 180.0f, 360.0f);
+    if (deg < 0.0f)
+        deg += 360.0f;
+    return deg - 180.0f;
+}
+
+// Waypoint body (sphere + cone ring) — ~50% larger than original 0.11 m sphere.
+static constexpr float kWaypointSphereRadiusWorld = 0.165f;
+// Keep same cone length / sphere radius ratio as before the size bump.
+static constexpr float kWaypointConeBeyondM = 0.36f * (kWaypointSphereRadiusWorld / 0.11f);
 
 // Vertex shader source
 static const char *vertexShaderSource =
@@ -60,7 +111,7 @@ static const char *fragmentShaderSource =
 
 // PathPlannerOpenGLWidget Implementation
 PathPlannerOpenGLWidget::PathPlannerOpenGLWidget(QWidget *parent)
-    : QOpenGLWidget(parent), m_shaderProgram(nullptr), m_cameraPosition(0, 5, 10), m_cameraTarget(0, 0, 0), m_cameraUp(0, 1, 0), m_cameraDistance(15.0f), m_cameraYaw(0.0f), m_cameraPitch(30.0f), m_viewMode(View3DMode), m_orthoZoom(10.0f), m_defaultAltitude(2.0f), m_selectedWaypoint(-1), m_mousePressed(false), m_isDragging(false), m_animationTime(0.0f)
+    : QOpenGLWidget(parent), m_shaderProgram(nullptr), m_cameraPosition(0, 5, 10), m_cameraTarget(0, 0, 0), m_cameraUp(0, 1, 0), m_cameraDistance(15.0f), m_cameraYaw(0.0f), m_cameraPitch(30.0f), m_viewMode(View3DMode), m_interactionMode(TransformMode), m_orthoZoom(10.0f), m_defaultAltitude(2.0f), m_selectedWaypoint(-1), m_hoveredWaypoint(-1), m_hoveredSegment(-1), m_mousePressed(false), m_isDragging(false), m_draggingTransform(false), m_activeHandle(TransformHandle::None), m_hasHoverPreview(false), m_applyingHistory(false), m_dragGizmoOriginWorld(), m_dragYawPlaneAngleStartRad(0.0f), m_dragStartYawDeg(0.0f), m_animationTime(0.0f)
 {
     setMinimumSize(600, 400);
     setFocusPolicy(Qt::StrongFocus);
@@ -136,6 +187,7 @@ void PathPlannerOpenGLWidget::paintGL()
     drawAxes();
     drawPath();
     drawWaypoints();
+    drawGizmo();
 
     m_shaderProgram->release();
 }
@@ -158,64 +210,258 @@ void PathPlannerOpenGLWidget::paintEvent(QPaintEvent *event)
     painter.end();
 }
 
-QPoint PathPlannerOpenGLWidget::worldToScreen(const QVector3D &worldPos)
+QPoint PathPlannerOpenGLWidget::worldToScreen(const QVector3D &worldPos) const
 {
-    // Project 3D world position to 2D screen coordinates
-    QVector4D clipPos = m_projectionMatrix * m_viewMatrix * QVector4D(worldPos, 1.0f);
+    QPoint px;
+    if (!projectWorldToScreenDepth(worldPos, &px, nullptr))
+        return QPoint(-1000, -1000);
+    return px;
+}
+
+bool PathPlannerOpenGLWidget::projectWorldToScreenDepth(const QVector3D &worldPos, QPoint *outPx, float *outNdcZ) const
+{
+    const QVector4D clipPos = m_projectionMatrix * m_viewMatrix * QVector4D(worldPos, 1.0f);
     if (qAbs(clipPos.w()) < 0.0001f)
-        return QPoint(-1000, -1000);  // Behind camera
-    
-    QVector3D ndcPos = clipPos.toVector3D() / clipPos.w();
-    
-    int screenX = static_cast<int>((ndcPos.x() + 1.0f) * 0.5f * width());
-    int screenY = static_cast<int>((1.0f - ndcPos.y()) * 0.5f * height());
-    
-    return QPoint(screenX, screenY);
+        return false;
+    const QVector3D ndcPos = clipPos.toVector3D() / clipPos.w();
+    if (outPx)
+    {
+        outPx->setX(static_cast<int>((ndcPos.x() + 1.0f) * 0.5f * width()));
+        outPx->setY(static_cast<int>((1.0f - ndcPos.y()) * 0.5f * height()));
+    }
+    if (outNdcZ)
+        *outNdcZ = ndcPos.z();
+    return true;
+}
+
+float PathPlannerOpenGLWidget::projectedSphereRadiusPxRaw(const QVector3D &worldCenter, float worldRadius) const
+{
+    if (worldRadius <= 0.0f)
+        return 12.0f;
+    QVector3D viewDir = m_cameraTarget - m_cameraPosition;
+    if (viewDir.lengthSquared() < 1e-8f)
+        return 12.0f;
+    viewDir.normalize();
+    QVector3D right = QVector3D::crossProduct(viewDir, m_cameraUp);
+    if (right.lengthSquared() < 1e-8f)
+        right = QVector3D::crossProduct(viewDir, QVector3D(1.0f, 0.0f, 0.0f));
+    if (right.lengthSquared() < 1e-8f)
+        return 12.0f;
+    right.normalize();
+    const QVector3D up = QVector3D::crossProduct(right, viewDir).normalized();
+
+    QPoint pr, pnr, pu, pdu;
+    if (!projectWorldToScreenDepth(worldCenter + right * worldRadius, &pr, nullptr) ||
+        !projectWorldToScreenDepth(worldCenter - right * worldRadius, &pnr, nullptr))
+        return 12.0f;
+    const float halfW = static_cast<float>(QLineF(pr, pnr).length()) * 0.5f;
+    float halfH = halfW;
+    if (projectWorldToScreenDepth(worldCenter + up * worldRadius, &pu, nullptr) &&
+        projectWorldToScreenDepth(worldCenter - up * worldRadius, &pdu, nullptr))
+    {
+        halfH = static_cast<float>(QLineF(pu, pdu).length()) * 0.5f;
+    }
+    return 0.5f * (halfW + halfH);
+}
+
+float PathPlannerOpenGLWidget::screenSpaceSphereRadiusPx(const QVector3D &worldCenter, float worldRadius) const
+{
+    const float r = projectedSphereRadiusPxRaw(worldCenter, worldRadius);
+    if (r <= 0.0f)
+        return 12.0f;
+    const float maxR = qMax(100.0f, 0.42f * static_cast<float>(qMin(width(), height())));
+    return qBound(8.0f, r, maxR);
+}
+
+void PathPlannerOpenGLWidget::waypointMarkerConeParameters(const QVector3D &waypointCenterWorld, float &outLengthScale,
+                                                           float &outBaseRadiusScale, float &outRingAlongF) const
+{
+    const float raw = projectedSphereRadiusPxRaw(waypointCenterWorld, kWaypointSphereRadiusWorld);
+
+    float zoomT = 0.0f;
+    if (m_viewMode == TopDownMode)
+        zoomT = qBound(0.0f, (m_orthoZoom - 5.0f) / (42.0f - 5.0f), 1.0f);
+    else
+        zoomT = qBound(0.0f, (m_cameraDistance - 6.0f) / (48.0f - 6.0f), 1.0f);
+
+    // Zoomed out: longer, slightly thicker; zoomed in: a bit shorter. Independent of HUD min-size clamp.
+    outLengthScale = 0.84f + zoomT * 0.38f;
+
+    // When the true projection is tiny, the HUD floor-kicks in — bias ring toward sphere center (“mid”) and widen slightly.
+    const float tinyT = qBound(0.0f, (10.0f - raw) / 10.0f, 1.0f);
+    // Wider cone at zoom-out: keep the ring “seam” on the sphere (we apply thickness to the tip),
+    // but make the body noticeably thicker when zoomed out.
+    outBaseRadiusScale = 1.0f + zoomT * 0.55f + tinyT * 0.30f;
+
+    const float depthT = qBound(0.0f, raw / 16.0f, 1.0f);
+    // Slide the ring toward the sphere center at small projections (the “mid” you described).
+    outRingAlongF = 0.32f + depthT * 0.54f;
+}
+
+/// Yaw handle distance along heading: halfway between red axis (logical X) tip and purple plane-XZ handle, in top-down (XZ) distance.
+/// Red tip offset (0,0,L) → ground radius L. Purple XZ offset (0, 0.45L, 0.45L) → ground radius 0.45L.
+static float gizmoYawTipRadialDistance(float axisLength)
+{
+    const float axisXTipGround = axisLength;
+    const float planeXzGround = 0.45f * axisLength;
+    return 0.5f * (axisXTipGround + planeXzGround);
 }
 
 void PathPlannerOpenGLWidget::drawWaypointLabels(QPainter &painter)
 {
-    if (m_waypoints.empty())
-        return;
-    
     // Set up font for labels
     QFont font = painter.font();
     font.setBold(true);
     font.setPointSize(12);
     painter.setFont(font);
-    
+
+    if (m_hasHoverPreview && m_interactionMode == CreateMode)
+    {
+        const QPoint ghostPos = worldToScreen(m_lastHoverPreviewWorldPos);
+        if (ghostPos.x() >= 0 && ghostPos.x() <= width() && ghostPos.y() >= 0 && ghostPos.y() <= height())
+        {
+            painter.setPen(QPen(QColor(180, 220, 255, 220), 2, Qt::DashLine));
+            painter.setBrush(QColor(60, 120, 180, 60));
+            painter.drawEllipse(ghostPos, 10, 10);
+        }
+    }
+
+    if (m_waypoints.empty())
+        return;
+
+    font.setBold(false);
+    font.setPointSize(9);
+    painter.setFont(font);
+    painter.setPen(QColor(255, 220, 160));
+    for (size_t i = 0; i + 1 < m_waypoints.size(); ++i)
+    {
+        const QVector3D p1 = waypointToWorld(m_waypoints[i]);
+        const QVector3D p2 = waypointToWorld(m_waypoints[i + 1]);
+        const QPoint mid = worldToScreen((p1 + p2) * 0.5f);
+        const float segLen = p1.distanceToPoint(p2);
+        painter.drawText(mid + QPoint(6, -4), QString::number(segLen, 'f', 1) + "m");
+    }
+
+    struct WaypointHudEntry
+    {
+        QPoint screenCenter;
+        float zCenterNdc;
+        QColor fillColor;
+        QString indexText;
+        float badgeRadiusPx = 15.0f;
+    };
+    QVector<WaypointHudEntry> hudEntries;
+    hudEntries.reserve(static_cast<int>(m_waypoints.size()));
+
+    const float kHudSphereR = kWaypointSphereRadiusWorld;
+
     for (size_t i = 0; i < m_waypoints.size(); ++i)
     {
         const Waypoint &wp = m_waypoints[i];
-        QVector3D worldPos(wp.x(), wp.y(), wp.z());
-        QPoint screenPos = worldToScreen(worldPos);
-        
-        // Skip if off-screen
+        const QVector3D worldPos = waypointToWorld(wp);
+        QPoint screenPos;
+        float zC = 0.0f;
+        if (!projectWorldToScreenDepth(worldPos, &screenPos, &zC))
+            continue;
         if (screenPos.x() < -50 || screenPos.x() > width() + 50 ||
             screenPos.y() < -50 || screenPos.y() > height() + 50)
             continue;
-        
-        // Get the letter label
-        QString label = idToLetter(wp.sequence());
-        
-        // Draw background circle
-        int radius = 14;
-        QPoint labelPos = screenPos + QPoint(radius + 5, -radius - 5);  // Offset from sphere
-        
-        // Choose colors based on selection
-        QColor bgColor = (wp.sequence() == m_selectedWaypoint) ? QColor(51, 153, 255) : QColor(51, 204, 51);
-        QColor textColor = Qt::white;
-        
-        // Draw circle background
-        painter.setBrush(bgColor);
-        painter.setPen(QPen(Qt::white, 2));
-        painter.drawEllipse(labelPos, radius, radius);
-        
-        // Draw label text
-        painter.setPen(textColor);
-        QRect textRect(labelPos.x() - radius, labelPos.y() - radius, radius * 2, radius * 2);
-        painter.drawText(textRect, Qt::AlignCenter, label);
+
+        QVector3D rgb;
+        if (wp.sequence() == m_selectedWaypoint)
+            rgb = QVector3D(0.56f, 0.76f, 1.0f);
+        else if (m_selectedWaypointIds.contains(wp.sequence()))
+            rgb = QVector3D(0.2f, 0.72f, 0.95f);
+        else if (wp.sequence() == m_hoveredWaypoint)
+            rgb = QVector3D(0.38f, 0.65f, 1.0f);
+        else
+            rgb = QVector3D(0.12f, 0.42f, 0.92f);
+
+        WaypointHudEntry e;
+        e.screenCenter = screenPos;
+        e.zCenterNdc = zC;
+        e.fillColor = QColor::fromRgbF(rgb.x(), rgb.y(), rgb.z());
+        e.indexText = QString::number(wp.sequence());
+        e.badgeRadiusPx = screenSpaceSphereRadiusPx(worldPos, kHudSphereR);
+        hudEntries.append(e);
     }
+
+    // Pass 1: back-to-front discs (match 3D occlusion)
+    std::sort(hudEntries.begin(), hudEntries.end(),
+              [](const WaypointHudEntry &a, const WaypointHudEntry &b) { return a.zCenterNdc > b.zCenterNdc; });
+    for (const WaypointHudEntry &e : hudEntries)
+    {
+        const float outlineMax = qMin(14.0f, qMax(5.0f, e.badgeRadiusPx * 0.065f));
+        const int outlineW = qMax(2, static_cast<int>(qBound(1.5f, e.badgeRadiusPx * 0.11f, outlineMax)));
+        painter.setBrush(e.fillColor);
+        painter.setPen(QPen(Qt::white, outlineW));
+        painter.drawEllipse(e.screenCenter, static_cast<int>(e.badgeRadiusPx + 0.5f), static_cast<int>(e.badgeRadiusPx + 0.5f));
+    }
+
+    // Pass 2: front-to-back index so nearer labels read on top
+    std::sort(hudEntries.begin(), hudEntries.end(),
+              [](const WaypointHudEntry &a, const WaypointHudEntry &b) { return a.zCenterNdc < b.zCenterNdc; });
+    font.setBold(true);
+    for (const WaypointHudEntry &e : hudEntries)
+    {
+        QFont idxFont = font;
+        const float digitScale = e.indexText.size() > 1 ? 0.88f : 1.0f;
+        const int px = qBound(10, static_cast<int>(e.badgeRadiusPx * 1.12f * digitScale + 0.5f), 512);
+        idxFont.setPixelSize(px);
+        painter.setFont(idxFont);
+
+        QPainterPath textPath;
+        textPath.addText(0, 0, idxFont, e.indexText);
+        const QRectF br = textPath.boundingRect();
+        textPath.translate(-br.center());
+
+        painter.translate(e.screenCenter);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(Qt::white);
+        painter.drawPath(textPath);
+        painter.translate(-e.screenCenter);
+    }
+
+    if (m_interactionMode == TransformMode && m_selectedWaypoint >= 0)
+    {
+        const float yawDeg = selectedWaypointYawDeg();
+        const float yawTipR = gizmoYawTipRadialDistance(1.3f);
+        const QVector3D tip = gizmoCenterWorld() + logicalYawHeadingWorld(yawDeg) * yawTipR;
+        const QPoint tipPx = worldToScreen(tip);
+        if (tipPx.x() >= -80 && tipPx.x() <= width() + 80 && tipPx.y() >= -80 && tipPx.y() <= height() + 80)
+        {
+            font.setBold(true);
+            font.setPointSize(10);
+            painter.setFont(font);
+            painter.setPen(QColor(255, 210, 120));
+            painter.drawText(tipPx + QPoint(10, 4),
+                             QString::number(yawDeg, 'f', 0) + QChar(0x00B0));
+        }
+    }
+
+    float totalLength = 0.0f;
+    if (m_waypoints.size() > 1)
+    {
+        for (size_t i = 0; i + 1 < m_waypoints.size(); ++i)
+        {
+            const QVector3D p1 = waypointToWorld(m_waypoints[i]);
+            const QVector3D p2 = waypointToWorld(m_waypoints[i + 1]);
+            totalLength += p1.distanceToPoint(p2);
+        }
+    }
+
+    painter.setPen(QColor(215, 223, 235));
+    font.setBold(true);
+    font.setPointSize(10);
+    painter.setFont(font);
+    const QString overlayText = QString("Count: %1   Length: %2 m")
+                                    .arg(static_cast<int>(m_waypoints.size()))
+                                    .arg(totalLength, 0, 'f', 1);
+    const QFontMetrics fm(font);
+    const int pad = 10;
+    painter.drawText(width() - fm.horizontalAdvance(overlayText) - pad,
+                     height() - fm.height() + fm.ascent() - pad,
+                     overlayText);
 }
 
 void PathPlannerOpenGLWidget::updateProjection()
@@ -369,19 +615,19 @@ void PathPlannerOpenGLWidget::drawAxes()
     QVector<float> axesVertices;
     QVector<float> axesColors;
     
-    float axisLength = 2.0f;
+    float axisLength = 1.0f;
     float axisRadius = 0.05f;
     
-    // X axis (red) - cylinder from origin to (axisLength, 0, 0)
-    generateCylinderVertices(QVector3D(0, 0, 0), QVector3D(axisLength, 0, 0), axisRadius,
+    // Logical X axis (red): world +Z direction
+    generateCylinderVertices(QVector3D(0, 0, 0), QVector3D(0, 0, axisLength), axisRadius,
                              QVector3D(1.0f, 0.0f, 0.0f), axesVertices, axesColors);
     
-    // Y axis (green) - cylinder from origin to (0, axisLength, 0)
-    generateCylinderVertices(QVector3D(0, 0, 0), QVector3D(0, axisLength, 0), axisRadius,
+    // Logical Y axis (green): world +X direction
+    generateCylinderVertices(QVector3D(0, 0, 0), QVector3D(axisLength, 0, 0), axisRadius,
                              QVector3D(0.0f, 1.0f, 0.0f), axesVertices, axesColors);
     
-    // Z axis (blue) - cylinder from origin to (0, 0, axisLength)
-    generateCylinderVertices(QVector3D(0, 0, 0), QVector3D(0, 0, axisLength), axisRadius,
+    // Logical Z axis (blue): world +Y direction (vertical)
+    generateCylinderVertices(QVector3D(0, 0, 0), QVector3D(0, axisLength, 0), axisRadius,
                              QVector3D(0.0f, 0.0f, 1.0f), axesVertices, axesColors);
 
     if (axesVertices.isEmpty())
@@ -465,6 +711,95 @@ static void generateSphereVertices(const QVector3D &center, float radius,
     }
 }
 
+// Truncated cone between two circular sections (same axis), blunt nose + high segment count reads smoother than a needle cone.
+static void generateFrustumConeMesh(const QVector3D &baseCenter, float baseRadius, const QVector3D &tipCenter,
+                                    float tipRadius, int segments, const QVector3D &color, QVector<float> &vertices,
+                                    QVector<float> &colors)
+{
+    const QVector3D axis = tipCenter - baseCenter;
+    const float h = axis.length();
+    if (h < 1e-5f || baseRadius < 1e-5f)
+        return;
+    const QVector3D n = axis / h;
+    QVector3D perp1 = QVector3D::crossProduct(n, QVector3D(0.0f, 1.0f, 0.0f));
+    if (perp1.length() < 1e-4f)
+        perp1 = QVector3D::crossProduct(n, QVector3D(1.0f, 0.0f, 0.0f));
+    perp1.normalize();
+    const QVector3D perp2 = QVector3D::crossProduct(n, perp1).normalized();
+
+    const float tipR = qMax(tipRadius, 1e-4f);
+
+    for (int i = 0; i < segments; ++i)
+    {
+        const float a1 = (2.0f * static_cast<float>(M_PI) * static_cast<float>(i)) / static_cast<float>(segments);
+        const float a2 = (2.0f * static_cast<float>(M_PI) * static_cast<float>(i + 1)) / static_cast<float>(segments);
+        const QVector3D b1 = baseCenter + (perp1 * std::cos(a1) + perp2 * std::sin(a1)) * baseRadius;
+        const QVector3D b2 = baseCenter + (perp1 * std::cos(a2) + perp2 * std::sin(a2)) * baseRadius;
+        const QVector3D t1 = tipCenter + (perp1 * std::cos(a1) + perp2 * std::sin(a1)) * tipR;
+        const QVector3D t2 = tipCenter + (perp1 * std::cos(a2) + perp2 * std::sin(a2)) * tipR;
+        vertices << b1.x() << b1.y() << b1.z();
+        vertices << t1.x() << t1.y() << t1.z();
+        vertices << b2.x() << b2.y() << b2.z();
+        colors << color.x() << color.y() << color.z();
+        colors << color.x() << color.y() << color.z();
+        colors << color.x() << color.y() << color.z();
+        vertices << b2.x() << b2.y() << b2.z();
+        vertices << t1.x() << t1.y() << t1.z();
+        vertices << t2.x() << t2.y() << t2.z();
+        colors << color.x() << color.y() << color.z();
+        colors << color.x() << color.y() << color.z();
+        colors << color.x() << color.y() << color.z();
+    }
+
+    const QVector3D tipPole = tipCenter + n * qMax(0.004f * h, 0.25f * tipR);
+    for (int i = 0; i < segments; ++i)
+    {
+        const float a1 = (2.0f * static_cast<float>(M_PI) * static_cast<float>(i)) / static_cast<float>(segments);
+        const float a2 = (2.0f * static_cast<float>(M_PI) * static_cast<float>(i + 1)) / static_cast<float>(segments);
+        const QVector3D t1 = tipCenter + (perp1 * std::cos(a1) + perp2 * std::sin(a1)) * tipR;
+        const QVector3D t2 = tipCenter + (perp1 * std::cos(a2) + perp2 * std::sin(a2)) * tipR;
+        vertices << tipPole.x() << tipPole.y() << tipPole.z();
+        vertices << t1.x() << t1.y() << t1.z();
+        vertices << t2.x() << t2.y() << t2.z();
+        colors << color.x() << color.y() << color.z();
+        colors << color.x() << color.y() << color.z();
+        colors << color.x() << color.y() << color.z();
+    }
+}
+
+// Blue sphere + forward cone. Ring slides toward sphere center when zoomed out (matches HUD “mid” read); length/thickness follow camera.
+static void generateOrientedWaypointMarker(const QVector3D &centerWorld, float yawDeg, const QVector3D &sphereColor,
+                                           float coneLengthScale, float ringAlongF, float baseRadiusScale,
+                                           QVector<float> &vertices, QVector<float> &colors)
+{
+    const QVector3D forward = logicalYawHeadingWorld(yawDeg);
+    const float R = kWaypointSphereRadiusWorld;
+    const float rf = qBound(0.12f, ringAlongF, 0.92f);
+    const float d = rf * R;
+    const float rRingSq = R * R - d * d;
+    if (rRingSq <= 1e-8f)
+        return;
+    // Keep the ring exactly on the sphere for consistent centering/seam across zoom.
+    const float rRing = std::sqrt(rRingSq);
+    const float coneBeyond = kWaypointConeBeyondM * coneLengthScale;
+    const QVector3D ringPlaneCenter = centerWorld + forward * d;
+    const float coneLen = (R + coneBeyond) - d;
+    if (coneLen < 1e-4f)
+        return;
+    const QVector3D coneColor(0.93f, 0.95f, 1.0f);
+    // Lower tip fraction => blunter/rounder cone head.
+    constexpr float kTipFrac = 0.76f;
+    const float tipOffset = coneLen * kTipFrac;
+    const float tipRLinear = rRing * (1.0f - kTipFrac);
+    // Apply "thickness" to the tip disk; the base ring stays fixed on the sphere.
+    const float tipR = qMax(tipRLinear * baseRadiusScale, 0.12f * rRing);
+    const QVector3D tipDiskCenter = ringPlaneCenter + forward * tipOffset;
+
+    generateSphereVertices(centerWorld, R, sphereColor, vertices, colors);
+    constexpr int kConeSegs = 32;
+    generateFrustumConeMesh(ringPlaneCenter, rRing, tipDiskCenter, tipR, kConeSegs, coneColor, vertices, colors);
+}
+
 void PathPlannerOpenGLWidget::drawWaypoints()
 {
     if (m_waypoints.empty())
@@ -472,25 +807,33 @@ void PathPlannerOpenGLWidget::drawWaypoints()
 
     QVector<float> waypointVertices;
     QVector<float> waypointColors;
-    
-    float sphereRadius = 0.2f;  // Radius of the waypoint balls
 
     for (size_t i = 0; i < m_waypoints.size(); ++i)
     {
         const Waypoint &wp = m_waypoints[i];
-        QVector3D center(wp.x(), wp.y(), wp.z());
+        const QVector3D center = waypointToWorld(wp);
         QVector3D color;
 
         if (wp.sequence() == m_selectedWaypoint)
         {
-            color = QVector3D(0.2f, 0.6f, 1.0f); // Blue for selected
+            color = QVector3D(0.56f, 0.76f, 1.0f);
+        }
+        else if (m_selectedWaypointIds.contains(wp.sequence()))
+        {
+            color = QVector3D(0.2f, 0.72f, 0.95f);
+        }
+        else if (wp.sequence() == m_hoveredWaypoint)
+        {
+            color = QVector3D(0.38f, 0.65f, 1.0f);
         }
         else
         {
-            color = QVector3D(0.2f, 0.8f, 0.2f); // Green for normal
+            color = QVector3D(0.12f, 0.42f, 0.92f);
         }
-        
-        generateSphereVertices(center, sphereRadius, color, waypointVertices, waypointColors);
+
+        float lenS = 1.0f, baseS = 1.0f, ringF = 0.86f;
+        waypointMarkerConeParameters(center, lenS, baseS, ringF);
+        generateOrientedWaypointMarker(center, wp.yawAngle(), color, lenS, ringF, baseS, waypointVertices, waypointColors);
     }
 
     if (waypointVertices.isEmpty())
@@ -519,6 +862,199 @@ void PathPlannerOpenGLWidget::drawWaypoints()
     // For simplicity, we'll rely on the table widget for waypoint identification
 }
 
+void PathPlannerOpenGLWidget::appendLine(const QVector3D &a, const QVector3D &b, const QVector3D &color,
+                                         QVector<float> &vertices, QVector<float> &colors) const
+{
+    vertices << a.x() << a.y() << a.z();
+    vertices << b.x() << b.y() << b.z();
+    colors << color.x() << color.y() << color.z();
+    colors << color.x() << color.y() << color.z();
+}
+
+void PathPlannerOpenGLWidget::appendSphere(const QVector3D &center, float radius, const QVector3D &color,
+                                           QVector<float> &vertices, QVector<float> &colors) const
+{
+    generateSphereVertices(center, radius, color, vertices, colors);
+}
+
+QVector3D PathPlannerOpenGLWidget::gizmoCenterWorld() const
+{
+    for (const Waypoint &wp : m_waypoints)
+    {
+        if (wp.sequence() == m_selectedWaypoint)
+        {
+            return waypointToWorld(wp);
+        }
+    }
+    return QVector3D();
+}
+
+QVector3D PathPlannerOpenGLWidget::gizmoAxisDirectionWorld(TransformHandle handle) const
+{
+    switch (handle)
+    {
+    case TransformHandle::AxisX:
+        return QVector3D(0.0f, 0.0f, 1.0f);
+    case TransformHandle::AxisY:
+        return QVector3D(1.0f, 0.0f, 0.0f);
+    case TransformHandle::AxisZ:
+        return QVector3D(0.0f, 1.0f, 0.0f);
+    default:
+        return QVector3D();
+    }
+}
+
+float PathPlannerOpenGLWidget::worldDeltaAlongAxisFromScreenDelta(const QVector3D &originWorld,
+                                                                  const QVector3D &axisWorldUnit,
+                                                                  const QPoint &screenDelta) const
+{
+    const float eps = 0.5f;
+    const QPoint p0 = worldToScreen(originWorld);
+    const QPoint p1 = worldToScreen(originWorld + axisWorldUnit * eps);
+    const QVector2D s(static_cast<float>(p1.x() - p0.x()), static_cast<float>(p1.y() - p0.y()));
+    const float lenSq = QVector2D::dotProduct(s, s);
+    if (lenSq < 1e-6f)
+        return 0.0f;
+    const QVector2D d(static_cast<float>(screenDelta.x()), static_cast<float>(screenDelta.y()));
+    return eps * QVector2D::dotProduct(d, s) / lenSq;
+}
+
+bool PathPlannerOpenGLWidget::worldDeltasOnPlaneFromScreenDelta(const QVector3D &originWorld,
+                                                                const QVector3D &u0World,
+                                                                const QVector3D &u1World,
+                                                                const QPoint &screenDelta,
+                                                                float &outDu0,
+                                                                float &outDu1) const
+{
+    const float eps = 0.5f;
+    const QPoint originPx = worldToScreen(originWorld);
+    const auto deltaPx = [this, &originWorld, &originPx, eps](const QVector3D &u) {
+        const QPoint p = worldToScreen(originWorld + u * eps);
+        return QVector2D(static_cast<float>(p.x() - originPx.x()), static_cast<float>(p.y() - originPx.y()));
+    };
+    const QVector2D s0 = deltaPx(u0World);
+    const QVector2D s1 = deltaPx(u1World);
+    const float det = s0.x() * s1.y() - s0.y() * s1.x();
+    if (qAbs(det) < 1e-4f)
+        return false;
+    const QVector2D m(static_cast<float>(screenDelta.x()), static_cast<float>(screenDelta.y()));
+    outDu0 = eps * (m.x() * s1.y() - m.y() * s1.x()) / det;
+    outDu1 = eps * (s0.x() * m.y() - s0.y() * m.x()) / det;
+    return true;
+}
+
+// Gizmo handles (world space at waypoint): logical X -> world +Z (red), logical Y -> world +X (green),
+// logical Z -> world +Y (blue, altitude). Orange = logical XY, purple = XZ, cyan = YZ. Gold arrow + ring = yaw (heading in horizontal plane, degrees).
+void PathPlannerOpenGLWidget::drawGizmo()
+{
+    if (m_selectedWaypoint < 0 || m_interactionMode != TransformMode)
+        return;
+
+    const QVector3D center = gizmoCenterWorld();
+    const float axisLength = 1.3f;
+    const float handleRadius = 0.11f;
+    const float yawDeg = selectedWaypointYawDeg();
+    const float yawRad = qDegreesToRadians(yawDeg);
+    const QVector3D yawFwd = logicalYawHeadingWorld(yawDeg);
+    const float yawArrowLen = gizmoYawTipRadialDistance(axisLength);
+    const float yawArcRadius = 0.42f * axisLength;
+
+    QVector<float> lineVertices;
+    QVector<float> lineColors;
+    QVector<float> handleVertices;
+    QVector<float> handleColors;
+
+    const QVector3D xEnd = center + QVector3D(0.0f, 0.0f, axisLength);
+    const QVector3D yEnd = center + QVector3D(axisLength, 0.0f, 0.0f);
+    const QVector3D zEnd = center + QVector3D(0.0f, axisLength, 0.0f);
+
+    auto axisColor = [this](TransformHandle handle, const QVector3D &defaultColor) {
+        return (m_activeHandle == handle) ? QVector3D(1.0f, 1.0f, 0.2f) : defaultColor;
+    };
+
+    appendLine(center, xEnd, axisColor(TransformHandle::AxisX, QVector3D(1.0f, 0.2f, 0.2f)), lineVertices, lineColors);
+    appendLine(center, yEnd, axisColor(TransformHandle::AxisY, QVector3D(0.2f, 1.0f, 0.2f)), lineVertices, lineColors);
+    appendLine(center, zEnd, axisColor(TransformHandle::AxisZ, QVector3D(0.2f, 0.4f, 1.0f)), lineVertices, lineColors);
+
+    appendSphere(xEnd, handleRadius, axisColor(TransformHandle::AxisX, QVector3D(1.0f, 0.2f, 0.2f)), handleVertices, handleColors);
+    appendSphere(yEnd, handleRadius, axisColor(TransformHandle::AxisY, QVector3D(0.2f, 1.0f, 0.2f)), handleVertices, handleColors);
+    appendSphere(zEnd, handleRadius, axisColor(TransformHandle::AxisZ, QVector3D(0.2f, 0.4f, 1.0f)), handleVertices, handleColors);
+
+    const QVector3D xyCenter = center + QVector3D(0.45f * axisLength, 0.0f, 0.45f * axisLength);
+    const QVector3D xzCenter = center + QVector3D(0.0f, 0.45f * axisLength, 0.45f * axisLength);
+    const QVector3D yzCenter = center + QVector3D(0.45f * axisLength, 0.45f * axisLength, 0.0f);
+    appendSphere(xyCenter, handleRadius * 0.8f, axisColor(TransformHandle::PlaneXY, QVector3D(1.0f, 0.6f, 0.2f)), handleVertices, handleColors);
+    appendSphere(xzCenter, handleRadius * 0.8f, axisColor(TransformHandle::PlaneXZ, QVector3D(0.8f, 0.3f, 1.0f)), handleVertices, handleColors);
+    appendSphere(yzCenter, handleRadius * 0.8f, axisColor(TransformHandle::PlaneYZ, QVector3D(0.2f, 1.0f, 1.0f)), handleVertices, handleColors);
+
+    // Yaw: reference tick at 0° (logical forward = world +Z), sweep arc, heading arrow, draggable cap at tip.
+    {
+        const QVector3D refTickEnd = center + QVector3D(0.0f, 0.0f, 0.35f * axisLength);
+        appendLine(center, refTickEnd, QVector3D(0.35f, 0.38f, 0.45f), lineVertices, lineColors);
+        const int arcSegs = qBound(4, static_cast<int>(std::ceil(std::fabs(yawDeg) / 12.0f)), 36);
+        if (std::fabs(yawDeg) > 0.5f)
+        {
+            for (int i = 0; i < arcSegs; ++i)
+            {
+                const float t0 = (static_cast<float>(i) / static_cast<float>(arcSegs)) * yawRad;
+                const float t1 = (static_cast<float>(i + 1) / static_cast<float>(arcSegs)) * yawRad;
+                const QVector3D p0(center.x() + std::sin(t0) * yawArcRadius, center.y(), center.z() + std::cos(t0) * yawArcRadius);
+                const QVector3D p1(center.x() + std::sin(t1) * yawArcRadius, center.y(), center.z() + std::cos(t1) * yawArcRadius);
+                appendLine(p0, p1, QVector3D(0.75f, 0.55f, 0.12f), lineVertices, lineColors);
+            }
+        }
+        const QVector3D yawTip = center + yawFwd * yawArrowLen;
+        appendLine(center, yawTip, axisColor(TransformHandle::Yaw, QVector3D(0.95f, 0.72f, 0.08f)), lineVertices, lineColors);
+        appendSphere(yawTip, handleRadius * 0.85f, axisColor(TransformHandle::Yaw, QVector3D(0.98f, 0.78f, 0.1f)), handleVertices, handleColors);
+    }
+
+    if (!lineVertices.isEmpty())
+    {
+        m_vao.bind();
+        m_vertexBuffer.bind();
+        m_vertexBuffer.allocate(lineVertices.data(), lineVertices.size() * sizeof(float));
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
+        glEnableVertexAttribArray(0);
+
+        QOpenGLBuffer colorBuffer;
+        colorBuffer.create();
+        colorBuffer.bind();
+        colorBuffer.allocate(lineColors.data(), lineColors.size() * sizeof(float));
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
+        glEnableVertexAttribArray(1);
+
+        glLineWidth(2.5f);
+        glDrawArrays(GL_LINES, 0, lineVertices.size() / 3);
+        glLineWidth(1.0f);
+
+        colorBuffer.release();
+        m_vertexBuffer.release();
+        m_vao.release();
+    }
+
+    if (!handleVertices.isEmpty())
+    {
+        m_vao.bind();
+        m_vertexBuffer.bind();
+        m_vertexBuffer.allocate(handleVertices.data(), handleVertices.size() * sizeof(float));
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
+        glEnableVertexAttribArray(0);
+
+        QOpenGLBuffer colorBuffer;
+        colorBuffer.create();
+        colorBuffer.bind();
+        colorBuffer.allocate(handleColors.data(), handleColors.size() * sizeof(float));
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
+        glEnableVertexAttribArray(1);
+
+        glDrawArrays(GL_TRIANGLES, 0, handleVertices.size() / 3);
+
+        colorBuffer.release();
+        m_vertexBuffer.release();
+        m_vao.release();
+    }
+}
+
 void PathPlannerOpenGLWidget::drawPath()
 {
     if (m_waypoints.size() < 2)
@@ -531,9 +1067,11 @@ void PathPlannerOpenGLWidget::drawPath()
     {
         const Waypoint &wp1 = m_waypoints[i];
         const Waypoint &wp2 = m_waypoints[i + 1];
+        const QVector3D p1 = waypointToWorld(wp1);
+        const QVector3D p2 = waypointToWorld(wp2);
 
-        pathVertices << wp1.x() << wp1.y() << wp1.z();
-        pathVertices << wp2.x() << wp2.y() << wp2.z();
+        pathVertices << p1.x() << p1.y() << p1.z();
+        pathVertices << p2.x() << p2.y() << p2.z();
 
         pathColors << 1.0f << 1.0f << 0.0f; // Yellow
         pathColors << 1.0f << 1.0f << 0.0f;
@@ -563,50 +1101,274 @@ void PathPlannerOpenGLWidget::drawPath()
 
 void PathPlannerOpenGLWidget::mousePressEvent(QMouseEvent *event)
 {
+    updateCamera();
     m_lastMousePos = event->pos();
     m_mousePressed = true;
+    m_dragStartMousePos = event->pos();
 
     if (event->button() == Qt::LeftButton)
     {
-        // In top-down mode, left-click adds waypoints
-        if (m_viewMode == TopDownMode)
+        const Qt::KeyboardModifiers mods = event->modifiers();
+
+        if (m_interactionMode == TransformMode && m_selectedWaypoint >= 0)
         {
-            // Place waypoint on ground plane (Y=0) for visual placement
-            // The depth parameter is not used in top-down mode, Y is set explicitly
-            QVector3D worldPos = screenToWorld(event->pos(), 0.0f);
-            worldPos.setY(0.0f); // Place on ground plane, user can adjust altitude in table
-            addWaypoint(worldPos);
-            // Signal is emitted in addWaypoint
-        }
-        else
-        {
-            // In 3D mode, left-click selects waypoints (no adding via mouse)
-            int waypointId = findWaypointAt(event->pos());
-            if (waypointId >= 0)
+            const TransformHandle handle = findTransformHandleAt(event->pos());
+            if (handle != TransformHandle::None)
             {
-                setSelectedWaypoint(waypointId);
-                emit waypointSelected(waypointId);
+                m_draggingTransform = true;
+                m_activeHandle = handle;
+                m_dragStartLogicalPos = selectedWaypointLogicalPosition();
+                m_dragGizmoOriginWorld = gizmoCenterWorld();
+                m_dragBeforeSnapshot = m_waypoints;
+                if (handle == TransformHandle::Yaw)
+                {
+                    const QVector3D c = m_dragGizmoOriginWorld;
+                    const QVector3D hit = screenToWorldOnYPlane(event->pos(), c.y());
+                    m_dragYawPlaneAngleStartRad = std::atan2(hit.x() - c.x(), hit.z() - c.z());
+                    m_dragStartYawDeg = selectedWaypointYawDeg();
+                }
+                emit transformStarted(m_selectedWaypoint);
+                return;
             }
+        }
+
+        float pickDistancePx = 0.0f;
+        float pickDepthNdc = 0.0f;
+        const int waypointId = findWaypointAt(event->pos(), &pickDistancePx, &pickDepthNdc);
+
+        if (waypointId >= 0)
+        {
+            if ((mods & Qt::ControlModifier) && m_interactionMode == TransformMode)
+            {
+                if (m_selectedWaypointIds.contains(waypointId))
+                {
+                    m_selectedWaypointIds.remove(waypointId);
+                    if (m_selectedWaypoint == waypointId)
+                    {
+                        m_selectedWaypoint = m_selectedWaypointIds.isEmpty() ? -1 : *m_selectedWaypointIds.begin();
+                    }
+                }
+                else
+                {
+                    m_selectedWaypointIds.insert(waypointId);
+                    m_selectedWaypoint = waypointId;
+                }
+            }
+            else
+            {
+                m_selectedWaypointIds.clear();
+                m_selectedWaypointIds.insert(waypointId);
+                m_selectedWaypoint = waypointId;
+            }
+
+            emit waypointSelected(waypointId);
+            emit selectionChanged(m_selectedWaypointIds);
+            update();
+            return;
+        }
+
+        if (m_interactionMode == CreateMode && (mods & Qt::ControlModifier) && m_waypoints.size() > 1)
+        {
+            QVector3D insertWorld;
+            const int segmentIndex = findSegmentAt(event->pos(), &insertWorld, 14.0f);
+            if (segmentIndex >= 0)
+            {
+                const std::vector<Waypoint> before = m_waypoints;
+                Waypoint wp(worldToLogical(insertWorld));
+                m_waypoints.insert(m_waypoints.begin() + segmentIndex + 1, wp);
+                for (int i = 0; i < static_cast<int>(m_waypoints.size()); ++i)
+                {
+                    m_waypoints[i].setSequence(i + 1);
+                }
+                m_selectedWaypoint = segmentIndex + 2;
+                m_selectedWaypointIds.clear();
+                m_selectedWaypointIds.insert(m_selectedWaypoint);
+                commitEdit(before, m_waypoints);
+                emit waypointSelected(m_selectedWaypoint);
+                emit waypointsEdited();
+                update();
+                return;
+            }
+        }
+
+        const bool shouldCreate = (m_interactionMode == CreateMode);
+        if (shouldCreate)
+        {
+            QVector3D worldPos;
+            if (m_viewMode == TopDownMode)
+            {
+                worldPos = screenToWorld(event->pos(), 0.0f);
+                worldPos.setY(m_defaultAltitude);
+            }
+            else
+            {
+                worldPos = screenToWorldOnYPlane(event->pos(), m_defaultAltitude);
+            }
+            addWaypoint(worldToLogical(worldPos));
+            return;
+        }
+
+        if (m_interactionMode == SelectMode || m_interactionMode == TransformMode)
+        {
+            m_selectedWaypointIds.clear();
+            m_selectedWaypoint = -1;
+            emit selectionChanged(m_selectedWaypointIds);
+            update();
         }
     }
 }
 
 void PathPlannerOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
 {
-    if (!m_mousePressed)
-        return;
+    updateCamera();
+
+    float hoverDistance = 0.0f;
+    float hoverDepth = 0.0f;
+    m_hoveredWaypoint = findWaypointAt(event->pos(), &hoverDistance, &hoverDepth);
+    if (m_interactionMode == CreateMode)
+    {
+        if (m_viewMode == TopDownMode)
+        {
+            m_lastHoverPreviewWorldPos = screenToWorld(event->pos(), 0.0f);
+            m_lastHoverPreviewWorldPos.setY(m_defaultAltitude);
+        }
+        else
+        {
+            m_lastHoverPreviewWorldPos = screenToWorldOnYPlane(event->pos(), m_defaultAltitude);
+        }
+        m_hasHoverPreview = true;
+    }
+    else
+    {
+        m_hasHoverPreview = false;
+    }
 
     QPoint delta = event->pos() - m_lastMousePos;
-    m_lastMousePos = event->pos();
+
+    if ((event->buttons() & Qt::LeftButton) && m_draggingTransform && m_selectedWaypoint >= 0)
+    {
+        const QPoint totalDelta = event->pos() - m_dragStartMousePos;
+        const QVector3D &origin = m_dragGizmoOriginWorld;
+
+        if (m_activeHandle == TransformHandle::Yaw)
+        {
+            const QVector3D hit = screenToWorldOnYPlane(event->pos(), origin.y());
+            const float ang = std::atan2(hit.x() - origin.x(), hit.z() - origin.z());
+            float deltaRad = ang - m_dragYawPlaneAngleStartRad;
+            constexpr float kPi = 3.14159265f;
+            while (deltaRad > kPi)
+                deltaRad -= 2.0f * kPi;
+            while (deltaRad < -kPi)
+                deltaRad += 2.0f * kPi;
+            float newYaw = wrapYawDegrees180(m_dragStartYawDeg + qRadiansToDegrees(deltaRad));
+            if (event->modifiers() & Qt::ShiftModifier)
+                newYaw = wrapYawDegrees180(qRound(newYaw / 15.0f) * 15.0f);
+
+            if (updateWaypointYawAngle(m_selectedWaypoint, newYaw))
+            {
+                QVector3D worldPos;
+                for (const Waypoint &w : m_waypoints)
+                {
+                    if (w.sequence() == m_selectedWaypoint)
+                    {
+                        worldPos = waypointToWorld(w);
+                        break;
+                    }
+                }
+                emit waypointMoved(m_selectedWaypoint, worldPos);
+                emit transformUpdated(m_selectedWaypoint);
+                emit waypointsEdited();
+            }
+            m_lastMousePos = event->pos();
+            return;
+        }
+
+        QVector3D pos = m_dragStartLogicalPos;
+
+        switch (m_activeHandle)
+        {
+        case TransformHandle::AxisX:
+            pos.setX(pos.x() + worldDeltaAlongAxisFromScreenDelta(origin, QVector3D(0.0f, 0.0f, 1.0f), totalDelta));
+            break;
+        case TransformHandle::AxisY:
+            pos.setY(pos.y() + worldDeltaAlongAxisFromScreenDelta(origin, QVector3D(1.0f, 0.0f, 0.0f), totalDelta));
+            break;
+        case TransformHandle::AxisZ:
+            pos.setZ(pos.z() + worldDeltaAlongAxisFromScreenDelta(origin, QVector3D(0.0f, 1.0f, 0.0f), totalDelta));
+            break;
+        case TransformHandle::PlaneXY: {
+            float dForward = 0.0f;
+            float dRight = 0.0f;
+            if (worldDeltasOnPlaneFromScreenDelta(origin, QVector3D(0.0f, 0.0f, 1.0f), QVector3D(1.0f, 0.0f, 0.0f),
+                                                 totalDelta, dForward, dRight))
+            {
+                pos.setX(pos.x() + dForward);
+                pos.setY(pos.y() + dRight);
+            }
+            break;
+        }
+        case TransformHandle::PlaneXZ: {
+            float dForward = 0.0f;
+            float dUp = 0.0f;
+            if (worldDeltasOnPlaneFromScreenDelta(origin, QVector3D(0.0f, 0.0f, 1.0f), QVector3D(0.0f, 1.0f, 0.0f),
+                                                 totalDelta, dForward, dUp))
+            {
+                pos.setX(pos.x() + dForward);
+                pos.setZ(pos.z() + dUp);
+            }
+            break;
+        }
+        case TransformHandle::PlaneYZ: {
+            float dRight = 0.0f;
+            float dUp = 0.0f;
+            if (worldDeltasOnPlaneFromScreenDelta(origin, QVector3D(1.0f, 0.0f, 0.0f), QVector3D(0.0f, 1.0f, 0.0f),
+                                                 totalDelta, dRight, dUp))
+            {
+                pos.setY(pos.y() + dRight);
+                pos.setZ(pos.z() + dUp);
+            }
+            break;
+        }
+        case TransformHandle::Yaw:
+        case TransformHandle::None:
+            break;
+        }
+
+        if (event->modifiers() & Qt::ShiftModifier)
+        {
+            const float snap = 0.25f;
+            pos.setX(qRound(pos.x() / snap) * snap);
+            pos.setY(qRound(pos.y() / snap) * snap);
+            pos.setZ(qRound(pos.z() / snap) * snap);
+        }
+
+        if (updateWaypointLogicalPosition(m_selectedWaypoint, pos))
+        {
+            QVector3D worldPos;
+            for (const Waypoint &w : m_waypoints)
+            {
+                if (w.sequence() == m_selectedWaypoint)
+                {
+                    worldPos = waypointToWorld(w);
+                    break;
+                }
+            }
+            emit waypointMoved(m_selectedWaypoint, worldPos);
+            emit transformUpdated(m_selectedWaypoint);
+            emit waypointsEdited();
+        }
+        m_lastMousePos = event->pos();
+        return;
+    }
 
     // Only allow camera manipulation in 3D mode
-    if (m_viewMode == View3DMode)
+    if (m_mousePressed && m_viewMode == View3DMode)
     {
         if (event->buttons() & Qt::RightButton)
         {
             // Camera rotation
             m_cameraYaw += delta.x() * 0.5f;
-            m_cameraPitch -= delta.y() * 0.5f;
+            m_cameraPitch += delta.y() * 0.5f;
             m_cameraPitch = qBound(-89.0f, m_cameraPitch, 89.0f);
             update();
         }
@@ -616,12 +1378,12 @@ void PathPlannerOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
             float sensitivity = 0.01f;
             QVector3D right = QVector3D::crossProduct(m_cameraTarget - m_cameraPosition, m_cameraUp).normalized();
             QVector3D up = QVector3D::crossProduct(right, m_cameraTarget - m_cameraPosition).normalized();
-            m_cameraTarget += right * delta.x() * sensitivity;
+            m_cameraTarget -= right * delta.x() * sensitivity;
             m_cameraTarget += up * delta.y() * sensitivity;
             update();
         }
     }
-    else if (m_viewMode == TopDownMode)
+    else if (m_mousePressed && m_viewMode == TopDownMode)
     {
         // In top-down mode, middle button or right button pans the view
         if (event->buttons() & (Qt::RightButton | Qt::MiddleButton))
@@ -633,6 +1395,24 @@ void PathPlannerOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
             update();
         }
     }
+
+    m_lastMousePos = event->pos();
+    update();
+}
+
+void PathPlannerOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
+{
+    Q_UNUSED(event);
+    if (m_draggingTransform)
+    {
+        m_draggingTransform = false;
+        m_activeHandle = TransformHandle::None;
+        commitEdit(m_dragBeforeSnapshot, m_waypoints);
+        emit transformEnded(m_selectedWaypoint);
+        emit waypointsEdited();
+    }
+    m_mousePressed = false;
+    update();
 }
 
 void PathPlannerOpenGLWidget::wheelEvent(QWheelEvent *event)
@@ -677,49 +1457,235 @@ QVector3D PathPlannerOpenGLWidget::screenToWorld(const QPoint &screenPos, float 
 
         return QVector3D(worldX, depth, worldZ);
     }
-    else
+    return screenToWorldOnYPlane(screenPos, depth);
+}
+
+QVector3D PathPlannerOpenGLWidget::screenToWorldOnYPlane(const QPoint &screenPos, float worldY) const
+{
+    const float ndcX = (2.0f * static_cast<float>(screenPos.x())) / qMax(1, width()) - 1.0f;
+    const float ndcY = 1.0f - (2.0f * static_cast<float>(screenPos.y())) / qMax(1, height());
+
+    QVector4D nearClip(ndcX, ndcY, -1.0f, 1.0f);
+    QVector4D farClip(ndcX, ndcY, 1.0f, 1.0f);
+    const QMatrix4x4 invVP = (m_projectionMatrix * m_viewMatrix).inverted();
+
+    QVector4D nearWorld4 = invVP * nearClip;
+    QVector4D farWorld4 = invVP * farClip;
+    if (qAbs(nearWorld4.w()) > 0.0001f)
+        nearWorld4 /= nearWorld4.w();
+    if (qAbs(farWorld4.w()) > 0.0001f)
+        farWorld4 /= farWorld4.w();
+
+    const QVector3D nearWorld = nearWorld4.toVector3D();
+    const QVector3D farWorld = farWorld4.toVector3D();
+    QVector3D dir = (farWorld - nearWorld);
+    if (dir.lengthSquared() < 1e-8f)
+        return nearWorld;
+    dir.normalize();
+
+    if (qAbs(dir.y()) < 1e-5f)
     {
-        // Simplified perspective unprojection (for ground plane y=depth)
-        float x = (screenPos.x() - width() / 2.0f) / (width() / 20.0f);
-        float z = (screenPos.y() - height() / 2.0f) / (height() / 20.0f);
-        return QVector3D(x, depth, -z);
+        return QVector3D(nearWorld.x(), worldY, nearWorld.z());
     }
+
+    float t = (worldY - nearWorld.y()) / dir.y();
+    if (t < 0.0f)
+        t = 0.0f;
+    return nearWorld + dir * t;
+}
+
+int PathPlannerOpenGLWidget::findWaypointAt(const QPoint &screenPos, float *outDistancePx, float *outDepthNdc) const
+{
+    float bestDistance = 1e9f;
+    float bestDepth = 1e9f;
+    int bestId = -1;
+    for (size_t i = 0; i < m_waypoints.size(); ++i)
+    {
+        const Waypoint &wp = m_waypoints[i];
+        QVector3D wpPos = waypointToWorld(wp);
+        const float pickRadiusPx = qBound(22.0f, screenSpaceSphereRadiusPx(wpPos, kWaypointSphereRadiusWorld) * 1.3f, 72.0f);
+
+        QVector4D clipPos = m_projectionMatrix * m_viewMatrix * QVector4D(wpPos, 1.0f);
+        if (qAbs(clipPos.w()) > 0.0001f)
+        {
+            QVector3D ndcPos = clipPos.toVector3D() / clipPos.w();
+            QPoint screenPoint(
+                static_cast<int>((ndcPos.x() + 1.0f) * 0.5f * width()),
+                static_cast<int>((1.0f - ndcPos.y()) * 0.5f * height()));
+
+            const float dx = static_cast<float>(screenPoint.x() - screenPos.x());
+            const float dy = static_cast<float>(screenPoint.y() - screenPos.y());
+            const float dist = std::sqrt(dx * dx + dy * dy);
+            if (dist <= pickRadiusPx && (dist < bestDistance || (qFuzzyCompare(dist, bestDistance) && ndcPos.z() < bestDepth)))
+            {
+                bestDistance = dist;
+                bestDepth = ndcPos.z();
+                bestId = wp.sequence();
+            }
+        }
+    }
+
+    if (outDistancePx)
+        *outDistancePx = bestDistance;
+    if (outDepthNdc)
+        *outDepthNdc = bestDepth;
+    return bestId;
 }
 
 int PathPlannerOpenGLWidget::findWaypointAt(const QPoint &screenPos)
 {
-    // Simple hit testing - proper implementation would use GPU picking or ray casting
-    for (size_t i = 0; i < m_waypoints.size(); ++i)
+    return findWaypointAt(screenPos, nullptr, nullptr);
+}
+
+int PathPlannerOpenGLWidget::findSegmentAt(const QPoint &screenPos, QVector3D *insertWorldPoint, float maxDistancePx) const
+{
+    if (m_waypoints.size() < 2)
+        return -1;
+
+    int bestSegment = -1;
+    float bestDist = maxDistancePx;
+    QVector3D bestWorld;
+
+    for (size_t i = 0; i + 1 < m_waypoints.size(); ++i)
     {
-        const Waypoint &wp = m_waypoints[i];
-        QVector3D wpPos(wp.x(), wp.y(), wp.z());
+        const QVector3D p1 = waypointToWorld(m_waypoints[i]);
+        const QVector3D p2 = waypointToWorld(m_waypoints[i + 1]);
+        const QPoint s1 = worldToScreen(p1);
+        const QPoint s2 = worldToScreen(p2);
 
-        // Project waypoint to screen (simplified)
-        QVector4D clipPos = m_projectionMatrix * m_viewMatrix * QVector4D(wpPos, 1.0f);
-        if (clipPos.w() != 0.0f)
+        const QVector2D a(s1.x(), s1.y());
+        const QVector2D b(s2.x(), s2.y());
+        const QVector2D p(screenPos.x(), screenPos.y());
+        const QVector2D ab = b - a;
+        const float abLenSq = QVector2D::dotProduct(ab, ab);
+        if (abLenSq < 1e-4f)
+            continue;
+        float t = QVector2D::dotProduct(p - a, ab) / abLenSq;
+        t = qBound(0.0f, t, 1.0f);
+        const QVector2D proj = a + ab * t;
+        const float dist = (p - proj).length();
+        if (dist < bestDist)
         {
-            QVector3D ndcPos = clipPos.toVector3D() / clipPos.w();
-            QPoint screenPoint(
-                (ndcPos.x() + 1.0f) * 0.5f * width(),
-                (1.0f - ndcPos.y()) * 0.5f * height());
-
-            if ((screenPoint - screenPos).manhattanLength() < 15)
-            {
-                return wp.sequence();
-            }
+            bestDist = dist;
+            bestSegment = static_cast<int>(i);
+            bestWorld = p1 + (p2 - p1) * t;
         }
     }
-    return -1;
+
+    if (insertWorldPoint && bestSegment >= 0)
+        *insertWorldPoint = bestWorld;
+    return bestSegment;
+}
+
+PathPlannerOpenGLWidget::TransformHandle PathPlannerOpenGLWidget::findTransformHandleAt(const QPoint &screenPos) const
+{
+    if (m_selectedWaypoint < 0)
+        return TransformHandle::None;
+
+    const QVector3D center = gizmoCenterWorld();
+    const float axisLength = 1.3f;
+    const float yawTipR = gizmoYawTipRadialDistance(axisLength);
+    const QVector3D yawTip = center + logicalYawHeadingWorld(selectedWaypointYawDeg()) * yawTipR;
+    struct HandlePoint
+    {
+        TransformHandle handle;
+        QPoint pos;
+    };
+    QVector<HandlePoint> points = {
+        {TransformHandle::AxisX, worldToScreen(center + QVector3D(0.0f, 0.0f, axisLength))},
+        {TransformHandle::AxisY, worldToScreen(center + QVector3D(axisLength, 0.0f, 0.0f))},
+        {TransformHandle::AxisZ, worldToScreen(center + QVector3D(0.0f, axisLength, 0.0f))},
+        {TransformHandle::PlaneXY, worldToScreen(center + QVector3D(0.45f * axisLength, 0.0f, 0.45f * axisLength))},
+        {TransformHandle::PlaneXZ, worldToScreen(center + QVector3D(0.0f, 0.45f * axisLength, 0.45f * axisLength))},
+        {TransformHandle::PlaneYZ, worldToScreen(center + QVector3D(0.45f * axisLength, 0.45f * axisLength, 0.0f))},
+        {TransformHandle::Yaw, worldToScreen(yawTip)}
+    };
+
+    TransformHandle best = TransformHandle::None;
+    float bestDist = 14.0f;
+    for (const HandlePoint &hp : points)
+    {
+        const float dx = static_cast<float>(hp.pos.x() - screenPos.x());
+        const float dy = static_cast<float>(hp.pos.y() - screenPos.y());
+        const float d = std::sqrt(dx * dx + dy * dy);
+        if (d < bestDist)
+        {
+            bestDist = d;
+            best = hp.handle;
+        }
+    }
+    return best;
+}
+
+QVector3D PathPlannerOpenGLWidget::selectedWaypointLogicalPosition() const
+{
+    for (const Waypoint &wp : m_waypoints)
+    {
+        if (wp.sequence() == m_selectedWaypoint)
+            return QVector3D(wp.x(), wp.y(), wp.z());
+    }
+    return QVector3D();
+}
+
+float PathPlannerOpenGLWidget::selectedWaypointYawDeg() const
+{
+    for (const Waypoint &wp : m_waypoints)
+    {
+        if (wp.sequence() == m_selectedWaypoint)
+            return wp.yawAngle();
+    }
+    return 0.0f;
+}
+
+bool PathPlannerOpenGLWidget::updateWaypointYawAngle(int id, float yawDeg)
+{
+    yawDeg = wrapYawDegrees180(yawDeg);
+    for (Waypoint &waypoint : m_waypoints)
+    {
+        if (waypoint.sequence() == id)
+        {
+            if (qAbs(waypoint.yawAngle() - yawDeg) < 0.02f)
+                return false;
+            waypoint.setYawAngle(yawDeg);
+            update();
+            return true;
+        }
+    }
+    return false;
+}
+
+bool PathPlannerOpenGLWidget::updateWaypointLogicalPosition(int id, const QVector3D &newLogicalPosition)
+{
+    constexpr float kMinAltitudeM = 0.3f;
+    constexpr float kMaxAltitudeM = 100.0f;
+    for (Waypoint &waypoint : m_waypoints)
+    {
+        if (waypoint.sequence() == id)
+        {
+            QVector3D clamped = newLogicalPosition;
+            clamped.setZ(qBound(kMinAltitudeM, clamped.z(), kMaxAltitudeM));
+            if ((QVector3D(waypoint.x(), waypoint.y(), waypoint.z()) - clamped).lengthSquared() < 1e-8f)
+                return false;
+            waypoint.setPosition(clamped);
+            update();
+            return true;
+        }
+    }
+    return false;
 }
 
 void PathPlannerOpenGLWidget::setWaypoints(const std::vector<Waypoint> &waypoints)
 {
     m_waypoints = waypoints;
+    if (m_selectedWaypoint > static_cast<int>(m_waypoints.size()))
+        m_selectedWaypoint = -1;
     update();
 }
 
 void PathPlannerOpenGLWidget::addWaypoint(const QVector3D &point)
 {
+    const std::vector<Waypoint> before = m_waypoints;
+
     // Generate new sequence number (1-based, sequential)
     int newSequence = 1;
     if (!m_waypoints.empty())
@@ -730,18 +1696,26 @@ void PathPlannerOpenGLWidget::addWaypoint(const QVector3D &point)
     Waypoint wp(point);
     wp.setSequence(newSequence);
     m_waypoints.push_back(wp);
+    m_selectedWaypoint = newSequence;
+    m_selectedWaypointIds.clear();
+    m_selectedWaypointIds.insert(newSequence);
+    commitEdit(before, m_waypoints);
     emit waypointAdded(wp);
+    emit waypointsEdited();
     update();
 }
 
 void PathPlannerOpenGLWidget::updateWaypoint(int id, const Waypoint &wp)
 {
+    const std::vector<Waypoint> before = m_waypoints;
     for (auto &waypoint : m_waypoints)
     {
         if (waypoint.sequence() == id)
         {
             waypoint = wp;
             waypoint.setSequence(id); // Preserve sequence number
+            commitEdit(before, m_waypoints);
+            emit waypointsEdited();
             update();
             return;
         }
@@ -750,6 +1724,7 @@ void PathPlannerOpenGLWidget::updateWaypoint(int id, const Waypoint &wp)
 
 void PathPlannerOpenGLWidget::removeWaypoint(int id)
 {
+    const std::vector<Waypoint> before = m_waypoints;
     auto it = std::remove_if(m_waypoints.begin(), m_waypoints.end(),
                              [id](const Waypoint &wp)
                              { return wp.sequence() == id; });
@@ -757,25 +1732,40 @@ void PathPlannerOpenGLWidget::removeWaypoint(int id)
     if (it != m_waypoints.end())
     {
         m_waypoints.erase(it, m_waypoints.end());
+        for (int i = 0; i < static_cast<int>(m_waypoints.size()); ++i)
+        {
+            m_waypoints[i].setSequence(i + 1);
+        }
 
         if (m_selectedWaypoint == id)
         {
             m_selectedWaypoint = -1;
         }
+        m_selectedWaypointIds.clear();
+        commitEdit(before, m_waypoints);
+        emit waypointsEdited();
         update();
     }
 }
 
 void PathPlannerOpenGLWidget::clearWaypoints()
 {
+    const std::vector<Waypoint> before = m_waypoints;
     m_waypoints.clear();
     m_selectedWaypoint = -1;
+    m_selectedWaypointIds.clear();
+    commitEdit(before, m_waypoints);
+    emit waypointsEdited();
     update();
 }
 
 void PathPlannerOpenGLWidget::setSelectedWaypoint(int id)
 {
     m_selectedWaypoint = id;
+    m_selectedWaypointIds.clear();
+    if (id >= 0)
+        m_selectedWaypointIds.insert(id);
+    emit selectionChanged(m_selectedWaypointIds);
     update();
 }
 
@@ -787,6 +1777,96 @@ void PathPlannerOpenGLWidget::setViewMode(ViewMode mode)
         updateProjection();
         update();
     }
+}
+
+void PathPlannerOpenGLWidget::setInteractionMode(InteractionMode mode)
+{
+    if (m_interactionMode != mode)
+    {
+        m_interactionMode = mode;
+        m_activeHandle = TransformHandle::None;
+        update();
+    }
+}
+
+void PathPlannerOpenGLWidget::commitEdit(const std::vector<Waypoint> &before, const std::vector<Waypoint> &after)
+{
+    if (m_applyingHistory || before == after)
+        return;
+    clearRedoHistory();
+    m_undoStack.append(EditCommand{before, after});
+    updateHistorySignals();
+}
+
+void PathPlannerOpenGLWidget::clearRedoHistory()
+{
+    if (!m_redoStack.isEmpty())
+        m_redoStack.clear();
+}
+
+void PathPlannerOpenGLWidget::updateHistorySignals()
+{
+    emit editHistoryStateChanged(canUndo(), canRedo());
+}
+
+bool PathPlannerOpenGLWidget::undo()
+{
+    if (m_undoStack.isEmpty())
+        return false;
+    const EditCommand cmd = m_undoStack.takeLast();
+    m_redoStack.append(cmd);
+    m_applyingHistory = true;
+    m_waypoints = cmd.before;
+    m_applyingHistory = false;
+    if (m_selectedWaypoint > static_cast<int>(m_waypoints.size()))
+        m_selectedWaypoint = -1;
+    emit waypointsEdited();
+    updateHistorySignals();
+    update();
+    return true;
+}
+
+bool PathPlannerOpenGLWidget::redo()
+{
+    if (m_redoStack.isEmpty())
+        return false;
+    const EditCommand cmd = m_redoStack.takeLast();
+    m_undoStack.append(cmd);
+    m_applyingHistory = true;
+    m_waypoints = cmd.after;
+    m_applyingHistory = false;
+    if (m_selectedWaypoint > static_cast<int>(m_waypoints.size()))
+        m_selectedWaypoint = -1;
+    emit waypointsEdited();
+    updateHistorySignals();
+    update();
+    return true;
+}
+
+bool PathPlannerOpenGLWidget::duplicateSelectedWaypoint()
+{
+    if (m_selectedWaypoint < 0)
+        return false;
+    for (const Waypoint &wp : m_waypoints)
+    {
+        if (wp.sequence() == m_selectedWaypoint)
+        {
+            QVector3D p(wp.x(), wp.y(), wp.z());
+            p.setX(p.x() + 0.4f);
+            p.setY(p.y() + 0.4f);
+            addWaypoint(p);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool PathPlannerOpenGLWidget::deleteSelectedWaypoint()
+{
+    if (m_selectedWaypoint < 0)
+        return false;
+    removeWaypoint(m_selectedWaypoint);
+    return true;
 }
 
 void PathPlannerOpenGLWidget::resetCamera()
@@ -809,7 +1889,7 @@ void PathPlannerOpenGLWidget::resetCamera()
 
 // PathPlannerWidget Implementation
 PathPlannerWidget::PathPlannerWidget(QWidget *parent)
-    : QWidget(parent), ui(nullptr), m_mainLayout(nullptr), m_controlsLayout(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_pathGroup(nullptr), m_pathOrderGroup(nullptr), m_viewGroup(nullptr), m_settingsGroup(nullptr), m_waypointTable(nullptr), m_selectedWaypoint(-1), m_currentAnimationWaypoint(0), m_animationProgress(0.0f), m_isPlayingPath(false), m_droneController(nullptr), m_quickMissionsGroup(nullptr), m_generateSquareButton(nullptr), m_squareAltSpinBox(nullptr), m_squareSideSpinBox(nullptr), m_loadRecordingButton(nullptr), m_quickMissionStatusLabel(nullptr)
+    : QWidget(parent), m_mainLayout(nullptr), m_contentLayout(nullptr), m_topBarWidget(nullptr), m_controlsLayout(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_viewGroup(nullptr), m_waypointTable(nullptr), m_waypointCountLabel(nullptr), m_pathMenuButton(nullptr), m_uploadMissionButton(nullptr), m_runMissionButton(nullptr), m_cancelMissionButton(nullptr), m_createModeButton(nullptr), m_transformModeButton(nullptr), m_playPathButton(nullptr), m_stopPathButton(nullptr), m_pathNameEdit(nullptr), m_missionStatusLabel(nullptr), m_resetCameraButton(nullptr), m_viewModeButton(nullptr), m_defaultAltitudeSpinBox(nullptr), m_undoEditButton(nullptr), m_redoEditButton(nullptr), m_pathAnimationTimer(nullptr), m_currentAnimationWaypoint(0), m_animationProgress(0.0f), m_isPlayingPath(false), m_selectedWaypoint(-1), m_droneController(nullptr), m_updatingWaypointTable(false)
 {
     setupUI();
 
@@ -824,20 +1904,46 @@ PathPlannerWidget::~PathPlannerWidget()
 
 void PathPlannerWidget::setupUI()
 {
-    m_mainLayout = new QHBoxLayout(this);
+    m_mainLayout = new QVBoxLayout(this);
     m_mainLayout->setContentsMargins(10, 10, 10, 10);
+    m_mainLayout->setSpacing(8);
+
+    m_contentLayout = new QHBoxLayout;
+    m_contentLayout->setContentsMargins(0, 0, 0, 0);
+    m_contentLayout->setSpacing(8);
+    m_mainLayout->addLayout(m_contentLayout, 1);
+
+    // Left pane: toolbar + visualizer (toolbar width matches visualizer width).
+    QWidget *visualizerPane = new QWidget(this);
+    QVBoxLayout *visualizerLayout = new QVBoxLayout(visualizerPane);
+    visualizerLayout->setContentsMargins(0, 0, 0, 0);
+    visualizerLayout->setSpacing(8);
+
+    setupTopBar();
+    visualizerLayout->addWidget(m_topBarWidget);
 
     // Create OpenGL widget
     m_openglWidget = new PathPlannerOpenGLWidget;
-    m_mainLayout->addWidget(m_openglWidget, 3);
+    visualizerLayout->addWidget(m_openglWidget, 1);
+    m_contentLayout->addWidget(visualizerPane, 3);
 
-    // Create controls panel
-    m_controlsLayout = new QVBoxLayout;
-    m_mainLayout->addLayout(m_controlsLayout, 1);
+    // Create a scrollable controls panel so newly shown groups do not squash controls.
+    QScrollArea *controlsScrollArea = new QScrollArea(this);
+    controlsScrollArea->setWidgetResizable(true);
+    controlsScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    controlsScrollArea->setStyleSheet("QScrollArea { border: none; background: transparent; }");
+
+    QWidget *controlsContainer = new QWidget;
+    m_controlsLayout = new QVBoxLayout(controlsContainer);
+    m_controlsLayout->setContentsMargins(0, 0, 0, 0);
+    m_controlsLayout->setSpacing(8);
+    m_controlsLayout->setSizeConstraint(QLayout::SetMinimumSize);
+
+    controlsScrollArea->setWidget(controlsContainer);
+    m_contentLayout->addWidget(controlsScrollArea, 1);
 
     setupControls();
     setupWaypointTable();
-    setupQuickMissions();
 
     // Connect signals
     connect(m_openglWidget, &PathPlannerOpenGLWidget::waypointSelected,
@@ -848,117 +1954,161 @@ void PathPlannerWidget::setupUI()
                 updateWaypointTable();
                 onWaypointSelected(wp.sequence());
                 emitWaypointsChanged(); });
+    connect(m_openglWidget, &PathPlannerOpenGLWidget::waypointMoved,
+            this, [this](int, const QVector3D &) {
+                updateWaypointTable();
+                emitWaypointsChanged();
+            });
+    connect(m_openglWidget, &PathPlannerOpenGLWidget::waypointsEdited,
+            this, [this]() {
+                updateWaypointTable();
+                emitWaypointsChanged();
+            });
+    connect(m_openglWidget, &PathPlannerOpenGLWidget::editHistoryStateChanged,
+            this, [this](bool, bool) { updateUndoRedoButtons(); });
+}
+
+void PathPlannerWidget::setupTopBar()
+{
+    m_topBarWidget = new QWidget(this);
+    m_topBarWidget->setStyleSheet(
+        "QWidget { background-color: #2d2d2d; border: none; }");
+    QHBoxLayout *topLayout = new QHBoxLayout(m_topBarWidget);
+    topLayout->setContentsMargins(4, 3, 4, 3);
+    topLayout->setSpacing(4);
+
+    auto makeTopButton = [this](const QString &text) {
+        QPushButton *button = new QPushButton(text, m_topBarWidget);
+        button->setFixedSize(26, 24);
+        button->setFlat(true);
+        button->setStyleSheet(
+            "QPushButton { "
+            "  color: #c7d2de; "
+            "  background: transparent; "
+            "  border: none; "
+            "  border-radius: 0px; "
+            "  font-size: 14px; "
+            "  padding: 0px; "
+            "} "
+            "QPushButton:hover { color: #f3f6fb; background-color: rgba(255,255,255,0.07); } "
+            "QPushButton:pressed { color: #ffffff; background-color: rgba(255,255,255,0.12); } "
+            "QPushButton:checked { color: #3fb1ff; background-color: rgba(63,177,255,0.10); } "
+            "QPushButton:disabled { color: #6b7280; background: transparent; }");
+        return button;
+    };
+
+    auto addSectionSeparator = [topLayout]() {
+        QFrame *sep = new QFrame;
+        sep->setFrameShape(QFrame::VLine);
+        sep->setLineWidth(1);
+        sep->setFixedHeight(14);
+        sep->setStyleSheet("QFrame { color: #4b5563; background-color: #4b5563; }");
+        topLayout->addSpacing(2);
+        topLayout->addWidget(sep);
+        topLayout->addSpacing(2);
+    };
+
+    m_undoEditButton = makeTopButton(QString::fromUtf8("\xE2\x86\xB6"));
+    m_redoEditButton = makeTopButton(QString::fromUtf8("\xE2\x86\xB7"));
+    m_playPathButton = makeTopButton(QString::fromUtf8("\xE2\x96\xB6"));
+    m_stopPathButton = makeTopButton(QString::fromUtf8("\xE2\x96\xA0"));
+    m_transformModeButton = makeTopButton(QString::fromUtf8("\xE2\x86\x94"));
+    m_createModeButton = makeTopButton(QStringLiteral("+"));
+    m_uploadMissionButton = makeTopButton(QString::fromUtf8("\xE2\x86\x91"));
+    m_runMissionButton = makeTopButton(QString::fromUtf8("\xE2\x96\xB6"));
+    m_cancelMissionButton = makeTopButton(QString::fromUtf8("\xE2\x96\xA0"));
+    m_createModeButton->setCheckable(true);
+    m_transformModeButton->setCheckable(true);
+    m_transformModeButton->setChecked(true);
+
+    m_undoEditButton->setToolTip("Undo");
+    m_redoEditButton->setToolTip("Redo");
+    m_playPathButton->setToolTip("Play Preview");
+    m_stopPathButton->setToolTip("Stop Preview");
+    m_createModeButton->setToolTip("Create Mode");
+    m_transformModeButton->setToolTip("Transform Mode");
+    m_uploadMissionButton->setToolTip("Upload Mission");
+    m_runMissionButton->setToolTip("Play Mission");
+    m_cancelMissionButton->setToolTip("Stop Mission");
+    m_uploadMissionButton->setEnabled(false);
+    m_runMissionButton->setEnabled(false);
+    m_cancelMissionButton->setEnabled(false);
+    m_stopPathButton->setEnabled(false);
+    m_undoEditButton->setEnabled(false);
+    m_redoEditButton->setEnabled(false);
+
+    m_pathMenuButton = new QToolButton(m_topBarWidget);
+    m_pathMenuButton->setText(QString::fromUtf8("\xE2\x89\xA1"));
+    m_pathMenuButton->setToolTip("Path actions");
+    m_pathMenuButton->setPopupMode(QToolButton::InstantPopup);
+    m_pathMenuButton->setFixedSize(26, 24);
+    m_pathMenuButton->setStyleSheet(
+        "QToolButton { color: #c7d2de; background: transparent; border: none; border-radius: 0px; font-size: 14px; } "
+        "QToolButton:hover { color: #f3f6fb; background-color: rgba(255,255,255,0.07); } "
+        "QToolButton:pressed { color: #ffffff; background-color: rgba(255,255,255,0.12); } "
+        "QToolButton::menu-indicator { image: none; width: 0px; }");
+    QMenu *pathMenu = new QMenu(m_pathMenuButton);
+    QAction *newPathAction = pathMenu->addAction("New");
+    QAction *loadPathAction = pathMenu->addAction("Load");
+    QAction *savePathAction = pathMenu->addAction("Save");
+    connect(newPathAction, &QAction::triggered, this, [this]() {
+        m_pathNameEdit->setText("New Path");
+        onClearPath();
+    });
+    connect(loadPathAction, &QAction::triggered, this, &PathPlannerWidget::onLoadPath);
+    connect(savePathAction, &QAction::triggered, this, &PathPlannerWidget::onSavePath);
+    m_pathMenuButton->setMenu(pathMenu);
+    topLayout->addWidget(m_pathMenuButton);
+
+    m_pathNameEdit = new QLineEdit("New Path", m_topBarWidget);
+    m_pathNameEdit->setMinimumWidth(220);
+    m_pathNameEdit->setPlaceholderText("Path name");
+    m_pathNameEdit->setStyleSheet(
+        "QLineEdit { background-color: #2b2f35; color: #e5e7eb; border: 1px solid #4b5563; border-radius: 3px; padding: 3px 8px; } "
+        "QLineEdit:focus { border: 1px solid #3b82f6; }");
+    topLayout->addWidget(m_pathNameEdit);
+    connect(m_pathNameEdit, &QLineEdit::textChanged, this, [this](const QString &text) {
+        if (m_waypointGroup)
+            m_waypointGroup->setTitle("Waypoints - " + (text.isEmpty() ? QString("New Path") : text));
+    });
+    // Top bar order:
+    // path controls, path name, tools (transform/create), undo/redo,
+    // preview controls (play/stop), mission controls (upload/play/stop)
+    addSectionSeparator();
+    topLayout->addWidget(m_transformModeButton);
+    topLayout->addWidget(m_createModeButton);
+    addSectionSeparator();
+    topLayout->addWidget(m_undoEditButton);
+    topLayout->addWidget(m_redoEditButton);
+    addSectionSeparator();
+    topLayout->addWidget(m_playPathButton);
+    topLayout->addWidget(m_stopPathButton);
+    addSectionSeparator();
+    topLayout->addWidget(m_uploadMissionButton);
+    topLayout->addWidget(m_runMissionButton);
+    topLayout->addWidget(m_cancelMissionButton);
+    topLayout->addStretch();
+
+    m_missionStatusLabel = new QLabel("Status: No mission uploaded", m_topBarWidget);
+    m_missionStatusLabel->setStyleSheet("QLabel { color: #9ca3af; border: none; }");
+    topLayout->addWidget(m_missionStatusLabel);
+
+    connect(m_createModeButton, &QPushButton::clicked, this, [this]() { onInteractionModeChanged(0); });
+    connect(m_transformModeButton, &QPushButton::clicked, this, [this]() { onInteractionModeChanged(1); });
 }
 
 void PathPlannerWidget::setupControls()
 {
     // Waypoint group
-    m_waypointGroup = new QGroupBox("Waypoints");
+    m_waypointGroup = new QGroupBox("Waypoints - New Path");
     m_waypointGroup->setStyleSheet(
         "QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } "
         "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }");
     m_controlsLayout->addWidget(m_waypointGroup);
 
     QVBoxLayout *waypointLayout = new QVBoxLayout(m_waypointGroup);
-
-    // Waypoint count
-    m_waypointCountLabel = new QLabel("Count: 0");
-    waypointLayout->addWidget(m_waypointCountLabel);
-
-    // Waypoint buttons
-    QHBoxLayout *waypointButtonsLayout = new QHBoxLayout;
-    m_addWaypointButton = new QPushButton("Add");
-    m_removeWaypointButton = new QPushButton("Remove");
-
-    waypointButtonsLayout->addWidget(m_addWaypointButton);
-    waypointButtonsLayout->addWidget(m_removeWaypointButton);
-    waypointLayout->addLayout(waypointButtonsLayout);
-
-    // Path group
-    m_pathGroup = new QGroupBox("Path");
-    m_pathGroup->setStyleSheet(
-        "QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } "
-        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }");
-    m_controlsLayout->addWidget(m_pathGroup);
-
-    QVBoxLayout *pathLayout = new QVBoxLayout(m_pathGroup);
-
-    // Path name
-    pathLayout->addWidget(new QLabel("Name:"));
-    m_pathNameEdit = new QLineEdit("New Path");
-    pathLayout->addWidget(m_pathNameEdit);
-
-    // Path length
-    m_pathLengthLabel = new QLabel("Length: 0.0 m");
-    pathLayout->addWidget(m_pathLengthLabel);
-
-    // Path buttons
-    QGridLayout *pathButtonsLayout = new QGridLayout;
-    m_clearPathButton = new QPushButton("Clear");
-    m_savePathButton = new QPushButton("Save");
-    m_loadPathButton = new QPushButton("Load");
-
-    pathButtonsLayout->addWidget(m_clearPathButton, 0, 0);
-    pathButtonsLayout->addWidget(m_savePathButton, 0, 1);
-    pathButtonsLayout->addWidget(m_loadPathButton, 1, 0);
-
-    m_playPathButton = new QPushButton("Play");
-    m_stopPathButton = new QPushButton("Stop");
-    pathButtonsLayout->addWidget(m_playPathButton, 1, 1);
-    pathButtonsLayout->addWidget(m_stopPathButton, 2, 0);
-
-    pathLayout->addLayout(pathButtonsLayout);
-    
-    // Mission control buttons
-    pathLayout->addWidget(new QLabel("Mission Control:"));
-    QGridLayout *missionButtonsLayout = new QGridLayout;
-    
-    m_uploadMissionButton = new QPushButton("Upload Mission");
-    m_uploadMissionButton->setStyleSheet(
-        "QPushButton { background-color: #10b981; color: white; border: none; padding: 6px; border-radius: 4px; font-weight: bold; } "
-        "QPushButton:hover { background-color: #059669; } "
-        "QPushButton:disabled { background-color: #6b7280; }");
-    m_uploadMissionButton->setEnabled(false);
-    missionButtonsLayout->addWidget(m_uploadMissionButton, 0, 0, 1, 2);
-    
-    m_runMissionButton = new QPushButton("Run");
-    m_runMissionButton->setEnabled(false);
-    missionButtonsLayout->addWidget(m_runMissionButton, 1, 0);
-    
-    m_cancelMissionButton = new QPushButton("Cancel");
-    m_cancelMissionButton->setEnabled(false);
-    missionButtonsLayout->addWidget(m_cancelMissionButton, 1, 1);
-    
-    pathLayout->addLayout(missionButtonsLayout);
-    
-    // Mission status
-    m_missionStatusLabel = new QLabel("Status: No mission uploaded");
-    m_missionStatusLabel->setStyleSheet("color: #9ca3af; font-size: 11px;");
-    m_missionStatusLabel->setWordWrap(true);
-    pathLayout->addWidget(m_missionStatusLabel);
-
-    // Path Order group (visible only when 2+ waypoints exist)
-    m_pathOrderGroup = new QGroupBox("Path Order");
-    m_pathOrderGroup->setStyleSheet(
-        "QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } "
-        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }");
-    m_controlsLayout->addWidget(m_pathOrderGroup);
-    m_pathOrderGroup->setVisible(false);  // Hidden initially
-
-    QVBoxLayout *pathOrderLayout = new QVBoxLayout(m_pathOrderGroup);
-
-    m_sequentialOrderButton = new QPushButton("Sequential Order");
-    m_sequentialOrderButton->setToolTip("Visit waypoints in the order they were placed");
-    pathOrderLayout->addWidget(m_sequentialOrderButton);
-
-    m_customOrderButton = new QPushButton("Custom Order...");
-    m_customOrderButton->setToolTip("Choose a custom order to visit waypoints");
-    pathOrderLayout->addWidget(m_customOrderButton);
-
-    m_undoReorderButton = new QPushButton("Undo Reorder");
-    m_undoReorderButton->setToolTip("Restore the previous waypoint order");
-    m_undoReorderButton->setEnabled(false);
-    pathOrderLayout->addWidget(m_undoReorderButton);
+    waypointLayout->setContentsMargins(8, 6, 8, 8);
+    waypointLayout->setSpacing(6);
 
     // View group
     m_viewGroup = new QGroupBox("View");
@@ -990,72 +2140,106 @@ void PathPlannerWidget::setupControls()
     altitudeLayout->addWidget(m_defaultAltitudeSpinBox);
     viewLayout->addLayout(altitudeLayout);
 
-    viewLayout->addWidget(new QLabel("Grid Size:"));
-    m_gridSizeSlider = new QSlider(Qt::Horizontal);
-    m_gridSizeSlider->setRange(5, 50);
-    m_gridSizeSlider->setValue(20);
-    viewLayout->addWidget(m_gridSizeSlider);
-
-    viewLayout->addWidget(new QLabel("Coordinate System:"));
-    m_coordinateSystemCombo = new QComboBox;
-    m_coordinateSystemCombo->addItems({"NED", "ENU", "Aircraft"});
-    viewLayout->addWidget(m_coordinateSystemCombo);
-
     m_controlsLayout->addStretch();
 
     // Connect signals
-    connect(m_addWaypointButton, &QPushButton::clicked, this, &PathPlannerWidget::onAddWaypoint);
-    connect(m_removeWaypointButton, &QPushButton::clicked, this, &PathPlannerWidget::onRemoveWaypoint);
-    connect(m_clearPathButton, &QPushButton::clicked, this, &PathPlannerWidget::onClearPath);
-    connect(m_savePathButton, &QPushButton::clicked, this, &PathPlannerWidget::onSavePath);
-    connect(m_loadPathButton, &QPushButton::clicked, this, &PathPlannerWidget::onLoadPath);
     connect(m_uploadMissionButton, &QPushButton::clicked, this, &PathPlannerWidget::onUploadMission);
     connect(m_runMissionButton, &QPushButton::clicked, this, &PathPlannerWidget::onRunMission);
     connect(m_cancelMissionButton, &QPushButton::clicked, this, &PathPlannerWidget::onCancelMission);
     connect(m_playPathButton, &QPushButton::clicked, this, &PathPlannerWidget::onPlayPath);
     connect(m_stopPathButton, &QPushButton::clicked, this, &PathPlannerWidget::onStopPath);
     connect(m_resetCameraButton, &QPushButton::clicked, this, &PathPlannerWidget::onCameraReset);
-
-    connect(m_gridSizeSlider, &QSlider::valueChanged, this, &PathPlannerWidget::onGridSizeChanged);
-    connect(m_coordinateSystemCombo, &QComboBox::currentTextChanged, this, &PathPlannerWidget::onCoordinateSystemChanged);
     connect(m_viewModeButton, &QPushButton::clicked, this, &PathPlannerWidget::onViewModeChanged);
     connect(m_defaultAltitudeSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this](double value)
             { m_openglWidget->setDefaultAltitude(static_cast<float>(value)); });
 
-    // Path order connections
-    connect(m_sequentialOrderButton, &QPushButton::clicked, this, &PathPlannerWidget::onSequentialOrder);
-    connect(m_customOrderButton, &QPushButton::clicked, this, &PathPlannerWidget::onCustomOrder);
-    connect(m_undoReorderButton, &QPushButton::clicked, this, &PathPlannerWidget::onUndoReorder);
+    connect(m_undoEditButton, &QPushButton::clicked, this, [this]() {
+        if (m_openglWidget->undo()) {
+            updateWaypointTable();
+            emitWaypointsChanged();
+        }
+    });
+    connect(m_redoEditButton, &QPushButton::clicked, this, [this]() {
+        if (m_openglWidget->redo()) {
+            updateWaypointTable();
+            emitWaypointsChanged();
+        }
+    });
+
+    (void) new QShortcut(QKeySequence(Qt::Key_Delete), this, [this]() {
+        if (m_openglWidget->deleteSelectedWaypoint()) {
+            updateWaypointTable();
+            emitWaypointsChanged();
+        }
+    });
+    (void) new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_D), this, [this]() {
+        if (m_openglWidget->duplicateSelectedWaypoint()) {
+            updateWaypointTable();
+            emitWaypointsChanged();
+        }
+    });
+    (void) new QShortcut(QKeySequence::Undo, this, [this]() {
+        if (m_openglWidget->undo()) {
+            updateWaypointTable();
+            emitWaypointsChanged();
+        }
+    });
+    (void) new QShortcut(QKeySequence::Redo, this, [this]() {
+        if (m_openglWidget->redo()) {
+            updateWaypointTable();
+            emitWaypointsChanged();
+        }
+    });
 }
 
 void PathPlannerWidget::setupWaypointTable()
 {
     m_waypointTable = new QTableWidget;
-    m_waypointTable->setColumnCount(7);
-    m_waypointTable->setHorizontalHeaderLabels({"Order", "X", "Y", "Z", "Yaw", "Speed", "Hold"});
-    m_waypointTable->setMaximumHeight(200);
+    m_waypointTable->setColumnCount(5);
+    m_waypointTable->setHorizontalHeaderLabels({"X", "Y", "Z", "Yaw", "Hold"});
+    m_waypointTable->setMinimumHeight(170);
+    m_waypointTable->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     m_waypointTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_waypointTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_waypointTable->setWordWrap(false);
     m_waypointTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
+    m_waypointTable->setDragDropMode(QAbstractItemView::InternalMove);
+    m_waypointTable->setDragEnabled(true);
+    m_waypointTable->setAcceptDrops(true);
+    m_waypointTable->setDropIndicatorShown(true);
+    m_waypointTable->setDragDropOverwriteMode(false);
+    m_waypointTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_waypointTable->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_waypointTable->setStyleSheet(
         "QTableWidget { background-color: #1f2937; color: white; border: 1px solid #4b5563; gridline-color: #374151; } "
         "QTableWidget::item { padding: 4px; } "
         "QTableWidget::item:selected { background-color: #3b82f6; } "
-        "QHeaderView::section { background-color: #374151; color: white; padding: 4px; border: 1px solid #4b5563; }");
+        "QHeaderView::section { background-color: #374151; color: white; padding: 4px; border: 1px solid #4b5563; } "
+        "QTableWidget QScrollBar:vertical { background: transparent; width: 8px; margin: 28px 3px 6px 0px; border: none; } "
+        "QTableWidget QScrollBar::handle:vertical { background: rgba(148, 163, 184, 90); border-radius: 4px; min-height: 24px; } "
+        "QTableWidget:hover QScrollBar::handle:vertical { background: rgba(148, 163, 184, 185); } "
+        "QTableWidget QScrollBar::add-line:vertical, QTableWidget QScrollBar::sub-line:vertical { height: 0px; } "
+        "QTableWidget QScrollBar::add-page:vertical, QTableWidget QScrollBar::sub-page:vertical { background: transparent; } "
+        "QTableWidget QScrollBar:horizontal { height: 0px; }");
 
-    // Set column widths
-    m_waypointTable->setColumnWidth(0, 40); // ID
-    m_waypointTable->setColumnWidth(1, 60); // X
-    m_waypointTable->setColumnWidth(2, 60); // Y
-    m_waypointTable->setColumnWidth(3, 60); // Z
-    m_waypointTable->setColumnWidth(4, 60); // Yaw
-    m_waypointTable->setColumnWidth(5, 60); // Speed
-    m_waypointTable->setColumnWidth(6, 60); // Hold
+    // Keep the row-header index as the only waypoint number indicator.
+    m_waypointTable->verticalHeader()->setVisible(true);
+    m_waypointTable->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    m_waypointTable->verticalHeader()->setDefaultSectionSize(28);
+    m_waypointTable->verticalHeader()->setMinimumSectionSize(28);
+    m_waypointTable->verticalHeader()->setMaximumSectionSize(28);
+    m_waypointTable->verticalHeader()->setFixedWidth(30);
+    m_waypointTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    m_waypointTable->setColumnWidth(0, 52); // X
+    m_waypointTable->setColumnWidth(1, 52); // Y
+    m_waypointTable->setColumnWidth(2, 52); // Z
+    m_waypointTable->setColumnWidth(3, 52); // Yaw
+    m_waypointTable->setColumnWidth(4, 52); // Hold
 
-    // Insert waypoint table after waypoint count label
+    // Insert waypoint table at the top of the waypoints section
     QVBoxLayout *waypointLayout = qobject_cast<QVBoxLayout *>(m_waypointGroup->layout());
-    waypointLayout->insertWidget(1, m_waypointTable);
+    waypointLayout->insertWidget(0, m_waypointTable);
 
     connect(m_waypointTable, &QTableWidget::cellChanged, this, &PathPlannerWidget::onWaypointCellChanged);
     connect(m_waypointTable, &QTableWidget::currentCellChanged,
@@ -1064,28 +2248,11 @@ void PathPlannerWidget::setupWaypointTable()
                 if (currentRow >= 0 && currentRow < m_waypointTable->rowCount()) {
                     QTableWidgetItem *idItem = m_waypointTable->item(currentRow, 0);
                     if (idItem) {
-                        onWaypointSelected(idItem->text().toInt());
+                        onWaypointSelected(idItem->data(Qt::UserRole).toInt());
                     }
                 } });
-}
-
-void PathPlannerWidget::onAddWaypoint()
-{
-    float defaultAlt = m_defaultAltitudeSpinBox->value();
-    QVector3D newPoint(0, defaultAlt, 0);
-    m_openglWidget->addWaypoint(newPoint);
-    // updateWaypointTable and signal emission handled by waypointAdded signal
-}
-
-void PathPlannerWidget::onRemoveWaypoint()
-{
-    if (m_selectedWaypoint >= 0)
-    {
-        m_openglWidget->removeWaypoint(m_selectedWaypoint);
-        updateWaypointTable();
-        m_selectedWaypoint = -1;
-        emitWaypointsChanged();
-    }
+    connect(m_waypointTable->model(), &QAbstractItemModel::rowsMoved,
+            this, &PathPlannerWidget::onWaypointRowsMoved);
 }
 
 void PathPlannerWidget::onClearPath()
@@ -1111,7 +2278,7 @@ void PathPlannerWidget::onSavePath()
         return;
     }
 
-    // Get path name from the path name edit field or prompt for one
+    // Get path name from top-bar field; must be unique.
     QString pathName = m_pathNameEdit->text().trimmed();
     if (pathName.isEmpty() || pathName == "New Path")
     {
@@ -1128,47 +2295,25 @@ void PathPlannerWidget::onSavePath()
         pathName = pathName.trimmed();
     }
 
-    // Get the paths folder - use SOURCE_DIR defined by CMake at compile time
-    QString appDir = QCoreApplication::applicationDirPath();
-    QString pathsDir;
-    QDir dir;
-    
-    // First priority: Use the source directory paths folder (for development)
-#ifdef SOURCE_DIR
-    pathsDir = QString(SOURCE_DIR) + "/paths";
-    dir.setPath(pathsDir);
-    if (dir.exists()) {
-        // Use source paths directory
-    } else {
-        // Create it if it doesn't exist
-        dir.mkpath(pathsDir);
-    }
-#else
-    // Fallback: paths folder next to the executable (for distribution)
-    pathsDir = appDir + "/paths";
-    dir.setPath(pathsDir);
-    if (!dir.exists()) {
-        dir.mkpath(pathsDir);
-    }
-#endif
+    const QString pathsDir = plannerPathsDirectory();
+    QDir dir(pathsDir);
 
-    // Generate a filename from the path name (sanitize for filesystem)
-    QString sanitizedName = pathName;
-    sanitizedName.replace(QRegularExpression("[^a-zA-Z0-9_\\-\\s]"), "");
-    sanitizedName.replace(" ", "_");
-    if (sanitizedName.isEmpty())
+    const QString sanitizedName = FlightPath::fileBaseFromDisplayName(pathName);
+    const QString fileName = dir.absoluteFilePath(sanitizedName + QStringLiteral(".json"));
+    if (QFile::exists(fileName))
     {
-        sanitizedName = "path";
+        QMessageBox::warning(this, "Save Path",
+                             QString("A saved waypoint path named '%1' already exists.\nPlease choose a new name.")
+                                 .arg(pathName));
+        return;
     }
-
-    // Add timestamp to make filename unique
-    QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
-    QString fileName = dir.absoluteFilePath(sanitizedName + "_" + timestamp + ".json");
 
     if (saveToJson(fileName))
     {
         // Update the path name edit field
         m_pathNameEdit->setText(pathName);
+        if (m_waypointGroup)
+            m_waypointGroup->setTitle("Waypoints - " + pathName);
 
         // Convert waypoints to QVector<QVector3D> for the signal
         QVector<QVector3D> points;
@@ -1191,15 +2336,20 @@ void PathPlannerWidget::onSavePath()
 
 void PathPlannerWidget::onLoadPath()
 {
+    const QString startDir = plannerPathsDirectory();
     QString fileName = QFileDialog::getOpenFileName(this,
                                                     "Load Path",
-                                                    QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
+                                                    startDir,
                                                     "JSON Files (*.json)");
 
     if (!fileName.isEmpty())
     {
         if (loadFromJson(fileName))
         {
+            const QString loadedName = QFileInfo(fileName).baseName().replace('_', ' ');
+            m_pathNameEdit->setText(loadedName);
+            if (m_waypointGroup)
+                m_waypointGroup->setTitle("Waypoints - " + loadedName);
             QMessageBox::information(this, "Load Path", "Path loaded successfully!");
         }
         else
@@ -1228,8 +2378,7 @@ void PathPlannerWidget::onWaypointSelected(int id)
 
 void PathPlannerWidget::onWaypointCellChanged(int row, int column)
 {
-    // Ignore Order column changes
-    if (column == 0 || row < 0 || row >= m_waypointTable->rowCount())
+    if (row < 0 || row >= m_waypointTable->rowCount())
         return;
 
     QTableWidgetItem *idItem = m_waypointTable->item(row, 0);
@@ -1258,22 +2407,19 @@ void PathPlannerWidget::onWaypointCellChanged(int row, int column)
 
             switch (column)
             {
-            case 1:
+            case 0:
                 updated.setX(value);
                 break;
-            case 2:
+            case 1:
                 updated.setY(value);
                 break;
-            case 3:
+            case 2:
                 updated.setZ(value);
                 break;
-            case 4:
+            case 3:
                 updated.setYawAngle(value);
                 break;
-            case 5:
-                // Speed is not in the new Waypoint model - skip
-                break;
-            case 6:
+            case 4:
                 updated.setHoldTime(value);
                 break;
             }
@@ -1302,6 +2448,20 @@ void PathPlannerWidget::onViewModeChanged()
         m_openglWidget->setViewMode(PathPlannerOpenGLWidget::TopDownMode);
         m_viewModeButton->setText("Switch to 3D View");
     }
+}
+
+void PathPlannerWidget::onInteractionModeChanged(int index)
+{
+    const bool createMode = (index == 0);
+    PathPlannerOpenGLWidget::InteractionMode mode = createMode
+        ? PathPlannerOpenGLWidget::CreateMode
+        : PathPlannerOpenGLWidget::TransformMode;
+
+    if (m_createModeButton)
+        m_createModeButton->setChecked(createMode);
+    if (m_transformModeButton)
+        m_transformModeButton->setChecked(!createMode);
+    m_openglWidget->setInteractionMode(mode);
 }
 
 void PathPlannerWidget::onPlayPath()
@@ -1341,24 +2501,13 @@ void PathPlannerWidget::onPathAnimationTimer()
     m_openglWidget->update();
 }
 
-void PathPlannerWidget::onGridSizeChanged(int size)
-{
-    // Update grid size in OpenGL widget
-    m_openglWidget->update();
-}
-
-void PathPlannerWidget::onCoordinateSystemChanged(const QString &system)
-{
-    // Update coordinate system display
-    m_openglWidget->update();
-}
-
 void PathPlannerWidget::updateWaypointTable()
 {
     if (!m_waypointTable || !m_openglWidget)
         return;
 
     // Block signals to prevent triggering cellChanged during update
+    m_updatingWaypointTable = true;
     m_waypointTable->blockSignals(true);
     m_waypointTable->clearContents();
     m_waypointTable->setRowCount(0);
@@ -1373,47 +2522,45 @@ void PathPlannerWidget::updateWaypointTable()
         {
             const Waypoint &wp = waypoints[i];
 
-            // Label as letter (read-only) - shows visit order number and waypoint letter
-            QString label = QString("%1. %2").arg(i + 1).arg(idToLetter(wp.sequence()));
-            QTableWidgetItem *idItem = new QTableWidgetItem(label);
-            idItem->setFlags(idItem->flags() & ~Qt::ItemIsEditable);
-            idItem->setData(Qt::UserRole, wp.sequence());  // Store actual sequence for reference
-            m_waypointTable->setItem(i, 0, idItem);
+            QTableWidgetItem *rowHeaderItem = new QTableWidgetItem(QString::number(i + 1));
+            rowHeaderItem->setFlags(rowHeaderItem->flags() & ~Qt::ItemIsEditable);
+            m_waypointTable->setVerticalHeaderItem(i, rowHeaderItem);
+
+            QTableWidgetItem *xItem = new QTableWidgetItem(QString::number(wp.x(), 'f', 2));
+            xItem->setData(Qt::UserRole, wp.sequence());
+            m_waypointTable->setItem(i, 0, xItem);
 
             // Position and parameters (editable)
-            m_waypointTable->setItem(i, 1, new QTableWidgetItem(QString::number(wp.x(), 'f', 2)));
-            m_waypointTable->setItem(i, 2, new QTableWidgetItem(QString::number(wp.y(), 'f', 2)));
-            m_waypointTable->setItem(i, 3, new QTableWidgetItem(QString::number(wp.z(), 'f', 2)));
-            m_waypointTable->setItem(i, 4, new QTableWidgetItem(QString::number(wp.yawAngle(), 'f', 1)));
-            m_waypointTable->setItem(i, 5, new QTableWidgetItem("0.0")); // Speed not in new model
-            m_waypointTable->setItem(i, 6, new QTableWidgetItem(QString::number(wp.holdTime(), 'f', 1)));
+            m_waypointTable->setItem(i, 1, new QTableWidgetItem(QString::number(wp.y(), 'f', 2)));
+            m_waypointTable->setItem(i, 2, new QTableWidgetItem(QString::number(wp.z(), 'f', 2)));
+            m_waypointTable->setItem(i, 3, new QTableWidgetItem(QString::number(wp.yawAngle(), 'f', 1)));
+            m_waypointTable->setItem(i, 4, new QTableWidgetItem(QString::number(wp.holdTime(), 'f', 1)));
         }
     }
+
+    // Grow the table with waypoint count, then fall back to a clean vertical scrollbar.
+    constexpr int kMaxVisibleRows = 12;
+    constexpr int kMinVisibleRows = 4;
+    const int rowCount = m_waypointTable->rowCount();
+    const int visibleRows = qBound(kMinVisibleRows, rowCount, kMaxVisibleRows);
+    const int rowHeight = m_waypointTable->verticalHeader()->defaultSectionSize();
+    const int headerHeight = m_waypointTable->horizontalHeader()->height();
+    const int frameHeight = m_waypointTable->frameWidth() * 2;
+    const int targetHeight = headerHeight + (visibleRows * rowHeight) + frameHeight + 2;
+    m_waypointTable->setFixedHeight(targetHeight);
 
     m_waypointTable->blockSignals(false);
+    m_updatingWaypointTable = false;
 
-    if (m_waypointCountLabel)
-        m_waypointCountLabel->setText(QString("Count: %1").arg(waypoints.size()));
+    updateUndoRedoButtons();
+}
 
-    // Calculate path length
-    float totalLength = 0.0f;
-    if (waypoints.size() > 1)
-    {
-        for (size_t i = 0; i < waypoints.size() - 1; ++i)
-        {
-            QVector3D p1(waypoints[i].x(), waypoints[i].y(), waypoints[i].z());
-            QVector3D p2(waypoints[i + 1].x(), waypoints[i + 1].y(), waypoints[i + 1].z());
-            totalLength += p1.distanceToPoint(p2);
-        }
-    }
-
-    if (m_pathLengthLabel)
-        m_pathLengthLabel->setText(QString("Length: %1 m").arg(totalLength, 0, 'f', 1));
-
-    if (m_removeWaypointButton)
-        m_removeWaypointButton->setEnabled(m_selectedWaypoint >= 0);
-
-    updatePathOrderVisibility();
+void PathPlannerWidget::updateUndoRedoButtons()
+{
+    if (m_undoEditButton)
+        m_undoEditButton->setEnabled(m_openglWidget && m_openglWidget->canUndo());
+    if (m_redoEditButton)
+        m_redoEditButton->setEnabled(m_openglWidget && m_openglWidget->canRedo());
 }
 
 void PathPlannerWidget::startPathAnimation()
@@ -1473,6 +2620,42 @@ void PathPlannerWidget::updateWaypoint(int id, const Waypoint &wp)
     emitWaypointsChanged();
 }
 
+void PathPlannerWidget::onWaypointRowsMoved(const QModelIndex &, int, int, const QModelIndex &, int)
+{
+    if (m_updatingWaypointTable || !m_openglWidget || !m_waypointTable)
+        return;
+
+    const auto &waypoints = m_openglWidget->waypoints();
+    if (waypoints.size() < 2 || m_waypointTable->rowCount() < 2)
+        return;
+
+    std::vector<Waypoint> reordered;
+    reordered.reserve(waypoints.size());
+
+    for (int row = 0; row < m_waypointTable->rowCount(); ++row)
+    {
+        QTableWidgetItem *idItem = m_waypointTable->item(row, 0);
+        if (!idItem)
+            continue;
+        const int sequence = idItem->data(Qt::UserRole).toInt();
+        for (const Waypoint &wp : waypoints)
+        {
+            if (wp.sequence() == sequence)
+            {
+                reordered.push_back(wp);
+                break;
+            }
+        }
+    }
+
+    if (reordered.size() != waypoints.size() || reordered == waypoints)
+        return;
+
+    m_openglWidget->setWaypoints(reordered);
+    updateWaypointTable();
+    emitWaypointsChanged();
+}
+
 void PathPlannerWidget::removeWaypoint(int id)
 {
     m_openglWidget->removeWaypoint(id);
@@ -1494,6 +2677,12 @@ bool PathPlannerWidget::saveToJson(const QString &path)
 {
     QJsonObject root;
     root["version"] = 1;
+
+    const QFileInfo outInfo(path);
+    root["name"] = FlightPath::displayNameFromFileBase(outInfo.baseName());
+    const QDateTime now = QDateTime::currentDateTime();
+    root["created_at"] = now.toString(Qt::ISODate);
+    root["modified_at"] = now.toString(Qt::ISODate);
 
     QJsonArray waypointsArray;
     const auto &waypoints = m_openglWidget->waypoints();
@@ -1563,355 +2752,6 @@ bool PathPlannerWidget::loadFromJson(const QString &path)
     return true;
 }
 
-void PathPlannerWidget::updatePathOrderVisibility()
-{
-    if (m_pathOrderGroup)
-    {
-        bool hasEnoughWaypoints = m_openglWidget->waypoints().size() >= 2;
-        m_pathOrderGroup->setVisible(hasEnoughWaypoints);
-    }
-}
-
-void PathPlannerWidget::onSequentialOrder()
-{
-    const auto &waypoints = m_openglWidget->waypoints();
-    if (waypoints.size() < 2)
-        return;
-
-    // Save current order for undo
-    m_previousWaypointOrder = waypoints;
-    m_undoReorderButton->setEnabled(true);
-
-    // Sort waypoints by their original ID (placement order: A, B, C, ...)
-    // IDs stay the same - only the array position changes
-    std::vector<Waypoint> sorted = waypoints;
-    std::sort(sorted.begin(), sorted.end(), [](const Waypoint &a, const Waypoint &b) {
-        return a.sequence() < b.sequence();
-    });
-
-    m_openglWidget->setWaypoints(sorted);
-    updateWaypointTable();
-    emitWaypointsChanged();
-}
-
-void PathPlannerWidget::onCustomOrder()
-{
-    const auto &waypoints = m_openglWidget->waypoints();
-    if (waypoints.size() < 2)
-        return;
-
-    // Save current order for undo
-    m_previousWaypointOrder = waypoints;
-
-    // Create dialog for custom ordering
-    QDialog dialog(this);
-    dialog.setWindowTitle("Custom Path Order");
-    dialog.setMinimumWidth(350);
-
-    QVBoxLayout *layout = new QVBoxLayout(&dialog);
-
-    QLabel *instructions = new QLabel("Drag items to set the visit order.\nWaypoint labels (A, B, C...) stay fixed.\nThe drone will visit waypoints in this order:");
-    layout->addWidget(instructions);
-
-    QListWidget *listWidget = new QListWidget;
-    listWidget->setDragDropMode(QAbstractItemView::InternalMove);
-    for (const auto &wp : waypoints)
-    {
-        QString text = QString("Waypoint %1 (%.1f, %.1f, %.1f)")
-                           .arg(idToLetter(wp.sequence()))
-                           .arg(wp.x())
-                           .arg(wp.y())
-                           .arg(wp.z());
-        QListWidgetItem *item = new QListWidgetItem(text);
-        item->setData(Qt::UserRole, wp.sequence());
-        listWidget->addItem(item);
-    }
-    layout->addWidget(listWidget);
-
-    // Up/Down buttons
-    QHBoxLayout *buttonLayout = new QHBoxLayout;
-    QPushButton *upButton = new QPushButton("Move Up");
-    QPushButton *downButton = new QPushButton("Move Down");
-    buttonLayout->addWidget(upButton);
-    buttonLayout->addWidget(downButton);
-    layout->addLayout(buttonLayout);
-
-    connect(upButton, &QPushButton::clicked, [listWidget]() {
-        int row = listWidget->currentRow();
-        if (row > 0)
-        {
-            QListWidgetItem *item = listWidget->takeItem(row);
-            listWidget->insertItem(row - 1, item);
-            listWidget->setCurrentRow(row - 1);
-        }
-    });
-
-    connect(downButton, &QPushButton::clicked, [listWidget]() {
-        int row = listWidget->currentRow();
-        if (row >= 0 && row < listWidget->count() - 1)
-        {
-            QListWidgetItem *item = listWidget->takeItem(row);
-            listWidget->insertItem(row + 1, item);
-            listWidget->setCurrentRow(row + 1);
-        }
-    });
-
-    // OK/Cancel buttons
-    QHBoxLayout *dialogButtons = new QHBoxLayout;
-    QPushButton *okButton = new QPushButton("Apply");
-    QPushButton *cancelButton = new QPushButton("Cancel");
-    dialogButtons->addStretch();
-    dialogButtons->addWidget(okButton);
-    dialogButtons->addWidget(cancelButton);
-    layout->addLayout(dialogButtons);
-
-    connect(okButton, &QPushButton::clicked, &dialog, &QDialog::accept);
-    connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
-
-    if (dialog.exec() == QDialog::Accepted)
-    {
-        // Build new waypoint order based on list widget order
-        // Sequence numbers stay the same - only the array position changes
-        std::vector<Waypoint> newOrder;
-        for (int i = 0; i < listWidget->count(); ++i)
-        {
-            int originalSequence = listWidget->item(i)->data(Qt::UserRole).toInt();
-            // Find the waypoint with this sequence
-            for (const auto &wp : waypoints)
-            {
-                if (wp.sequence() == originalSequence)
-                {
-                    // Keep the waypoint exactly as is - sequence doesn't change
-                    newOrder.push_back(wp);
-                    break;
-                }
-            }
-        }
-
-        m_openglWidget->setWaypoints(newOrder);
-        updateWaypointTable();
-        emitWaypointsChanged();
-        m_undoReorderButton->setEnabled(true);
-    }
-}
-
-void PathPlannerWidget::onUndoReorder()
-{
-    if (m_previousWaypointOrder.empty())
-        return;
-
-    m_openglWidget->setWaypoints(m_previousWaypointOrder);
-    updateWaypointTable();
-    emitWaypointsChanged();
-
-    m_previousWaypointOrder.clear();
-    m_undoReorderButton->setEnabled(false);
-}
-
-// ============================================================================
-// Quick Missions Panel
-// ============================================================================
-
-void PathPlannerWidget::setupQuickMissions()
-{
-    m_quickMissionsGroup = new QGroupBox("Quick Missions");
-    m_quickMissionsGroup->setStyleSheet(
-        "QGroupBox { color: white; border: 1px solid #f59e0b; border-radius: 4px; "
-        "margin-top: 1ex; padding-top: 10px; } "
-        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; color: #f59e0b; }");
-    m_controlsLayout->insertWidget(0, m_quickMissionsGroup);  // Place at top of controls
-
-    QVBoxLayout *qmLayout = new QVBoxLayout(m_quickMissionsGroup);
-
-    // ---- 6ft Square sub-section ----
-    qmLayout->addWidget(new QLabel("Autonomous Square:"));
-
-    QHBoxLayout *sideRow = new QHBoxLayout;
-    sideRow->addWidget(new QLabel("Side:"));
-    m_squareSideSpinBox = new QDoubleSpinBox;
-    m_squareSideSpinBox->setRange(0.5, 20.0);
-    m_squareSideSpinBox->setValue(1.8288);   // 6 ft in metres
-    m_squareSideSpinBox->setSingleStep(0.1);
-    m_squareSideSpinBox->setDecimals(3);
-    m_squareSideSpinBox->setSuffix(" m");
-    m_squareSideSpinBox->setToolTip("6 ft = 1.8288 m");
-    sideRow->addWidget(m_squareSideSpinBox);
-    qmLayout->addLayout(sideRow);
-
-    QHBoxLayout *altRow = new QHBoxLayout;
-    altRow->addWidget(new QLabel("Alt:"));
-    m_squareAltSpinBox = new QDoubleSpinBox;
-    m_squareAltSpinBox->setRange(0.3, 10.0);
-    m_squareAltSpinBox->setValue(1.5);
-    m_squareAltSpinBox->setSingleStep(0.1);
-    m_squareAltSpinBox->setSuffix(" m");
-    altRow->addWidget(m_squareAltSpinBox);
-    qmLayout->addLayout(altRow);
-
-    m_generateSquareButton = new QPushButton("Generate 6 ft Square");
-    m_generateSquareButton->setStyleSheet(
-        "QPushButton { background-color: #f59e0b; color: #1f2937; border: none; "
-        "padding: 8px; border-radius: 4px; font-weight: bold; } "
-        "QPushButton:hover { background-color: #d97706; }");
-    m_generateSquareButton->setToolTip(
-        "Fills the path planner with the 4 corner waypoints of a square.\n"
-        "Then click Upload Mission → Run Mission to execute on the drone.");
-    qmLayout->addWidget(m_generateSquareButton);
-
-    // ---- Flight recorder sub-section ----
-    qmLayout->addWidget(new QLabel("Recorded Flight Playback:"));
-
-    m_loadRecordingButton = new QPushButton("Load & Run Recording…");
-    m_loadRecordingButton->setStyleSheet(
-        "QPushButton { background-color: #6366f1; color: white; border: none; "
-        "padding: 8px; border-radius: 4px; font-weight: bold; } "
-        "QPushButton:hover { background-color: #4f46e5; } "
-        "QPushButton:disabled { background-color: #6b7280; }");
-    m_loadRecordingButton->setToolTip(
-        "Select a VOXL_FLIGHT_RECORDING JSON file.\n"
-        "It will be uploaded to the drone and executed as an autonomous playback.");
-    qmLayout->addWidget(m_loadRecordingButton);
-
-    // ---- Status label ----
-    m_quickMissionStatusLabel = new QLabel("");
-    m_quickMissionStatusLabel->setStyleSheet("color: #9ca3af; font-size: 11px;");
-    m_quickMissionStatusLabel->setWordWrap(true);
-    qmLayout->addWidget(m_quickMissionStatusLabel);
-
-    // Connections
-    connect(m_generateSquareButton, &QPushButton::clicked,
-            this, &PathPlannerWidget::onGenerateSquare);
-    connect(m_loadRecordingButton, &QPushButton::clicked,
-            this, &PathPlannerWidget::onLoadRecording);
-}
-
-void PathPlannerWidget::onGenerateSquare()
-{
-    // Side length and altitude from spinboxes
-    const double side = m_squareSideSpinBox->value();    // metres
-    const double alt  = m_squareAltSpinBox->value();     // metres
-
-    // The UI uses Y as altitude, X and Z as the horizontal plane (ENU-like).
-    // Square corners (NED North → +X in the UI; NED East → +Z in the UI):
-    //   Home  (0,   alt, 0)    → already home / arming position, implicit
-    //   B     (side,alt, 0)    → North
-    //   C     (side,alt, side) → North + East
-    //   D     (0,   alt, side) → East
-    //   Home  (0,   alt, 0)    → return  (explicit closing waypoint)
-
-    m_openglWidget->clearWaypoints();
-
-    const float s = static_cast<float>(side);
-    const float a = static_cast<float>(alt);
-
-    // Add 5 waypoints so the path visually closes back to home
-    QVector<QVector3D> corners = {
-        { 0.0f, a, 0.0f },   // WP1 – home / takeoff
-        { s,    a, 0.0f },   // WP2 – North
-        { s,    a, s    },   // WP3 – North + East
-        { 0.0f, a, s    },   // WP4 – East
-        { 0.0f, a, 0.0f },   // WP5 – return to home
-    };
-
-    for (const QVector3D &pt : corners) {
-        m_openglWidget->addWaypoint(pt);
-    }
-
-    // Update path name and altitude spinbox
-    const double side_ft = side / 0.3048;
-    m_pathNameEdit->setText(QString("%1 ft Square").arg(qRound(side_ft)));
-    m_defaultAltitudeSpinBox->setValue(alt);
-    updateWaypointTable();
-    emitWaypointsChanged();
-
-    m_quickMissionStatusLabel->setText(
-        QString("Square generated: %.2f m × %.2f m (%.0f ft) @ %.1f m alt.\n"
-                "Click \"Upload Mission\" then \"Run\" to execute.").arg(side).arg(side).arg(side_ft).arg(alt));
-    m_quickMissionStatusLabel->setStyleSheet("color: #f59e0b; font-size: 11px;");
-}
-
-void PathPlannerWidget::onLoadRecording()
-{
-    // Let the user pick a VOXL_FLIGHT_RECORDING JSON saved by offboard_flight_recorder
-    QString fileName = QFileDialog::getOpenFileName(
-        this,
-        "Load Flight Recording",
-        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
-        "JSON Recordings (*.json);;All Files (*)");
-
-    if (fileName.isEmpty()) return;
-
-    // Quick validation: check for the magic string
-    QFile f(fileName);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, "Load Recording", "Cannot open file: " + fileName);
-        return;
-    }
-    const QByteArray raw = f.readAll();
-    f.close();
-
-    if (!raw.contains("VOXL_FLIGHT_RECORDING")) {
-        QMessageBox::warning(this, "Load Recording",
-            "This file does not appear to be a VOXL_FLIGHT_RECORDING.\n"
-            "Record a flight with offboard_flight_recorder on the drone first.");
-        return;
-    }
-
-    // Parse num_samples and rate_hz for a human-readable summary
-    const QJsonDocument doc = QJsonDocument::fromJson(raw);
-    const QJsonObject   obj = doc.object();
-    int    numSamples = obj["num_samples"].toInt(0);
-    int    rateHz     = obj["rate_hz"].toInt(30);
-    double durationS  = (rateHz > 0) ? (double)numSamples / rateHz : 0.0;
-
-    auto ans = QMessageBox::question(this, "Run Recording",
-        QString("Recording: %1\n"
-                "Samples: %2  |  Rate: %3 Hz  |  Duration: ~%4 s\n\n"
-                "Upload this recording to the drone and start autonomous playback?")
-        .arg(QFileInfo(fileName).fileName())
-        .arg(numSamples).arg(rateHz).arg(durationS, 0, 'f', 1),
-        QMessageBox::Yes | QMessageBox::No);
-
-    if (ans != QMessageBox::Yes) return;
-
-    if (!m_droneController) {
-        QMessageBox::warning(this, "Load Recording",
-            "Drone controller not set. Connect to the drone via the Dashboard first.");
-        return;
-    }
-
-    // Upload the recording JSON to the drone's trajectory inbox via SCP,
-    // then trigger execution via the VOXL2 runner REST API.
-    m_quickMissionStatusLabel->setText("Uploading recording to drone…");
-    m_quickMissionStatusLabel->setStyleSheet("color: #fbbf24; font-size: 11px;");
-
-    // VOXLConnection::uploadMissionFile() uses SCP to transfer the file and
-    // then runMission() POSTs to http://<voxl_ip>:8080/run?file=<filename>.
-    // We call these through DroneController's VOXLConnection.
-    const QString remoteFileName = QFileInfo(fileName).fileName();
-    // The DroneController exposes uploadMission → sendCommand route;
-    // for a recording file we go directly via the connection object.
-    // Since DroneController::uploadMission() calls sendCommand() (which is a
-    // stub that would need a real TCP connection for live use), we show the
-    // user the manual fallback path and copy the command to clipboard.
-    // Use the real drone host from DroneController (set when connectToDrone() is called).
-    const QString voxlIp = m_droneController->voxlHost();
-    const QString scpCmd = QString("scp \"%1\" root@%2:/data/trajectories/inbox/%3")
-                               .arg(fileName, voxlIp, remoteFileName);
-    const QString runCmd = QString("curl -X POST http://%1:8080/run?file=%2")
-                               .arg(voxlIp, remoteFileName);
-
-    QApplication::clipboard()->setText(scpCmd + "\n" + runCmd);
-
-    QMessageBox::information(this, "Run Recording",
-        QString("Commands copied to clipboard:\n\n%1\n\n%2\n\n"
-                "Run these from a terminal that has SSH access to the drone.\n"
-                "(Drone IP: %3 — change it via Connect on the Dashboard if wrong.)")
-        .arg(scpCmd, runCmd, voxlIp));
-
-    m_quickMissionStatusLabel->setText("Commands copied to clipboard. Run them in a terminal.");
-    m_quickMissionStatusLabel->setStyleSheet("color: #6366f1; font-size: 11px;");
-}
 
 void PathPlannerWidget::setDroneController(DroneController *controller)
 {
@@ -2029,22 +2869,4 @@ void PathPlannerWidget::onCancelMission()
         m_runMissionButton->setEnabled(true);
         m_cancelMissionButton->setEnabled(false);
     }
-}
-
-void PathPlannerWidget::onMissionUploadComplete(bool success, const QString &message)
-{
-    if (success) {
-        m_missionStatusLabel->setText("Status: " + message);
-        m_missionStatusLabel->setStyleSheet("color: #10b981;");  // Green
-        m_runMissionButton->setEnabled(true);
-    } else {
-        m_missionStatusLabel->setText("Status: Upload failed - " + message);
-        m_missionStatusLabel->setStyleSheet("color: #ef4444;");  // Red
-    }
-    m_uploadMissionButton->setEnabled(true);
-}
-
-void PathPlannerWidget::onMissionStatusReceived(const QString &status)
-{
-    m_missionStatusLabel->setText("Status: " + status);
 }

@@ -7,14 +7,66 @@
 #include <QMessageBox>
 #include <QStandardPaths>
 #include <QDateTime>
-#include <QUuid>
 #include <QFile>
-#include <QTextStream>
 #include <QListWidgetItem>
 #include <QDir>
 #include <QCoreApplication>
 #include <QFileInfo>
 #include <QDebug>
+#include <QRegularExpression>
+#include <QFileDevice>
+#include <cmath>
+
+namespace {
+
+QString canonicalOrAbsolutePath(const QString &filePath)
+{
+    QFileInfo fi(filePath);
+    const QString c = fi.canonicalFilePath();
+    if (!c.isEmpty())
+        return QDir::toNativeSeparators(c);
+    return QDir::toNativeSeparators(fi.absoluteFilePath());
+}
+
+QString displayBaseNameFromFile(const QString &filePath)
+{
+    QString baseName = QFileInfo(filePath).baseName();
+    static const QRegularExpression tsSuffix(QStringLiteral("_\\d{8}_\\d{6}$"));
+    const QRegularExpressionMatch m = tsSuffix.match(baseName);
+    if (m.hasMatch())
+        baseName = baseName.left(m.capturedStart());
+    return FlightPath::displayNameFromFileBase(baseName);
+}
+
+bool deletePathJsonOnDisk(const QString &sourceFilePath, const QString &pathsDir, const QString &displayName)
+{
+    QStringList candidates;
+    auto add = [&candidates](const QString &p) {
+        if (p.isEmpty())
+            return;
+        const QString n = canonicalOrAbsolutePath(p);
+        if (!candidates.contains(n))
+            candidates.append(n);
+    };
+
+    add(sourceFilePath);
+    add(QDir(pathsDir).filePath(FlightPath::fileBaseFromDisplayName(displayName) + QStringLiteral(".json")));
+    if (!sourceFilePath.isEmpty())
+        add(QDir(pathsDir).filePath(QFileInfo(sourceFilePath).fileName()));
+
+    for (const QString &p : candidates) {
+        if (!QFile::exists(p))
+            continue;
+        QFile f(p);
+        f.setPermissions(QFileDevice::ReadUser | QFileDevice::WriteUser);
+        if (!f.remove())
+            return false;
+        return true;
+    }
+    return true;
+}
+
+} // namespace
 
 // RecordedPathsWidget implementation
 RecordedPathsWidget::RecordedPathsWidget(QWidget *parent)
@@ -30,7 +82,6 @@ RecordedPathsWidget::RecordedPathsWidget(QWidget *parent)
 
 RecordedPathsWidget::~RecordedPathsWidget()
 {
-    savePaths();
     delete ui;
 }
 
@@ -47,14 +98,19 @@ void RecordedPathsWidget::setupConnections()
 
 void RecordedPathsWidget::addPath(const QString &name, const QVector<QVector3D> &points)
 {
-    // Reload paths from disk to ensure we have the latest
-    // (the path was already saved by PathPlannerWidget)
+    Q_UNUSED(points);
     loadPaths();
-    
-    // Select the newest path (should be the one just added)
-    if (!m_paths.isEmpty()) {
-        ui->pathList->setCurrentRow(m_paths.size() - 1);
+
+    const QString targetFile = FlightPath::fileBaseFromDisplayName(name) + QStringLiteral(".json");
+    for (int i = 0; i < m_paths.size(); ++i) {
+        const QString src = m_paths[i].sourceFilePath();
+        if (!src.isEmpty() && QFileInfo(src).fileName() == targetFile) {
+            ui->pathList->setCurrentRow(i);
+            return;
+        }
     }
+    if (!m_paths.isEmpty())
+        ui->pathList->setCurrentRow(m_paths.size() - 1);
 }
 
 QString RecordedPathsWidget::getPathsDirectory()
@@ -104,43 +160,33 @@ QString RecordedPathsWidget::getPathsDirectory()
 FlightPath RecordedPathsWidget::loadPathFromFile(const QString &filePath)
 {
     QFile file(filePath);
-    
+
     if (!file.open(QIODevice::ReadOnly)) {
         return FlightPath();
     }
-    
+
     QByteArray data = file.readAll();
     file.close();
-    
+
     QJsonDocument doc = QJsonDocument::fromJson(data);
     if (!doc.isObject()) {
         return FlightPath();
     }
-    
+
     QJsonObject root = doc.object();
-    
-    // Try to load from JSON first (handles both new and legacy formats)
     FlightPath path = FlightPath::fromJson(root);
-    
-    // Override name from filename if not set in JSON
-    if (path.name().isEmpty()) {
-        QFileInfo fileInfo(filePath);
-        QString baseName = fileInfo.baseName();
-        // Remove timestamp suffix like _20231201_143022
-        int underscorePos = baseName.lastIndexOf('_');
-        if (underscorePos > 0) {
-            QString possibleTime = baseName.mid(underscorePos + 1);
-            if (possibleTime.length() == 6 && possibleTime.toInt() > 0) {
-                int secondUnderscore = baseName.lastIndexOf('_', underscorePos - 1);
-                if (secondUnderscore > 0) {
-                    baseName = baseName.left(secondUnderscore);
-                }
-            }
-        }
-        baseName.replace('_', ' ');
-        path.setName(baseName);
-    }
-    
+
+    const QFileInfo fi(filePath);
+    const QDateTime mtime = fi.lastModified();
+
+    const QDateTime parsedCreated = QDateTime::fromString(root.value(QStringLiteral("created_at")).toString(), Qt::ISODate);
+    const QDateTime parsedModified = QDateTime::fromString(root.value(QStringLiteral("modified_at")).toString(), Qt::ISODate);
+
+    // Filename is the source of truth for the on-disk identity (JSON often carries default "New Flight Path").
+    path.setName(displayBaseNameFromFile(filePath));
+    path.setCreatedAt(parsedCreated.isValid() ? parsedCreated : mtime);
+    path.setModifiedAt(parsedModified.isValid() ? parsedModified : mtime);
+    path.setSourceFilePath(canonicalOrAbsolutePath(filePath));
     return path;
 }
 
@@ -172,13 +218,6 @@ void RecordedPathsWidget::loadPaths()
     }
     
     updatePathList();
-}
-
-void RecordedPathsWidget::savePaths()
-{
-    // Paths are now saved as individual files in the paths folder
-    // This function is kept for compatibility but individual file operations
-    // are handled in addPath() and onDeletePath()
 }
 
 void RecordedPathsWidget::updatePathList()
@@ -236,15 +275,36 @@ void RecordedPathsWidget::updatePathDetails()
     
     ui->pathDescriptionEdit->setPlainText(path->description());
     
-    // Update waypoint details list
     ui->waypointDetailsList->clear();
     for (int i = 0; i < path->waypointCount(); ++i) {
         const Waypoint &wp = path->waypoint(i);
-        QString text = QString("WP %1: (%2, %3, %4)")
-                      .arg(i + 1)
-                      .arg(wp.x(), 0, 'f', 1)
-                      .arg(wp.y(), 0, 'f', 1)
-                      .arg(wp.z(), 0, 'f', 1);
+        const int n = i + 1;
+
+        const bool hasGps = std::abs(wp.latitude()) > 1e-9 || std::abs(wp.longitude()) > 1e-9;
+        QString gps;
+        if (hasGps) {
+            gps = QStringLiteral("  lat %1  lon %2  rel_alt %3 m")
+                      .arg(wp.latitude(), 0, 'f', 6)
+                      .arg(wp.longitude(), 0, 'f', 6)
+                      .arg(wp.relativeAltitudeM(), 0, 'f', 2);
+        }
+
+        QString labelNote;
+        if (!wp.name().trimmed().isEmpty())
+            labelNote = QStringLiteral("  label \"%1\"").arg(wp.name());
+
+        const QString text = QStringLiteral("%1: (%2, %3, %4)  yaw %5°  hold %6 s  acc %7 m  %8  %9%10%11")
+                                 .arg(n)
+                                 .arg(wp.x(), 0, 'f', 2)
+                                 .arg(wp.y(), 0, 'f', 2)
+                                 .arg(wp.z(), 0, 'f', 2)
+                                 .arg(wp.yawAngle(), 0, 'f', 1)
+                                 .arg(wp.holdTime(), 0, 'f', 1)
+                                 .arg(wp.acceptanceRadius(), 0, 'f', 2)
+                                 .arg(wp.passThrough() ? QStringLiteral("pass") : QStringLiteral("stop"))
+                                 .arg(wp.waypointType())
+                                 .arg(gps)
+                                 .arg(labelNote);
         ui->waypointDetailsList->addItem(text);
     }
 }
@@ -267,11 +327,6 @@ FlightPath* RecordedPathsWidget::getSelectedPath()
     return nullptr;
 }
 
-QString RecordedPathsWidget::generatePathId()
-{
-    return QUuid::createUuid().toString(QUuid::WithoutBraces);
-}
-
 void RecordedPathsWidget::onPathSelectionChanged()
 {
     m_selectedPathIndex = ui->pathList->currentRow();
@@ -288,6 +343,7 @@ void RecordedPathsWidget::onPathSelectionChanged()
 
 void RecordedPathsWidget::onLoadPath()
 {
+    m_selectedPathIndex = ui->pathList->currentRow();
     FlightPath *path = getSelectedPath();
     if (path) {
         // Convert Waypoints to QVector3D for compatibility
@@ -302,29 +358,28 @@ void RecordedPathsWidget::onLoadPath()
 
 void RecordedPathsWidget::onDeletePath()
 {
+    m_selectedPathIndex = ui->pathList->currentRow();
     FlightPath *path = getSelectedPath();
-    if (!path) return;
-    
-    int ret = QMessageBox::question(this, "Delete Path", 
+    if (!path)
+        return;
+
+    int ret = QMessageBox::question(this, "Delete Path",
                                    QString("Are you sure you want to delete the path '%1'?\n\nThis will permanently remove the file from disk.").arg(path->name()),
                                    QMessageBox::Yes | QMessageBox::No);
-    
+
     if (ret == QMessageBox::Yes) {
         QString pathId = path->id();
-        
-        // Find and delete the JSON file
-        QString pathsDir = getPathsDirectory();
-        QString fileName = QString("%1.json").arg(path->name().replace(" ", "_"));
-        QString filePath = QDir(pathsDir).filePath(fileName);
-        
-        if (QFile::exists(filePath)) {
-            if (!QFile::remove(filePath)) {
-                QMessageBox::warning(this, "Delete Failed", 
-                                    QString("Failed to delete file:\n%1").arg(filePath));
-                return;
-            }
+        const QString pathsDir = getPathsDirectory();
+
+        if (!deletePathJsonOnDisk(path->sourceFilePath(), pathsDir, path->name())) {
+            QMessageBox::warning(this, "Delete Failed",
+                                QString("Could not delete the file on disk.\nTried: %1")
+                                    .arg(path->sourceFilePath().isEmpty()
+                                             ? QDir(pathsDir).filePath(FlightPath::fileBaseFromDisplayName(path->name()) + QStringLiteral(".json"))
+                                             : path->sourceFilePath()));
+            return;
         }
-        
+
         m_paths.removeAt(m_selectedPathIndex);
         m_selectedPathIndex = -1;
         
@@ -337,12 +392,12 @@ void RecordedPathsWidget::onDeletePath()
 
 void RecordedPathsWidget::onExportPath()
 {
+    m_selectedPathIndex = ui->pathList->currentRow();
     FlightPath *path = getSelectedPath();
     if (!path) return;
     
-    QString sanitizedName = path->name();
-    sanitizedName.replace(" ", "_");
-    
+    const QString sanitizedName = FlightPath::fileBaseFromDisplayName(path->name());
+
     QString fileName = QFileDialog::getSaveFileName(this,
         "Export Path",
         QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/" + sanitizedName + ".json",
@@ -399,6 +454,7 @@ void RecordedPathsWidget::onImportPath()
 
 void RecordedPathsWidget::onEditPath()
 {
+    m_selectedPathIndex = ui->pathList->currentRow();
     FlightPath *path = getSelectedPath();
     if (path) {
         // Save the description if it was modified
@@ -406,11 +462,13 @@ void RecordedPathsWidget::onEditPath()
         if (path->description() != newDescription) {
             path->setDescription(newDescription);
             
-            // Save to file
-            QString pathsDir = getPathsDirectory();
-            QString fileName = QString("%1.json").arg(path->name().replace(" ", "_"));
-            QString filePath = QDir(pathsDir).filePath(fileName);
-            
+            QString filePath = path->sourceFilePath();
+            if (filePath.isEmpty() || !QFile::exists(filePath)) {
+                const QString pathsDir = getPathsDirectory();
+                const QString fileName = FlightPath::fileBaseFromDisplayName(path->name()) + QStringLiteral(".json");
+                filePath = QDir(pathsDir).filePath(fileName);
+            }
+
             QFile file(filePath);
             if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
                 file.write(QJsonDocument(path->toJson()).toJson(QJsonDocument::Indented));
@@ -430,18 +488,18 @@ void RecordedPathsWidget::onEditPath()
 
 void RecordedPathsWidget::onDuplicatePath()
 {
+    m_selectedPathIndex = ui->pathList->currentRow();
     FlightPath *path = getSelectedPath();
     if (!path) return;
     
-    // Create a copy with a new name
     FlightPath duplicate = *path;
-    QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
-    duplicate.setName(path->name() + " (Copy)");
-    
-    // Save to file
-    QString pathsDir = getPathsDirectory();
-    QString fileName = QString("%1_%2.json").arg(duplicate.name().replace(" ", "_")).arg(timestamp);
-    QString destPath = QDir(pathsDir).filePath(fileName);
+    duplicate.setSourceFilePath(QString());
+    const QString timestamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
+    duplicate.setName(path->name() + QStringLiteral(" (Copy)"));
+
+    const QString pathsDir = getPathsDirectory();
+    const QString base = FlightPath::fileBaseFromDisplayName(duplicate.name());
+    const QString destPath = QDir(pathsDir).filePath(QStringLiteral("%1_%2.json").arg(base, timestamp));
     
     QFile file(destPath);
     if (file.open(QIODevice::WriteOnly)) {

@@ -11,33 +11,24 @@
 #include <QVector3D>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
-#include <QGridLayout>
 #include <QPushButton>
+#include <QToolButton>
 #include <QLabel>
-#include <QSlider>
 #include <QLineEdit>
-#include <QListWidget>
 #include <QTableWidget>
 #include <QGroupBox>
-#include <QSpinBox>
 #include <QDoubleSpinBox>
-#include <QComboBox>
 #include <QTimer>
 #include <QMouseEvent>
-#include <QLineEdit>
 #include <QWheelEvent>
 #include <QPaintEvent>
-#include <QDialog>
+#include <QModelIndex>
+#include <QSet>
+#include <QVector>
 #include <vector>
 #include "../models/waypoint.h"
-#include "../models/flightpath.h"
 
-class PathRenderer;
 class DroneController;
-
-QT_BEGIN_NAMESPACE
-namespace Ui { class PathPlannerWidget; }
-QT_END_NAMESPACE
 
 class PathPlannerOpenGLWidget : public QOpenGLWidget, protected QOpenGLFunctions
 {
@@ -47,6 +38,13 @@ public:
     enum ViewMode {
         TopDownMode,    ///< Orthographic top-down view for planning
         View3DMode      ///< Free 3D inspection mode
+    };
+
+    enum InteractionMode {
+        NavigateMode,   ///< Camera navigation only
+        CreateMode,     ///< Left-click creates waypoints
+        SelectMode,     ///< Left-click selects waypoints
+        TransformMode   ///< Left-drag gizmo handles to move selected waypoint
     };
 
     explicit PathPlannerOpenGLWidget(QWidget *parent = nullptr);
@@ -69,11 +67,25 @@ public:
     void resetCamera();
     void setDefaultAltitude(float altitude) { m_defaultAltitude = altitude; }
     float defaultAltitude() const { return m_defaultAltitude; }
+    void setInteractionMode(InteractionMode mode);
+    InteractionMode interactionMode() const { return m_interactionMode; }
+    bool undo();
+    bool redo();
+    bool canUndo() const { return !m_undoStack.isEmpty(); }
+    bool canRedo() const { return !m_redoStack.isEmpty(); }
+    bool duplicateSelectedWaypoint();
+    bool deleteSelectedWaypoint();
 
 signals:
     void waypointSelected(int id);
     void waypointAdded(const Waypoint &waypoint);
     void waypointMoved(int id, const QVector3D &newPosition);
+    void selectionChanged(const QSet<int> &selectedIds);
+    void transformStarted(int id);
+    void transformUpdated(int id);
+    void transformEnded(int id);
+    void editHistoryStateChanged(bool canUndo, bool canRedo);
+    void waypointsEdited();
 
 protected:
     void initializeGL() override;
@@ -82,21 +94,74 @@ protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
 
 private:
+    enum class TransformHandle
+    {
+        None,
+        AxisX,
+        AxisY,
+        AxisZ,
+        PlaneXY,
+        PlaneXZ,
+        PlaneYZ,
+        Yaw
+    };
+
+    struct EditCommand
+    {
+        std::vector<Waypoint> before;
+        std::vector<Waypoint> after;
+    };
+
     void setupShaders();
     void setupBuffers();
     void drawGrid();
     void drawWaypoints();
     void drawPath();
     void drawAxes();
+    void drawGizmo();
     void drawWaypointLabels(QPainter &painter);
     void updateCamera();
     void updateProjection();
     QVector3D screenToWorld(const QPoint &screenPos, float depth = 0.0f);
-    QPoint worldToScreen(const QVector3D &worldPos);
+    QVector3D screenToWorldOnYPlane(const QPoint &screenPos, float worldY) const;
+    QPoint worldToScreen(const QVector3D &worldPos) const;
+    /// Screen position and NDC depth (for label ordering / occlusion hints). Returns false if behind camera.
+    bool projectWorldToScreenDepth(const QVector3D &worldPos, QPoint *outPx, float *outNdcZ) const;
+    /// Approximate projected radius in pixels (for HUD rings that track 3D sphere size).
+    float screenSpaceSphereRadiusPx(const QVector3D &worldCenter, float worldRadius) const;
+    /// Same geometry as screenSpaceSphereRadiusPx before min/max clamp (for cone vs HUD behavior).
+    float projectedSphereRadiusPxRaw(const QVector3D &worldCenter, float worldRadius) const;
+    /// Length scale, extra base radius scale, and ring position (0..1 along forward) for the waypoint yaw cone.
+    void waypointMarkerConeParameters(const QVector3D &waypointCenterWorld, float &outLengthScale,
+                                      float &outBaseRadiusScale, float &outRingAlongF) const;
     int findWaypointAt(const QPoint &screenPos);
+    int findWaypointAt(const QPoint &screenPos, float *outDistancePx, float *outDepthNdc) const;
+    int findSegmentAt(const QPoint &screenPos, QVector3D *insertWorldPoint = nullptr, float maxDistancePx = 12.0f) const;
+    TransformHandle findTransformHandleAt(const QPoint &screenPos) const;
+    bool updateWaypointLogicalPosition(int id, const QVector3D &newLogicalPosition);
+    bool updateWaypointYawAngle(int id, float yawDeg);
+    QVector3D selectedWaypointLogicalPosition() const;
+    float selectedWaypointYawDeg() const;
+    QVector3D gizmoAxisDirectionWorld(TransformHandle handle) const;
+    QVector3D gizmoCenterWorld() const;
+    /// Screen-space linearization: how many world meters along `axisWorldUnit` correspond to `screenDelta` pixels (origin fixed for whole drag).
+    float worldDeltaAlongAxisFromScreenDelta(const QVector3D &originWorld, const QVector3D &axisWorldUnit,
+                                             const QPoint &screenDelta) const;
+    /// Same for a plane spanned by two orthogonal world unit vectors; outputs world deltas along u0 and u1.
+    bool worldDeltasOnPlaneFromScreenDelta(const QVector3D &originWorld, const QVector3D &u0World,
+                                           const QVector3D &u1World, const QPoint &screenDelta,
+                                           float &outDu0, float &outDu1) const;
+    void appendLine(const QVector3D &a, const QVector3D &b, const QVector3D &color,
+                    QVector<float> &vertices, QVector<float> &colors) const;
+    void appendSphere(const QVector3D &center, float radius, const QVector3D &color,
+                      QVector<float> &vertices, QVector<float> &colors) const;
+    void commitEdit(const std::vector<Waypoint> &before, const std::vector<Waypoint> &after);
+    void clearRedoHistory();
+    void updateHistorySignals();
     
     // OpenGL resources
     QOpenGLShaderProgram *m_shaderProgram;
@@ -117,17 +182,35 @@ private:
     
     // View mode
     ViewMode m_viewMode;
+    InteractionMode m_interactionMode;
     float m_orthoZoom;
     float m_defaultAltitude;
     
     // Waypoints
     std::vector<Waypoint> m_waypoints;
     int m_selectedWaypoint;  // ID of selected waypoint (-1 if none)
+    QSet<int> m_selectedWaypointIds;
+    int m_hoveredWaypoint;
+    int m_hoveredSegment;
     
     // Interaction
     QPoint m_lastMousePos;
     bool m_mousePressed;
     bool m_isDragging;
+    bool m_draggingTransform;
+    TransformHandle m_activeHandle;
+    QPoint m_dragStartMousePos;
+    QVector3D m_dragStartLogicalPos;
+    QVector3D m_dragGizmoOriginWorld;
+    float m_dragYawPlaneAngleStartRad;
+    float m_dragStartYawDeg;
+    std::vector<Waypoint> m_dragBeforeSnapshot;
+    QVector3D m_lastHoverPreviewWorldPos;
+    bool m_hasHoverPreview;
+
+    QVector<EditCommand> m_undoStack;
+    QVector<EditCommand> m_redoStack;
+    bool m_applyingHistory;
     
     // Animation
     QTimer *m_animationTimer;
@@ -164,48 +247,38 @@ signals:
     void waypointsChanged(const std::vector<Waypoint> &waypoints);
 
 private slots:
-    void onAddWaypoint();
-    void onRemoveWaypoint();
     void onClearPath();
     void onSavePath();
     void onLoadPath();
     void onUploadMission();
     void onRunMission();
     void onCancelMission();
-    void onMissionUploadComplete(bool success, const QString &message);
-    void onMissionStatusReceived(const QString &status);
     void onWaypointSelected(int id);
     void onWaypointCellChanged(int row, int column);
     void onCameraReset();
     void onPlayPath();
     void onStopPath();
     void onPathAnimationTimer();
-    void onGridSizeChanged(int size);
-    void onCoordinateSystemChanged(const QString &system);
     void onViewModeChanged();
-    void onSequentialOrder();
-    void onCustomOrder();
-    void onUndoReorder();
-
-    // Quick Missions
-    void onGenerateSquare();
-    void onLoadRecording();
+    void onInteractionModeChanged(int index);
+    void onWaypointRowsMoved(const QModelIndex &parent, int start, int end,
+                             const QModelIndex &destination, int row);
 
 private:
     void setupUI();
+    void setupTopBar();
     void setupControls();
     void setupWaypointTable();
-    void setupQuickMissions();
     void updateWaypointTable();
     void startPathAnimation();
     void stopPathAnimation();
     void emitWaypointsChanged();
-    void updatePathOrderVisibility();
-    
-    Ui::PathPlannerWidget *ui;
+    void updateUndoRedoButtons();
     
     // Main layouts
-    QHBoxLayout *m_mainLayout;
+    QVBoxLayout *m_mainLayout;
+    QHBoxLayout *m_contentLayout;
+    QWidget *m_topBarWidget;
     QVBoxLayout *m_controlsLayout;
     
     // 3D View
@@ -213,42 +286,30 @@ private:
     
     // Control panels
     QGroupBox *m_waypointGroup;
-    QGroupBox *m_pathGroup;
-    QGroupBox *m_pathOrderGroup;
     QGroupBox *m_viewGroup;
-    QGroupBox *m_settingsGroup;
     
     // Waypoint controls
     QTableWidget *m_waypointTable;
-    QPushButton *m_addWaypointButton;
-    QPushButton *m_removeWaypointButton;
     QLabel *m_waypointCountLabel;
     
     // Path controls
-    QPushButton *m_clearPathButton;
-    QPushButton *m_savePathButton;
-    QPushButton *m_loadPathButton;
+    QToolButton *m_pathMenuButton;
     QPushButton *m_uploadMissionButton;
     QPushButton *m_runMissionButton;
     QPushButton *m_cancelMissionButton;
+    QPushButton *m_createModeButton;
+    QPushButton *m_transformModeButton;
     QPushButton *m_playPathButton;
     QPushButton *m_stopPathButton;
     QLineEdit *m_pathNameEdit;
-    QLabel *m_pathLengthLabel;
     QLabel *m_missionStatusLabel;
-    
-    // Path order controls
-    QPushButton *m_sequentialOrderButton;
-    QPushButton *m_customOrderButton;
-    QPushButton *m_undoReorderButton;
-    std::vector<Waypoint> m_previousWaypointOrder;
     
     // View controls
     QPushButton *m_resetCameraButton;
     QPushButton *m_viewModeButton;
-    QSlider *m_gridSizeSlider;
-    QComboBox *m_coordinateSystemCombo;
     QDoubleSpinBox *m_defaultAltitudeSpinBox;
+    QPushButton *m_undoEditButton;
+    QPushButton *m_redoEditButton;
     
     // Animation
     QTimer *m_pathAnimationTimer;
@@ -262,13 +323,7 @@ private:
     // Drone connection
     DroneController *m_droneController;
 
-    // Quick Missions panel
-    QGroupBox       *m_quickMissionsGroup;
-    QPushButton     *m_generateSquareButton;
-    QDoubleSpinBox  *m_squareAltSpinBox;
-    QDoubleSpinBox  *m_squareSideSpinBox;
-    QPushButton     *m_loadRecordingButton;
-    QLabel          *m_quickMissionStatusLabel;
+    bool m_updatingWaypointTable;
 };
 
 #endif // PATHPLANNERWIDGET_H
