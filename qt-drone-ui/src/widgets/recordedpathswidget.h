@@ -29,7 +29,6 @@ public:
 
     void addPath(const QString &name, const QVector<QVector3D> &points);
     void loadPaths();
-    void savePaths();
 
 signals:
     void pathDeleted(const QString &pathId);
@@ -50,7 +49,6 @@ private:
     void updatePathDetails();
     void clearPathDetails();
     FlightPath* getSelectedPath();
-    QString generatePathId();
     QString getPathsDirectory();
     FlightPath loadPathFromFile(const QString &filePath);
     

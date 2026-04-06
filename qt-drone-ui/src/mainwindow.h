@@ -47,6 +47,7 @@ private:
     void setupNavigationBar();
     void setupMainContent();
     void setupStatusBar();
+    void setupPlannerMenus();
     void connectSignals();
     void setActiveView(const QString &viewName);
     
@@ -59,6 +60,7 @@ private:
     QVBoxLayout *m_navigationLayout;
     QListWidget *m_navigationList;
     QPushButton *m_drawerToggleButton;
+    QPushButton *m_reopenSidebarButton;
     QStackedWidget *m_contentStack;
     QSplitter *m_mainSplitter;
     

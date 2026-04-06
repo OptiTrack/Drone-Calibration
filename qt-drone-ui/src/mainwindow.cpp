@@ -10,10 +10,13 @@
 #include <QApplication>
 #include <QStatusBar>
 #include <QMenuBar>
+#include <QMenu>
 #include <QToolBar>
+#include <QAction>
 #include <QIcon>
 #include <QListWidgetItem>
 #include <QMessageBox>
+#include <QMetaObject>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -24,6 +27,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_navigationLayout(nullptr)
     , m_navigationList(nullptr)
     , m_drawerToggleButton(nullptr)
+    , m_reopenSidebarButton(nullptr)
     , m_contentStack(nullptr)
     , m_mainSplitter(nullptr)
     , m_dashboardWidget(nullptr)
@@ -59,6 +63,7 @@ void MainWindow::setupUI()
     setupNavigationBar();
     setupMainContent();
     setupStatusBar();
+    setupPlannerMenus();
     
     // Create main layout
     m_centralWidget = new QWidget;
@@ -67,6 +72,30 @@ void MainWindow::setupUI()
     m_mainLayout = new QHBoxLayout(m_centralWidget);
     m_mainLayout->setContentsMargins(0, 0, 0, 0);
     m_mainLayout->setSpacing(0);
+
+    // Create reopen sidebar button (hidden by default)
+    // Use hex-encoded UTF-8 for "▶" (Black Right-Pointing Triangle) to avoid encoding issues
+    m_reopenSidebarButton = new QPushButton(QString::fromUtf8("\xE2\x96\xB6"));
+    m_reopenSidebarButton->setFixedWidth(32);
+    m_reopenSidebarButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    m_reopenSidebarButton->setToolTip("Open Sidebar");
+    m_reopenSidebarButton->setCursor(Qt::PointingHandCursor);
+    m_reopenSidebarButton->hide(); // Initially hidden as sidebar is open
+    m_reopenSidebarButton->setStyleSheet(
+        "QPushButton { "
+        "   background-color: #2d2d2d; "
+        "   color: #ffffff; "
+        "   border: none; "
+        "   border-right: 1px solid #555555; "
+        "   font-weight: bold; "
+        "   font-size: 14px; "
+        "} "
+        "QPushButton:hover { "
+        "   background-color: #404040; "
+        "   color: #0099ff; "
+        "}"
+    );
+    m_mainLayout->addWidget(m_reopenSidebarButton);
     
     // Create main splitter
     m_mainSplitter = new QSplitter(Qt::Horizontal);
@@ -80,6 +109,24 @@ void MainWindow::setupUI()
     m_mainSplitter->setSizes({250, 1350});
     m_mainSplitter->setCollapsible(0, true);
     m_mainSplitter->setCollapsible(1, false);
+}
+
+void MainWindow::setupPlannerMenus()
+{
+    QMenu *missionMenu = menuBar()->addMenu("Mission");
+    QAction *uploadAction = missionMenu->addAction("Upload Mission");
+    QAction *runAction = missionMenu->addAction("Run Mission");
+    QAction *cancelAction = missionMenu->addAction("Cancel Mission");
+
+    auto invokePlannerSlot = [this](const char *slotName) {
+        if (!m_pathPlannerWidget)
+            return;
+        QMetaObject::invokeMethod(m_pathPlannerWidget, slotName, Qt::QueuedConnection);
+    };
+
+    connect(uploadAction, &QAction::triggered, this, [invokePlannerSlot]() { invokePlannerSlot("onUploadMission"); });
+    connect(runAction, &QAction::triggered, this, [invokePlannerSlot]() { invokePlannerSlot("onRunMission"); });
+    connect(cancelAction, &QAction::triggered, this, [invokePlannerSlot]() { invokePlannerSlot("onCancelMission"); });
 }
 
 void MainWindow::setupNavigationBar()
@@ -128,7 +175,8 @@ void MainWindow::setupNavigationBar()
     headerLayout->addWidget(brandLabel);
     
     // Drawer toggle button
-    m_drawerToggleButton = new QPushButton("Menu");
+    // Use hex-encoded UTF-8 for "◀" (Black Left-Pointing Triangle)
+    m_drawerToggleButton = new QPushButton(QString::fromUtf8("\xE2\x97\x80"));
     m_drawerToggleButton->setFixedSize(32, 32);
     m_drawerToggleButton->setStyleSheet(
         "QPushButton { "
@@ -140,8 +188,9 @@ void MainWindow::setupNavigationBar()
         "   font-weight: bold; "
         "} "
         "QPushButton:hover { "
-        "   background-color: #007acc; "
-        "   border-color: #0099ff; "
+        "   background-color: #4a4a4a; "
+        "   color: #007acc; "
+        "   border-color: #007acc; "
         "}"
     );
     headerLayout->addWidget(m_drawerToggleButton);
@@ -195,7 +244,7 @@ void MainWindow::setupNavigationBar()
         {"Home", "●", "Dashboard overview"},
         {"Live Camera", "◐", "Real-time camera feed"}, 
         {"Flight Planner", "◢", "Plan drone waypoints"},
-        {"Flight History", "◫", "View recorded paths"},
+        {"Saved Paths", "◫", "View saved flight paths"},
         {"Media Library", "◨", "Recorded videos"},
         {"System Status", "◉", "Drone telemetry"}
     };
@@ -287,10 +336,10 @@ void MainWindow::setupNavigationBar()
     
     // Connection status
     QHBoxLayout *connectionLayout = new QHBoxLayout;
-    QLabel *statusDot = new QLabel("●");
-    statusDot->setStyleSheet("color: #28a745; font-size: 12px;"); // Green for connected
+    QLabel *statusDot = new QLabel(QString::fromUtf8("\xE2\x97\x8F"));
+    statusDot->setStyleSheet("color: #ef4444; font-size: 12px;"); // Red for disconnected
     
-    QLabel *statusText = new QLabel("Drone Connected");
+    QLabel *statusText = new QLabel("Drone Disconnected");
     statusText->setStyleSheet(
         "QLabel { color: #dcdcdc; font-size: 12px; }"
     );
@@ -365,6 +414,8 @@ void MainWindow::connectSignals()
             this, &MainWindow::onNavigationItemClicked);
     connect(m_drawerToggleButton, &QPushButton::clicked,
             this, &MainWindow::onDrawerToggled);
+    connect(m_reopenSidebarButton, &QPushButton::clicked,
+            this, &MainWindow::onDrawerToggled);
     
     // Dashboard navigation signals
     connect(m_dashboardWidget, &DashboardWidget::navigateToCamera,
@@ -424,6 +475,7 @@ void MainWindow::onDrawerToggled()
 {
     m_drawerOpen = !m_drawerOpen;
     m_navigationFrame->setVisible(m_drawerOpen);
+    m_reopenSidebarButton->setVisible(!m_drawerOpen);
 }
 
 void MainWindow::onPathSaved(const QString &name, const QVector<QVector3D> &points)

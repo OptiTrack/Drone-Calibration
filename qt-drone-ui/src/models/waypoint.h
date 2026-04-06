@@ -86,7 +86,8 @@ private:
     QString m_waypointType; // NAV_WAYPOINT, LOITER_UNLIM, LAND, etc.
     float m_acceptanceRadius;
     float m_holdTime;       // seconds to hold at waypoint
-    float m_yawAngle;       // degrees
+    /// Heading in degrees (UI / file format). 0° = logical +X (forward / map north in planner). Convert to radians for MAVLink/autopilot APIs.
+    float m_yawAngle;
     bool m_passThrough;
     QDateTime m_createdAt;
 };

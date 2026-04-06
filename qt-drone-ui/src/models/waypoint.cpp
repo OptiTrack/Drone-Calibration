@@ -9,7 +9,7 @@ Waypoint::Waypoint()
     , m_relativeAltitudeM(0.0f)
     , m_sequence(0)
     , m_waypointType("NAV_WAYPOINT")
-    , m_acceptanceRadius(1.0f)
+    , m_acceptanceRadius(0.5f)
     , m_holdTime(0.0f)
     , m_yawAngle(0.0f)
     , m_passThrough(false)
@@ -25,7 +25,7 @@ Waypoint::Waypoint(const QVector3D &position, const QString &name)
     , m_name(name)
     , m_sequence(0)
     , m_waypointType("NAV_WAYPOINT")
-    , m_acceptanceRadius(1.0f)
+    , m_acceptanceRadius(0.5f)
     , m_holdTime(0.0f)
     , m_yawAngle(0.0f)
     , m_passThrough(false)
@@ -41,7 +41,7 @@ Waypoint::Waypoint(float x, float y, float z, const QString &name)
     , m_name(name)
     , m_sequence(0)
     , m_waypointType("NAV_WAYPOINT")
-    , m_acceptanceRadius(1.0f)
+    , m_acceptanceRadius(0.5f)
     , m_holdTime(0.0f)
     , m_yawAngle(0.0f)
     , m_passThrough(false)
@@ -108,7 +108,7 @@ Waypoint Waypoint::fromJson(const QJsonObject &json)
     wp.m_description = json["description"].toString();
     wp.m_sequence = json["sequence"].toInt(0);
     wp.m_waypointType = json["type"].toString("NAV_WAYPOINT");
-    wp.m_acceptanceRadius = static_cast<float>(json["acceptance_radius"].toDouble(1.0));
+    wp.m_acceptanceRadius = static_cast<float>(json["acceptance_radius"].toDouble(0.5));
     wp.m_passThrough = json["pass_through"].toBool(false);
     
     // Local position
@@ -135,10 +135,24 @@ QString Waypoint::toString() const
 
 bool Waypoint::operator==(const Waypoint &other) const
 {
+    constexpr float kPosEps = 1e-5f;
+    constexpr float kFloatEps = 1e-5f;
+    constexpr double kDoubleEps = 1e-9;
+
     return m_sequence == other.m_sequence &&
-           qFuzzyCompare(m_latitude, other.m_latitude) &&
-           qFuzzyCompare(m_longitude, other.m_longitude) &&
-           qFuzzyCompare(m_relativeAltitudeM, other.m_relativeAltitudeM);
+           m_name == other.m_name &&
+           m_description == other.m_description &&
+           m_waypointType == other.m_waypointType &&
+           m_passThrough == other.m_passThrough &&
+           std::abs(m_position.x() - other.m_position.x()) < kPosEps &&
+           std::abs(m_position.y() - other.m_position.y()) < kPosEps &&
+           std::abs(m_position.z() - other.m_position.z()) < kPosEps &&
+           std::abs(m_latitude - other.m_latitude) < kDoubleEps &&
+           std::abs(m_longitude - other.m_longitude) < kDoubleEps &&
+           std::abs(m_relativeAltitudeM - other.m_relativeAltitudeM) < kFloatEps &&
+           std::abs(m_acceptanceRadius - other.m_acceptanceRadius) < kFloatEps &&
+           std::abs(m_holdTime - other.m_holdTime) < kFloatEps &&
+           std::abs(m_yawAngle - other.m_yawAngle) < kFloatEps;
 }
 
 bool Waypoint::operator!=(const Waypoint &other) const

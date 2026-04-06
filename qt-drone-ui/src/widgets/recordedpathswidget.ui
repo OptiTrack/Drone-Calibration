@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>Recorded Paths</string>
+   <string>Saved Paths</string>
   </property>
   <layout class="QVBoxLayout" name="mainLayout">
    <property name="spacing">
@@ -47,7 +47,7 @@
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }</string>
        </property>
        <property name="title">
-        <string>Recorded Paths</string>
+        <string>Saved Paths</string>
        </property>
        <layout class="QVBoxLayout" name="pathListLayout">
         <item>
@@ -237,9 +237,12 @@ QPushButton:disabled { background-color: #374151; }</string>
         </item>
         <item>
          <widget class="QListWidget" name="waypointDetailsList">
+          <property name="frameShape">
+           <enum>QFrame::NoFrame</enum>
+          </property>
           <property name="styleSheet">
-           <string notr="true">QListWidget { background-color: #1f2937; color: white; border: 1px solid #4b5563; font-family: monospace; font-size: 11px; } 
-QListWidget::item { padding: 4px; }</string>
+           <string notr="true">QListWidget { background-color: transparent; color: #e5e7eb; border: none; font-family: monospace; font-size: 11px; } 
+QListWidget::item { padding: 2px 0; }</string>
           </property>
          </widget>
         </item>
