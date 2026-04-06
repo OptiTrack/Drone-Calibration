@@ -11,6 +11,7 @@
 #include <QJsonArray>
 #include <QStandardPaths>
 #include <QCoreApplication>
+#include <QApplication>
 #include <QDir>
 #include <QDateTime>
 #include <QtMath>
@@ -21,12 +22,16 @@
 #include <QShortcut>
 #include <QHeaderView>
 #include <QAbstractItemModel>
+#include <QStyledItemDelegate>
+#include <QWidgetAction>
+#include <QFormLayout>
 #include <QVector2D>
 #include <QToolButton>
 #include <QMenu>
 #include <QAction>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 static QString plannerPathsDirectory()
 {
@@ -63,6 +68,249 @@ static QVector3D waypointToWorld(const Waypoint &wp)
 {
     return logicalToWorld(QVector3D(wp.x(), wp.y(), wp.z()));
 }
+
+class WaypointTableWidget : public QTableWidget
+{
+public:
+    explicit WaypointTableWidget(QWidget *parent = nullptr)
+        : QTableWidget(parent)
+    {
+    }
+
+    std::function<void(int, int, bool)> onRowMoveRequested;
+
+protected:
+    enum class DropMode
+    {
+        None,
+        Swap,
+        InsertBefore,
+        InsertAfter
+    };
+
+    void paintEvent(QPaintEvent *event) override
+    {
+        QTableWidget::paintEvent(event);
+
+        if (!m_draggingRow || m_dragSourceRow < 0)
+            return;
+
+        QPainter painter(viewport());
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        // "Picked up" source row styling.
+        const QModelIndex sourceIndex = model()->index(m_dragSourceRow, 0);
+        const QRect sourceRect = visualRect(sourceIndex);
+        if (sourceRect.isValid())
+        {
+            QRect fullRowRect(0, sourceRect.top(), viewport()->width(), sourceRect.height());
+            painter.fillRect(fullRowRect.adjusted(1, 1, -1, -1), QColor(255, 255, 255, 22));
+            QPen sourcePen(QColor(255, 255, 255, 180));
+            sourcePen.setStyle(Qt::DashLine);
+            sourcePen.setWidth(1);
+            painter.setPen(sourcePen);
+            painter.drawRect(fullRowRect.adjusted(0, 0, -1, -1));
+        }
+
+        // Floating ghost to make drag feel "picked up".
+        if (sourceRect.isValid())
+        {
+            const int ghostHeight = sourceRect.height();
+            const int ghostWidth = qMax(120, viewport()->width() - 18);
+            int ghostY = m_lastMousePos.y() - (ghostHeight / 2);
+            ghostY = qBound(0, ghostY, qMax(0, viewport()->height() - ghostHeight));
+            QRect ghostRect(8, ghostY, ghostWidth, ghostHeight);
+
+            painter.fillRect(ghostRect, QColor(255, 255, 255, 34));
+            QPen ghostPen(QColor(255, 255, 255, 235));
+            ghostPen.setWidth(1);
+            painter.setPen(ghostPen);
+            painter.drawRect(ghostRect.adjusted(0, 0, -1, -1));
+
+            painter.setPen(QColor(255, 255, 255, 220));
+            painter.drawText(ghostRect.adjusted(8, 0, -8, 0),
+                             Qt::AlignVCenter | Qt::AlignLeft,
+                             QString("Move row %1").arg(m_dragSourceRow + 1));
+        }
+
+        // Drop target styling: swap = border on row, insert = line between rows.
+        QPen dropPen(QColor(255, 255, 255, 235));
+        dropPen.setWidth(2);
+        painter.setPen(dropPen);
+
+        if (m_dropMode == DropMode::Swap && m_hoverRow >= 0)
+        {
+            const QModelIndex hoverIndex = model()->index(m_hoverRow, 0);
+            const QRect hoverRect = visualRect(hoverIndex);
+            if (hoverRect.isValid())
+            {
+                QRect fullRowRect(0, hoverRect.top(), viewport()->width(), hoverRect.height());
+                painter.drawRect(fullRowRect.adjusted(1, 1, -2, -2));
+            }
+        }
+        else if ((m_dropMode == DropMode::InsertBefore || m_dropMode == DropMode::InsertAfter) && m_insertLineY >= 0)
+        {
+            const int y = qBound(0, m_insertLineY, viewport()->height() - 1);
+            painter.drawLine(2, y, viewport()->width() - 3, y);
+        }
+    }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton)
+        {
+            const QModelIndex index = indexAt(event->pos());
+            if (index.isValid())
+            {
+                setCurrentCell(index.row(), 0);
+                selectRow(index.row());
+                m_dragSourceRow = index.row();
+                m_dragStartPos = event->pos();
+                m_lastMousePos = event->pos();
+                m_draggingRow = false;
+                m_dropMode = DropMode::None;
+                m_hoverRow = -1;
+                m_insertLineY = -1;
+            }
+            else
+            {
+                m_dragSourceRow = -1;
+                m_draggingRow = false;
+                m_dropMode = DropMode::None;
+                m_hoverRow = -1;
+                m_insertLineY = -1;
+            }
+        }
+        QTableWidget::mousePressEvent(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        if (!(event->buttons() & Qt::LeftButton) || m_dragSourceRow < 0)
+        {
+            QTableWidget::mouseMoveEvent(event);
+            return;
+        }
+
+        const int dragThreshold = QApplication::startDragDistance();
+        if (!m_draggingRow && (event->pos() - m_dragStartPos).manhattanLength() < dragThreshold)
+        {
+            return;
+        }
+
+        if (!m_draggingRow)
+        {
+            m_draggingRow = true;
+            setCursor(Qt::ClosedHandCursor);
+            clearSelection();
+        }
+        const QPoint pos = event->pos();
+        m_lastMousePos = pos;
+        updateDropTarget(pos);
+        viewport()->update();
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton && m_dragSourceRow >= 0 && m_draggingRow)
+        {
+            updateDropTarget(event->pos());
+
+            if (m_dropMode == DropMode::Swap && m_hoverRow >= 0 && m_hoverRow != m_dragSourceRow)
+            {
+                if (onRowMoveRequested)
+                    onRowMoveRequested(m_dragSourceRow, m_hoverRow, true);
+            }
+            else if (m_dropMode == DropMode::InsertBefore || m_dropMode == DropMode::InsertAfter)
+            {
+                int toRow = rowCount();
+                if (m_hoverRow >= 0)
+                {
+                    toRow = m_hoverRow;
+                    if (m_dropMode == DropMode::InsertAfter)
+                        ++toRow;
+                }
+
+                if (toRow > m_dragSourceRow)
+                    --toRow;
+                toRow = qBound(0, toRow, rowCount() - 1);
+
+                if (toRow != m_dragSourceRow && onRowMoveRequested)
+                    onRowMoveRequested(m_dragSourceRow, toRow, false);
+            }
+        }
+
+        m_dragSourceRow = -1;
+        m_draggingRow = false;
+        m_dropMode = DropMode::None;
+        m_hoverRow = -1;
+        m_insertLineY = -1;
+        m_lastMousePos = QPoint();
+        unsetCursor();
+        viewport()->update();
+        QTableWidget::mouseReleaseEvent(event);
+    }
+
+private:
+    void updateDropTarget(const QPoint &pos)
+    {
+        m_hoverRow = rowAt(pos.y());
+        m_dropMode = DropMode::None;
+        m_insertLineY = -1;
+
+        if (m_hoverRow < 0 || m_hoverRow >= rowCount())
+            return;
+
+        const QModelIndex rowIndex = model()->index(m_hoverRow, 0);
+        const QRect rowRect = visualRect(rowIndex);
+        if (!rowRect.isValid())
+            return;
+
+        const int edgeThresholdPx = 5;
+        const int distanceToTop = std::abs(pos.y() - rowRect.top());
+        const int distanceToBottom = std::abs(pos.y() - rowRect.bottom());
+
+        if (distanceToTop <= edgeThresholdPx)
+        {
+            m_dropMode = DropMode::InsertBefore;
+            m_insertLineY = rowRect.top();
+            return;
+        }
+        if (distanceToBottom <= edgeThresholdPx)
+        {
+            m_dropMode = DropMode::InsertAfter;
+            m_insertLineY = rowRect.bottom();
+            return;
+        }
+
+        m_dropMode = DropMode::Swap;
+    }
+
+    int m_dragSourceRow = -1;
+    QPoint m_dragStartPos;
+    QPoint m_lastMousePos;
+    bool m_draggingRow = false;
+    DropMode m_dropMode = DropMode::None;
+    int m_hoverRow = -1;
+    int m_insertLineY = -1;
+};
+
+class WaypointNoFocusDelegate : public QStyledItemDelegate
+{
+public:
+    explicit WaypointNoFocusDelegate(QObject *parent = nullptr)
+        : QStyledItemDelegate(parent)
+    {
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        QStyleOptionViewItem opt(option);
+        opt.state &= ~QStyle::State_HasFocus;
+        QStyledItemDelegate::paint(painter, opt, index);
+    }
+};
 
 // Heading in world XZ from logical yaw (degrees). 0° = world +Z (logical +X / forward).
 static QVector3D logicalYawHeadingWorld(float yawDeg)
@@ -111,7 +359,7 @@ static const char *fragmentShaderSource =
 
 // PathPlannerOpenGLWidget Implementation
 PathPlannerOpenGLWidget::PathPlannerOpenGLWidget(QWidget *parent)
-    : QOpenGLWidget(parent), m_shaderProgram(nullptr), m_cameraPosition(0, 5, 10), m_cameraTarget(0, 0, 0), m_cameraUp(0, 1, 0), m_cameraDistance(15.0f), m_cameraYaw(0.0f), m_cameraPitch(30.0f), m_viewMode(View3DMode), m_interactionMode(TransformMode), m_orthoZoom(10.0f), m_defaultAltitude(2.0f), m_selectedWaypoint(-1), m_hoveredWaypoint(-1), m_hoveredSegment(-1), m_mousePressed(false), m_isDragging(false), m_draggingTransform(false), m_activeHandle(TransformHandle::None), m_hasHoverPreview(false), m_applyingHistory(false), m_dragGizmoOriginWorld(), m_dragYawPlaneAngleStartRad(0.0f), m_dragStartYawDeg(0.0f), m_animationTime(0.0f)
+    : QOpenGLWidget(parent), m_shaderProgram(nullptr), m_cameraPosition(0, 5, 10), m_cameraTarget(0, 0, 0), m_cameraUp(0, 1, 0), m_cameraDistance(15.0f), m_cameraYaw(0.0f), m_cameraPitch(30.0f), m_viewMode(View3DMode), m_interactionMode(TransformMode), m_orthoZoom(10.0f), m_defaultAltitude(2.0f), m_defaultAcceptanceRadius(0.5f), m_defaultHoldTime(0.0f), m_defaultYawAngle(0.0f), m_selectedWaypoint(-1), m_hoveredWaypoint(-1), m_hoveredSegment(-1), m_mousePressed(false), m_isDragging(false), m_draggingTransform(false), m_activeHandle(TransformHandle::None), m_hasHoverPreview(false), m_pendingCreatePlacement(false), m_createPressOnExistingWaypoint(false), m_applyingHistory(false), m_dragGizmoOriginWorld(), m_dragYawPlaneAngleStartRad(0.0f), m_dragStartYawDeg(0.0f), m_animationTime(0.0f)
 {
     setMinimumSize(600, 400);
     setFocusPolicy(Qt::StrongFocus);
@@ -298,13 +546,14 @@ void PathPlannerOpenGLWidget::waypointMarkerConeParameters(const QVector3D &wayp
     outRingAlongF = 0.32f + depthT * 0.54f;
 }
 
-/// Yaw handle distance along heading: halfway between red axis (logical X) tip and purple plane-XZ handle, in top-down (XZ) distance.
-/// Red tip offset (0,0,L) → ground radius L. Purple XZ offset (0, 0.45L, 0.45L) → ground radius 0.45L.
+/// Yaw handle distance along heading: halfway between axis-handle length (L)
+/// and the plane-handle ring radius.
+/// Plane handles are placed at (+/-0.45L, +/-0.45L) on a plane, so ring radius is sqrt(2) * 0.45L.
 static float gizmoYawTipRadialDistance(float axisLength)
 {
-    const float axisXTipGround = axisLength;
-    const float planeXzGround = 0.45f * axisLength;
-    return 0.5f * (axisXTipGround + planeXzGround);
+    const float axisHandleRadius = axisLength;
+    const float planeHandleRadius = std::sqrt(2.0f) * 0.45f * axisLength;
+    return 0.5f * (axisHandleRadius + planeHandleRadius);
 }
 
 void PathPlannerOpenGLWidget::drawWaypointLabels(QPainter &painter)
@@ -320,9 +569,13 @@ void PathPlannerOpenGLWidget::drawWaypointLabels(QPainter &painter)
         const QPoint ghostPos = worldToScreen(m_lastHoverPreviewWorldPos);
         if (ghostPos.x() >= 0 && ghostPos.x() <= width() && ghostPos.y() >= 0 && ghostPos.y() <= height())
         {
+            const float rawRadiusPx = projectedSphereRadiusPxRaw(m_lastHoverPreviewWorldPos, kWaypointSphereRadiusWorld);
+            const int previewRadiusPx = qMax(2, static_cast<int>(rawRadiusPx + 0.5f));
+            const int previewOutlinePx = qMax(1, static_cast<int>(qBound(1.0f, rawRadiusPx * 0.14f, 3.0f)));
             painter.setPen(QPen(QColor(180, 220, 255, 220), 2, Qt::DashLine));
-            painter.setBrush(QColor(60, 120, 180, 60));
-            painter.drawEllipse(ghostPos, 10, 10);
+            painter.setPen(QPen(QColor(180, 220, 255, 220), previewOutlinePx, Qt::DashLine));
+            painter.setBrush(QColor(60, 120, 180, 55));
+            painter.drawEllipse(ghostPos, previewRadiusPx, previewRadiusPx);
         }
     }
 
@@ -422,20 +675,64 @@ void PathPlannerOpenGLWidget::drawWaypointLabels(QPainter &painter)
         painter.translate(-e.screenCenter);
     }
 
-    if (m_interactionMode == TransformMode && m_selectedWaypoint >= 0)
+    // Live handle value chip while dragging transform controls.
+    if (m_draggingTransform && m_selectedWaypoint >= 0 && m_activeHandle != TransformHandle::None)
     {
-        const float yawDeg = selectedWaypointYawDeg();
-        const float yawTipR = gizmoYawTipRadialDistance(1.3f);
-        const QVector3D tip = gizmoCenterWorld() + logicalYawHeadingWorld(yawDeg) * yawTipR;
-        const QPoint tipPx = worldToScreen(tip);
-        if (tipPx.x() >= -80 && tipPx.x() <= width() + 80 && tipPx.y() >= -80 && tipPx.y() <= height() + 80)
+        const QVector3D p = selectedWaypointLogicalPosition();
+        QString chipText;
+        switch (m_activeHandle)
         {
-            font.setBold(true);
-            font.setPointSize(10);
-            painter.setFont(font);
-            painter.setPen(QColor(255, 210, 120));
-            painter.drawText(tipPx + QPoint(10, 4),
-                             QString::number(yawDeg, 'f', 0) + QChar(0x00B0));
+        case TransformHandle::AxisX:
+            chipText = QString("X: %1 m").arg(p.x(), 0, 'f', 2);
+            break;
+        case TransformHandle::AxisY:
+            chipText = QString("Y: %1 m").arg(p.y(), 0, 'f', 2);
+            break;
+        case TransformHandle::AxisZ:
+            chipText = QString("Z: %1 m").arg(p.z(), 0, 'f', 2);
+            break;
+        case TransformHandle::PlaneXY:
+            chipText = QString("X: %1 m   Y: %2 m").arg(p.x(), 0, 'f', 2).arg(p.y(), 0, 'f', 2);
+            break;
+        case TransformHandle::PlaneXZ:
+            chipText = QString("X: %1 m   Z: %2 m").arg(p.x(), 0, 'f', 2).arg(p.z(), 0, 'f', 2);
+            break;
+        case TransformHandle::PlaneYZ:
+            chipText = QString("Y: %1 m   Z: %2 m").arg(p.y(), 0, 'f', 2).arg(p.z(), 0, 'f', 2);
+            break;
+        case TransformHandle::Yaw:
+            chipText = QString("Yaw: %1%2").arg(selectedWaypointYawDeg(), 0, 'f', 1).arg(QChar(0x00B0));
+            break;
+        case TransformHandle::None:
+            break;
+        }
+
+        if (!chipText.isEmpty())
+        {
+            QFont chipFont = painter.font();
+            chipFont.setBold(true);
+            chipFont.setPointSize(10);
+            painter.setFont(chipFont);
+            const QFontMetrics fmChip(chipFont);
+
+            const int padX = 8;
+            const int padY = 4;
+            const int chipW = fmChip.horizontalAdvance(chipText) + (padX * 2);
+            const int chipH = fmChip.height() + (padY * 2);
+            const QPoint anchor = worldToScreen(gizmoCenterWorld());
+
+            int chipX = anchor.x() + 14;
+            int chipY = anchor.y() - chipH - 14;
+            const int margin = 8;
+            chipX = qBound(margin, chipX, width() - chipW - margin);
+            chipY = qBound(margin, chipY, height() - chipH - margin);
+            const QRect chipRect(chipX, chipY, chipW, chipH);
+
+            painter.setPen(QPen(QColor(90, 99, 112), 1));
+            painter.setBrush(QColor(26, 31, 40, 220));
+            painter.drawRoundedRect(chipRect, 4, 4);
+            painter.setPen(QColor(229, 231, 235));
+            painter.drawText(chipRect.adjusted(padX, padY, -padX, -padY), Qt::AlignLeft | Qt::AlignVCenter, chipText);
         }
     }
 
@@ -981,11 +1278,14 @@ void PathPlannerOpenGLWidget::drawGizmo()
     appendSphere(zEnd, handleRadius, axisColor(TransformHandle::AxisZ, QVector3D(0.2f, 0.4f, 1.0f)), handleVertices, handleColors);
 
     const QVector3D xyCenter = center + QVector3D(0.45f * axisLength, 0.0f, 0.45f * axisLength);
-    const QVector3D xzCenter = center + QVector3D(0.0f, 0.45f * axisLength, 0.45f * axisLength);
-    const QVector3D yzCenter = center + QVector3D(0.45f * axisLength, 0.45f * axisLength, 0.0f);
     appendSphere(xyCenter, handleRadius * 0.8f, axisColor(TransformHandle::PlaneXY, QVector3D(1.0f, 0.6f, 0.2f)), handleVertices, handleColors);
-    appendSphere(xzCenter, handleRadius * 0.8f, axisColor(TransformHandle::PlaneXZ, QVector3D(0.8f, 0.3f, 1.0f)), handleVertices, handleColors);
-    appendSphere(yzCenter, handleRadius * 0.8f, axisColor(TransformHandle::PlaneYZ, QVector3D(0.2f, 1.0f, 1.0f)), handleVertices, handleColors);
+    if (m_viewMode != TopDownMode)
+    {
+        const QVector3D xzCenter = center + QVector3D(0.0f, 0.45f * axisLength, 0.45f * axisLength);
+        const QVector3D yzCenter = center + QVector3D(0.45f * axisLength, 0.45f * axisLength, 0.0f);
+        appendSphere(xzCenter, handleRadius * 0.8f, axisColor(TransformHandle::PlaneXZ, QVector3D(0.8f, 0.3f, 1.0f)), handleVertices, handleColors);
+        appendSphere(yzCenter, handleRadius * 0.8f, axisColor(TransformHandle::PlaneYZ, QVector3D(0.2f, 1.0f, 1.0f)), handleVertices, handleColors);
+    }
 
     // Yaw: reference tick at 0° (logical forward = world +Z), sweep arc, heading arrow, draggable cap at tip.
     {
@@ -1108,6 +1408,7 @@ void PathPlannerOpenGLWidget::mousePressEvent(QMouseEvent *event)
 
     if (event->button() == Qt::LeftButton)
     {
+        m_createPressOnExistingWaypoint = false;
         const Qt::KeyboardModifiers mods = event->modifiers();
 
         if (m_interactionMode == TransformMode && m_selectedWaypoint >= 0)
@@ -1138,6 +1439,13 @@ void PathPlannerOpenGLWidget::mousePressEvent(QMouseEvent *event)
 
         if (waypointId >= 0)
         {
+            // Clicking an existing waypoint in Create mode is a selection action,
+            // not a new-placement action. Clear any pending create preview.
+            m_pendingCreatePlacement = false;
+            m_hasHoverPreview = false;
+            if (m_interactionMode == CreateMode)
+                m_createPressOnExistingWaypoint = true;
+
             if ((mods & Qt::ControlModifier) && m_interactionMode == TransformMode)
             {
                 if (m_selectedWaypointIds.contains(waypointId))
@@ -1194,17 +1502,19 @@ void PathPlannerOpenGLWidget::mousePressEvent(QMouseEvent *event)
         const bool shouldCreate = (m_interactionMode == CreateMode);
         if (shouldCreate)
         {
-            QVector3D worldPos;
             if (m_viewMode == TopDownMode)
             {
-                worldPos = screenToWorld(event->pos(), 0.0f);
-                worldPos.setY(m_defaultAltitude);
+                m_lastHoverPreviewWorldPos = screenToWorld(event->pos(), 0.0f);
+                m_lastHoverPreviewWorldPos.setY(m_defaultAltitude);
             }
             else
             {
-                worldPos = screenToWorldOnYPlane(event->pos(), m_defaultAltitude);
+                m_lastHoverPreviewWorldPos = screenToWorldOnYPlane(event->pos(), m_defaultAltitude);
             }
-            addWaypoint(worldToLogical(worldPos));
+            m_hasHoverPreview = true;
+            m_pendingCreatePlacement = true;
+            m_createPressOnExistingWaypoint = false;
+            update();
             return;
         }
 
@@ -1225,7 +1535,8 @@ void PathPlannerOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
     float hoverDistance = 0.0f;
     float hoverDepth = 0.0f;
     m_hoveredWaypoint = findWaypointAt(event->pos(), &hoverDistance, &hoverDepth);
-    if (m_interactionMode == CreateMode)
+    if (m_interactionMode == CreateMode && m_pendingCreatePlacement &&
+        !m_createPressOnExistingWaypoint && !(event->buttons() & Qt::RightButton))
     {
         if (m_viewMode == TopDownMode)
         {
@@ -1402,7 +1713,17 @@ void PathPlannerOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
 
 void PathPlannerOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
 {
-    Q_UNUSED(event);
+    if (event->button() == Qt::LeftButton)
+    {
+        if (m_interactionMode == CreateMode && m_pendingCreatePlacement && !m_createPressOnExistingWaypoint)
+        {
+            addWaypoint(worldToLogical(m_lastHoverPreviewWorldPos));
+        }
+        m_pendingCreatePlacement = false;
+        m_createPressOnExistingWaypoint = false;
+        m_hasHoverPreview = false;
+    }
+
     if (m_draggingTransform)
     {
         m_draggingTransform = false;
@@ -1596,10 +1917,13 @@ PathPlannerOpenGLWidget::TransformHandle PathPlannerOpenGLWidget::findTransformH
         {TransformHandle::AxisY, worldToScreen(center + QVector3D(axisLength, 0.0f, 0.0f))},
         {TransformHandle::AxisZ, worldToScreen(center + QVector3D(0.0f, axisLength, 0.0f))},
         {TransformHandle::PlaneXY, worldToScreen(center + QVector3D(0.45f * axisLength, 0.0f, 0.45f * axisLength))},
-        {TransformHandle::PlaneXZ, worldToScreen(center + QVector3D(0.0f, 0.45f * axisLength, 0.45f * axisLength))},
-        {TransformHandle::PlaneYZ, worldToScreen(center + QVector3D(0.45f * axisLength, 0.45f * axisLength, 0.0f))},
         {TransformHandle::Yaw, worldToScreen(yawTip)}
     };
+    if (m_viewMode != TopDownMode)
+    {
+        points.append({TransformHandle::PlaneXZ, worldToScreen(center + QVector3D(0.0f, 0.45f * axisLength, 0.45f * axisLength))});
+        points.append({TransformHandle::PlaneYZ, worldToScreen(center + QVector3D(0.45f * axisLength, 0.45f * axisLength, 0.0f))});
+    }
 
     TransformHandle best = TransformHandle::None;
     float bestDist = 14.0f;
@@ -1677,6 +2001,10 @@ bool PathPlannerOpenGLWidget::updateWaypointLogicalPosition(int id, const QVecto
 void PathPlannerOpenGLWidget::setWaypoints(const std::vector<Waypoint> &waypoints)
 {
     m_waypoints = waypoints;
+    for (int i = 0; i < static_cast<int>(m_waypoints.size()); ++i)
+    {
+        m_waypoints[i].setSequence(i + 1);
+    }
     if (m_selectedWaypoint > static_cast<int>(m_waypoints.size()))
         m_selectedWaypoint = -1;
     update();
@@ -1695,6 +2023,9 @@ void PathPlannerOpenGLWidget::addWaypoint(const QVector3D &point)
 
     Waypoint wp(point);
     wp.setSequence(newSequence);
+    wp.setAcceptanceRadius(m_defaultAcceptanceRadius);
+    wp.setHoldTime(m_defaultHoldTime);
+    wp.setYawAngle(m_defaultYawAngle);
     m_waypoints.push_back(wp);
     m_selectedWaypoint = newSequence;
     m_selectedWaypointIds.clear();
@@ -1889,7 +2220,7 @@ void PathPlannerOpenGLWidget::resetCamera()
 
 // PathPlannerWidget Implementation
 PathPlannerWidget::PathPlannerWidget(QWidget *parent)
-    : QWidget(parent), m_mainLayout(nullptr), m_contentLayout(nullptr), m_topBarWidget(nullptr), m_controlsLayout(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_viewGroup(nullptr), m_waypointTable(nullptr), m_waypointCountLabel(nullptr), m_pathMenuButton(nullptr), m_uploadMissionButton(nullptr), m_runMissionButton(nullptr), m_cancelMissionButton(nullptr), m_createModeButton(nullptr), m_transformModeButton(nullptr), m_playPathButton(nullptr), m_stopPathButton(nullptr), m_pathNameEdit(nullptr), m_missionStatusLabel(nullptr), m_resetCameraButton(nullptr), m_viewModeButton(nullptr), m_defaultAltitudeSpinBox(nullptr), m_undoEditButton(nullptr), m_redoEditButton(nullptr), m_pathAnimationTimer(nullptr), m_currentAnimationWaypoint(0), m_animationProgress(0.0f), m_isPlayingPath(false), m_selectedWaypoint(-1), m_droneController(nullptr), m_updatingWaypointTable(false)
+    : QWidget(parent), m_mainLayout(nullptr), m_contentLayout(nullptr), m_topBarWidget(nullptr), m_controlsLayout(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_viewGroup(nullptr), m_waypointTable(nullptr), m_waypointCountLabel(nullptr), m_waypointDefaultsButton(nullptr), m_defaultAcceptanceRadiusSpinBox(nullptr), m_defaultHoldSpinBox(nullptr), m_defaultYawSpinBox(nullptr), m_pathMenuButton(nullptr), m_uploadMissionButton(nullptr), m_runMissionButton(nullptr), m_cancelMissionButton(nullptr), m_createModeButton(nullptr), m_transformModeButton(nullptr), m_playPathButton(nullptr), m_stopPathButton(nullptr), m_pathNameEdit(nullptr), m_missionStatusLabel(nullptr), m_resetCameraButton(nullptr), m_viewModeButton(nullptr), m_defaultAltitudeSpinBox(nullptr), m_undoEditButton(nullptr), m_redoEditButton(nullptr), m_pathAnimationTimer(nullptr), m_currentAnimationWaypoint(0), m_animationProgress(0.0f), m_isPlayingPath(false), m_selectedWaypoint(-1), m_droneController(nullptr), m_updatingWaypointTable(false), m_reorderingWaypointRows(false)
 {
     setupUI();
 
@@ -1926,6 +2257,19 @@ void PathPlannerWidget::setupUI()
     m_openglWidget = new PathPlannerOpenGLWidget;
     visualizerLayout->addWidget(m_openglWidget, 1);
     m_contentLayout->addWidget(visualizerPane, 3);
+
+    // Compact in-canvas view selector (top-right of visualizer).
+    m_viewModeButton = new QPushButton("Top-Down", m_openglWidget);
+    m_viewModeButton->setCursor(Qt::PointingHandCursor);
+    m_viewModeButton->setFixedHeight(24);
+    m_viewModeButton->setStyleSheet(
+        "QPushButton { background-color: rgba(35, 41, 51, 190); color: #e5e7eb; "
+        "border: 1px solid rgba(107, 114, 128, 180); border-radius: 4px; padding: 2px 8px; font-size: 11px; } "
+        "QPushButton:hover { background-color: rgba(55, 65, 81, 210); }");
+    connect(m_viewModeButton, &QPushButton::clicked, this, &PathPlannerWidget::onViewModeChanged);
+    m_openglWidget->installEventFilter(this);
+    updateViewTogglePlacement();
+    m_viewModeButton->raise();
 
     // Create a scrollable controls panel so newly shown groups do not squash controls.
     QScrollArea *controlsScrollArea = new QScrollArea(this);
@@ -2110,35 +2454,81 @@ void PathPlannerWidget::setupControls()
     waypointLayout->setContentsMargins(8, 6, 8, 8);
     waypointLayout->setSpacing(6);
 
-    // View group
-    m_viewGroup = new QGroupBox("View");
-    m_viewGroup->setStyleSheet(
-        "QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; margin-top: 1ex; padding-top: 10px; } "
-        "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }");
-    m_controlsLayout->addWidget(m_viewGroup);
+    m_waypointDefaultsButton = new QToolButton(m_waypointGroup);
+    m_waypointDefaultsButton->setToolTip("Defaults for new waypoints");
+    m_waypointDefaultsButton->setText("...");
+    m_waypointDefaultsButton->setFixedSize(30, 28);
+    m_waypointDefaultsButton->setPopupMode(QToolButton::InstantPopup);
+    m_waypointDefaultsButton->setStyleSheet(
+        "QToolButton { color: #d1d5db; background: transparent; border: none; font-size: 13px; font-weight: bold; } "
+        "QToolButton:hover { color: #f3f6fb; background-color: rgba(255,255,255,0.07); } "
+        "QToolButton::menu-indicator { image: none; width: 0px; }");
 
-    QVBoxLayout *viewLayout = new QVBoxLayout(m_viewGroup);
+    QMenu *defaultsMenu = new QMenu(m_waypointDefaultsButton);
+    defaultsMenu->setStyleSheet(
+        "QMenu { background-color: #262b31; border: 1px solid #4b5563; }");
 
-    // View mode toggle
-    m_viewModeButton = new QPushButton("Switch to Top-Down");
-    m_viewModeButton->setStyleSheet(
-        "QPushButton { background-color: #3b82f6; color: white; border: none; padding: 8px; border-radius: 4px; font-weight: bold; } "
-        "QPushButton:hover { background-color: #2563eb; }");
-    viewLayout->addWidget(m_viewModeButton);
+    QWidgetAction *defaultsPanelAction = new QWidgetAction(defaultsMenu);
+    QWidget *defaultsPanel = new QWidget(defaultsMenu);
+    QVBoxLayout *defaultsPanelLayout = new QVBoxLayout(defaultsPanel);
+    defaultsPanelLayout->setContentsMargins(10, 10, 10, 8);
+    defaultsPanelLayout->setSpacing(6);
 
-    m_resetCameraButton = new QPushButton("Reset Camera");
-    viewLayout->addWidget(m_resetCameraButton);
+    QFormLayout *defaultsForm = new QFormLayout;
+    defaultsForm->setContentsMargins(0, 0, 0, 0);
+    defaultsForm->setSpacing(6);
+    defaultsForm->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    defaultsForm->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
 
-    // Default altitude for top-down planning
-    QHBoxLayout *altitudeLayout = new QHBoxLayout;
-    altitudeLayout->addWidget(new QLabel("Default Altitude:"));
-    m_defaultAltitudeSpinBox = new QDoubleSpinBox;
+    m_defaultAltitudeSpinBox = new QDoubleSpinBox(defaultsPanel);
     m_defaultAltitudeSpinBox->setRange(0.0, 100.0);
-    m_defaultAltitudeSpinBox->setValue(2.0);
+    m_defaultAltitudeSpinBox->setDecimals(2);
     m_defaultAltitudeSpinBox->setSingleStep(0.5);
     m_defaultAltitudeSpinBox->setSuffix(" m");
-    altitudeLayout->addWidget(m_defaultAltitudeSpinBox);
-    viewLayout->addLayout(altitudeLayout);
+    m_defaultAltitudeSpinBox->setValue(2.0);
+
+    m_defaultAcceptanceRadiusSpinBox = new QDoubleSpinBox(defaultsPanel);
+    m_defaultAcceptanceRadiusSpinBox->setRange(0.10, 20.0);
+    m_defaultAcceptanceRadiusSpinBox->setDecimals(2);
+    m_defaultAcceptanceRadiusSpinBox->setSingleStep(0.10);
+    m_defaultAcceptanceRadiusSpinBox->setSuffix(" m");
+    m_defaultAcceptanceRadiusSpinBox->setValue(0.5);
+
+    m_defaultHoldSpinBox = new QDoubleSpinBox(defaultsPanel);
+    m_defaultHoldSpinBox->setRange(0.0, 120.0);
+    m_defaultHoldSpinBox->setDecimals(1);
+    m_defaultHoldSpinBox->setSingleStep(0.5);
+    m_defaultHoldSpinBox->setSuffix(" s");
+    m_defaultHoldSpinBox->setValue(0.0);
+
+    m_defaultYawSpinBox = new QDoubleSpinBox(defaultsPanel);
+    m_defaultYawSpinBox->setRange(-180.0, 180.0);
+    m_defaultYawSpinBox->setDecimals(1);
+    m_defaultYawSpinBox->setSingleStep(5.0);
+    m_defaultYawSpinBox->setSuffix(QString::fromUtf8("\xC2\xB0"));
+    m_defaultYawSpinBox->setValue(0.0);
+
+    defaultsForm->addRow("Altitude", m_defaultAltitudeSpinBox);
+    defaultsForm->addRow("Acceptance", m_defaultAcceptanceRadiusSpinBox);
+    defaultsForm->addRow("Hold", m_defaultHoldSpinBox);
+    defaultsForm->addRow("Yaw", m_defaultYawSpinBox);
+    defaultsPanelLayout->addLayout(defaultsForm);
+
+    QLabel *defaultsHintLabel = new QLabel("Applies to new waypoints only.", defaultsPanel);
+    defaultsHintLabel->setStyleSheet("QLabel { color: #9ca3af; font-size: 11px; }");
+    defaultsPanelLayout->addWidget(defaultsHintLabel);
+
+    defaultsPanelAction->setDefaultWidget(defaultsPanel);
+    defaultsMenu->addAction(defaultsPanelAction);
+    m_waypointDefaultsButton->setMenu(defaultsMenu);
+
+    if (m_openglWidget)
+    {
+        m_openglWidget->setDefaultAltitude(static_cast<float>(m_defaultAltitudeSpinBox->value()));
+        m_openglWidget->setDefaultAcceptanceRadius(static_cast<float>(m_defaultAcceptanceRadiusSpinBox->value()));
+        m_openglWidget->setDefaultHoldTime(static_cast<float>(m_defaultHoldSpinBox->value()));
+        m_openglWidget->setDefaultYawAngle(static_cast<float>(m_defaultYawSpinBox->value()));
+    }
 
     m_controlsLayout->addStretch();
 
@@ -2148,11 +2538,18 @@ void PathPlannerWidget::setupControls()
     connect(m_cancelMissionButton, &QPushButton::clicked, this, &PathPlannerWidget::onCancelMission);
     connect(m_playPathButton, &QPushButton::clicked, this, &PathPlannerWidget::onPlayPath);
     connect(m_stopPathButton, &QPushButton::clicked, this, &PathPlannerWidget::onStopPath);
-    connect(m_resetCameraButton, &QPushButton::clicked, this, &PathPlannerWidget::onCameraReset);
-    connect(m_viewModeButton, &QPushButton::clicked, this, &PathPlannerWidget::onViewModeChanged);
     connect(m_defaultAltitudeSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this](double value)
             { m_openglWidget->setDefaultAltitude(static_cast<float>(value)); });
+    connect(m_defaultAcceptanceRadiusSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double value)
+            { m_openglWidget->setDefaultAcceptanceRadius(static_cast<float>(value)); });
+    connect(m_defaultHoldSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double value)
+            { m_openglWidget->setDefaultHoldTime(static_cast<float>(value)); });
+    connect(m_defaultYawSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this](double value)
+            { m_openglWidget->setDefaultYawAngle(static_cast<float>(value)); });
 
     connect(m_undoEditButton, &QPushButton::clicked, this, [this]() {
         if (m_openglWidget->undo()) {
@@ -2195,7 +2592,8 @@ void PathPlannerWidget::setupControls()
 
 void PathPlannerWidget::setupWaypointTable()
 {
-    m_waypointTable = new QTableWidget;
+    m_waypointTable = new WaypointTableWidget;
+    m_waypointTable->setItemDelegate(new WaypointNoFocusDelegate(m_waypointTable));
     m_waypointTable->setColumnCount(5);
     m_waypointTable->setHorizontalHeaderLabels({"X", "Y", "Z", "Yaw", "Hold"});
     m_waypointTable->setMinimumHeight(170);
@@ -2204,10 +2602,10 @@ void PathPlannerWidget::setupWaypointTable()
     m_waypointTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_waypointTable->setWordWrap(false);
     m_waypointTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
-    m_waypointTable->setDragDropMode(QAbstractItemView::InternalMove);
-    m_waypointTable->setDragEnabled(true);
-    m_waypointTable->setAcceptDrops(true);
-    m_waypointTable->setDropIndicatorShown(true);
+    m_waypointTable->setDragDropMode(QAbstractItemView::NoDragDrop);
+    m_waypointTable->setDragEnabled(false);
+    m_waypointTable->setAcceptDrops(false);
+    m_waypointTable->setDropIndicatorShown(false);
     m_waypointTable->setDragDropOverwriteMode(false);
     m_waypointTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_waypointTable->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
@@ -2231,13 +2629,35 @@ void PathPlannerWidget::setupWaypointTable()
     m_waypointTable->verticalHeader()->setMaximumSectionSize(28);
     m_waypointTable->verticalHeader()->setFixedWidth(30);
     m_waypointTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    if (m_waypointDefaultsButton)
+    {
+        m_waypointDefaultsButton->setParent(m_waypointTable);
+        m_waypointDefaultsButton->setText("...");
+        m_waypointDefaultsButton->setCursor(Qt::PointingHandCursor);
+
+        const auto placeDefaultsButton = [this]() {
+            if (!m_waypointTable || !m_waypointDefaultsButton)
+                return;
+            const int x = m_waypointTable->frameWidth();
+            const int y = m_waypointTable->frameWidth();
+            const int w = m_waypointTable->verticalHeader()->width();
+            const int h = m_waypointTable->horizontalHeader()->height();
+            m_waypointDefaultsButton->setGeometry(x, y, w, h);
+            m_waypointDefaultsButton->raise();
+            m_waypointDefaultsButton->show();
+        };
+
+        placeDefaultsButton();
+        connect(m_waypointTable->horizontalHeader(), &QHeaderView::geometriesChanged, this, placeDefaultsButton);
+        connect(m_waypointTable->verticalHeader(), &QHeaderView::geometriesChanged, this, placeDefaultsButton);
+    }
     m_waypointTable->setColumnWidth(0, 52); // X
     m_waypointTable->setColumnWidth(1, 52); // Y
     m_waypointTable->setColumnWidth(2, 52); // Z
     m_waypointTable->setColumnWidth(3, 52); // Yaw
     m_waypointTable->setColumnWidth(4, 52); // Hold
 
-    // Insert waypoint table at the top of the waypoints section
+    // Insert waypoint table at the top of the waypoints section.
     QVBoxLayout *waypointLayout = qobject_cast<QVBoxLayout *>(m_waypointGroup->layout());
     waypointLayout->insertWidget(0, m_waypointTable);
 
@@ -2251,8 +2671,35 @@ void PathPlannerWidget::setupWaypointTable()
                         onWaypointSelected(idItem->data(Qt::UserRole).toInt());
                     }
                 } });
-    connect(m_waypointTable->model(), &QAbstractItemModel::rowsMoved,
-            this, &PathPlannerWidget::onWaypointRowsMoved);
+    WaypointTableWidget *waypointDragTable = static_cast<WaypointTableWidget *>(m_waypointTable);
+    waypointDragTable->onRowMoveRequested = [this](int fromRow, int toRow, bool swapRows) {
+        if (m_updatingWaypointTable || !m_openglWidget || !m_waypointTable)
+            return;
+
+        const auto &waypoints = m_openglWidget->waypoints();
+        if (fromRow < 0 || toRow < 0 ||
+            fromRow >= static_cast<int>(waypoints.size()) ||
+            toRow >= static_cast<int>(waypoints.size()) ||
+            fromRow == toRow)
+            return;
+
+        m_reorderingWaypointRows = true;
+        std::vector<Waypoint> reordered = waypoints;
+        if (swapRows)
+        {
+            std::swap(reordered[fromRow], reordered[toRow]);
+        }
+        else
+        {
+            Waypoint moved = reordered[fromRow];
+            reordered.erase(reordered.begin() + fromRow);
+            reordered.insert(reordered.begin() + toRow, moved);
+        }
+        m_openglWidget->setWaypoints(reordered);
+        updateWaypointTable();
+        emitWaypointsChanged();
+        m_reorderingWaypointRows = false;
+    };
 }
 
 void PathPlannerWidget::onClearPath()
@@ -2378,6 +2825,9 @@ void PathPlannerWidget::onWaypointSelected(int id)
 
 void PathPlannerWidget::onWaypointCellChanged(int row, int column)
 {
+    if (m_updatingWaypointTable || m_reorderingWaypointRows)
+        return;
+
     if (row < 0 || row >= m_waypointTable->rowCount())
         return;
 
@@ -2386,6 +2836,8 @@ void PathPlannerWidget::onWaypointCellChanged(int row, int column)
         return;
 
     int id = idItem->data(Qt::UserRole).toInt();
+    if (id <= 0)
+        return;
 
     // Find the waypoint and update it
     const auto &waypoints = m_openglWidget->waypoints();
@@ -2431,9 +2883,26 @@ void PathPlannerWidget::onWaypointCellChanged(int row, int column)
     }
 }
 
-void PathPlannerWidget::onCameraReset()
+bool PathPlannerWidget::eventFilter(QObject *watched, QEvent *event)
 {
-    m_openglWidget->resetCamera();
+    if (watched == m_openglWidget && event &&
+        (event->type() == QEvent::Resize || event->type() == QEvent::Show))
+    {
+        updateViewTogglePlacement();
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+void PathPlannerWidget::updateViewTogglePlacement()
+{
+    if (!m_openglWidget || !m_viewModeButton)
+        return;
+
+    const int margin = 8;
+    const int buttonWidth = 92;
+    const int x = qMax(margin, m_openglWidget->width() - buttonWidth - margin);
+    const int y = margin;
+    m_viewModeButton->setGeometry(x, y, buttonWidth, 24);
 }
 
 void PathPlannerWidget::onViewModeChanged()
@@ -2441,12 +2910,12 @@ void PathPlannerWidget::onViewModeChanged()
     if (m_openglWidget->viewMode() == PathPlannerOpenGLWidget::TopDownMode)
     {
         m_openglWidget->setViewMode(PathPlannerOpenGLWidget::View3DMode);
-        m_viewModeButton->setText("Switch to Top-Down");
+        m_viewModeButton->setText("Top-Down");
     }
     else
     {
         m_openglWidget->setViewMode(PathPlannerOpenGLWidget::TopDownMode);
-        m_viewModeButton->setText("Switch to 3D View");
+        m_viewModeButton->setText("3D View");
     }
 }
 
@@ -2505,6 +2974,8 @@ void PathPlannerWidget::updateWaypointTable()
 {
     if (!m_waypointTable || !m_openglWidget)
         return;
+
+    m_reorderingWaypointRows = false;
 
     // Block signals to prevent triggering cellChanged during update
     m_updatingWaypointTable = true;

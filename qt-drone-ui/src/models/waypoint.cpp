@@ -9,7 +9,7 @@ Waypoint::Waypoint()
     , m_relativeAltitudeM(0.0f)
     , m_sequence(0)
     , m_waypointType("NAV_WAYPOINT")
-    , m_acceptanceRadius(1.0f)
+    , m_acceptanceRadius(0.5f)
     , m_holdTime(0.0f)
     , m_yawAngle(0.0f)
     , m_passThrough(false)
@@ -25,7 +25,7 @@ Waypoint::Waypoint(const QVector3D &position, const QString &name)
     , m_name(name)
     , m_sequence(0)
     , m_waypointType("NAV_WAYPOINT")
-    , m_acceptanceRadius(1.0f)
+    , m_acceptanceRadius(0.5f)
     , m_holdTime(0.0f)
     , m_yawAngle(0.0f)
     , m_passThrough(false)
@@ -41,7 +41,7 @@ Waypoint::Waypoint(float x, float y, float z, const QString &name)
     , m_name(name)
     , m_sequence(0)
     , m_waypointType("NAV_WAYPOINT")
-    , m_acceptanceRadius(1.0f)
+    , m_acceptanceRadius(0.5f)
     , m_holdTime(0.0f)
     , m_yawAngle(0.0f)
     , m_passThrough(false)
@@ -108,7 +108,7 @@ Waypoint Waypoint::fromJson(const QJsonObject &json)
     wp.m_description = json["description"].toString();
     wp.m_sequence = json["sequence"].toInt(0);
     wp.m_waypointType = json["type"].toString("NAV_WAYPOINT");
-    wp.m_acceptanceRadius = static_cast<float>(json["acceptance_radius"].toDouble(1.0));
+    wp.m_acceptanceRadius = static_cast<float>(json["acceptance_radius"].toDouble(0.5));
     wp.m_passThrough = json["pass_through"].toBool(false);
     
     // Local position

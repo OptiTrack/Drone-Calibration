@@ -336,10 +336,10 @@ void MainWindow::setupNavigationBar()
     
     // Connection status
     QHBoxLayout *connectionLayout = new QHBoxLayout;
-    QLabel *statusDot = new QLabel("●");
-    statusDot->setStyleSheet("color: #28a745; font-size: 12px;"); // Green for connected
+    QLabel *statusDot = new QLabel(QString::fromUtf8("\xE2\x97\x8F"));
+    statusDot->setStyleSheet("color: #ef4444; font-size: 12px;"); // Red for disconnected
     
-    QLabel *statusText = new QLabel("Drone Connected");
+    QLabel *statusText = new QLabel("Drone Disconnected");
     statusText->setStyleSheet(
         "QLabel { color: #dcdcdc; font-size: 12px; }"
     );

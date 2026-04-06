@@ -18,6 +18,7 @@
 #include <QTableWidget>
 #include <QGroupBox>
 #include <QDoubleSpinBox>
+#include <QMenu>
 #include <QTimer>
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -25,6 +26,7 @@
 #include <QModelIndex>
 #include <QSet>
 #include <QVector>
+#include <QEvent>
 #include <vector>
 #include "../models/waypoint.h"
 
@@ -67,6 +69,12 @@ public:
     void resetCamera();
     void setDefaultAltitude(float altitude) { m_defaultAltitude = altitude; }
     float defaultAltitude() const { return m_defaultAltitude; }
+    void setDefaultAcceptanceRadius(float radius) { m_defaultAcceptanceRadius = radius; }
+    float defaultAcceptanceRadius() const { return m_defaultAcceptanceRadius; }
+    void setDefaultHoldTime(float timeSec) { m_defaultHoldTime = timeSec; }
+    float defaultHoldTime() const { return m_defaultHoldTime; }
+    void setDefaultYawAngle(float yawDeg) { m_defaultYawAngle = yawDeg; }
+    float defaultYawAngle() const { return m_defaultYawAngle; }
     void setInteractionMode(InteractionMode mode);
     InteractionMode interactionMode() const { return m_interactionMode; }
     bool undo();
@@ -185,6 +193,9 @@ private:
     InteractionMode m_interactionMode;
     float m_orthoZoom;
     float m_defaultAltitude;
+    float m_defaultAcceptanceRadius;
+    float m_defaultHoldTime;
+    float m_defaultYawAngle;
     
     // Waypoints
     std::vector<Waypoint> m_waypoints;
@@ -207,6 +218,8 @@ private:
     std::vector<Waypoint> m_dragBeforeSnapshot;
     QVector3D m_lastHoverPreviewWorldPos;
     bool m_hasHoverPreview;
+    bool m_pendingCreatePlacement;
+    bool m_createPressOnExistingWaypoint;
 
     QVector<EditCommand> m_undoStack;
     QVector<EditCommand> m_redoStack;
@@ -255,7 +268,6 @@ private slots:
     void onCancelMission();
     void onWaypointSelected(int id);
     void onWaypointCellChanged(int row, int column);
-    void onCameraReset();
     void onPlayPath();
     void onStopPath();
     void onPathAnimationTimer();
@@ -265,10 +277,12 @@ private slots:
                              const QModelIndex &destination, int row);
 
 private:
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void setupUI();
     void setupTopBar();
     void setupControls();
     void setupWaypointTable();
+    void updateViewTogglePlacement();
     void updateWaypointTable();
     void startPathAnimation();
     void stopPathAnimation();
@@ -291,6 +305,10 @@ private:
     // Waypoint controls
     QTableWidget *m_waypointTable;
     QLabel *m_waypointCountLabel;
+    QToolButton *m_waypointDefaultsButton;
+    QDoubleSpinBox *m_defaultAcceptanceRadiusSpinBox;
+    QDoubleSpinBox *m_defaultHoldSpinBox;
+    QDoubleSpinBox *m_defaultYawSpinBox;
     
     // Path controls
     QToolButton *m_pathMenuButton;
@@ -324,6 +342,7 @@ private:
     DroneController *m_droneController;
 
     bool m_updatingWaypointTable;
+    bool m_reorderingWaypointRows;
 };
 
 #endif // PATHPLANNERWIDGET_H
