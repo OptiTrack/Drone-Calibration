@@ -26,6 +26,9 @@
 #include <QWidgetAction>
 #include <QFormLayout>
 #include <QVector2D>
+#include <QFrame>
+#include <QSignalBlocker>
+#include <QCryptographicHash>
 #include <QToolButton>
 #include <QMenu>
 #include <QAction>
@@ -359,7 +362,7 @@ static const char *fragmentShaderSource =
 
 // PathPlannerOpenGLWidget Implementation
 PathPlannerOpenGLWidget::PathPlannerOpenGLWidget(QWidget *parent)
-    : QOpenGLWidget(parent), m_shaderProgram(nullptr), m_cameraPosition(0, 5, 10), m_cameraTarget(0, 0, 0), m_cameraUp(0, 1, 0), m_cameraDistance(15.0f), m_cameraYaw(0.0f), m_cameraPitch(30.0f), m_viewMode(View3DMode), m_interactionMode(TransformMode), m_orthoZoom(10.0f), m_defaultAltitude(2.0f), m_defaultAcceptanceRadius(0.5f), m_defaultHoldTime(0.0f), m_defaultYawAngle(0.0f), m_selectedWaypoint(-1), m_hoveredWaypoint(-1), m_hoveredSegment(-1), m_mousePressed(false), m_isDragging(false), m_draggingTransform(false), m_activeHandle(TransformHandle::None), m_hasHoverPreview(false), m_pendingCreatePlacement(false), m_createPressOnExistingWaypoint(false), m_applyingHistory(false), m_dragGizmoOriginWorld(), m_dragYawPlaneAngleStartRad(0.0f), m_dragStartYawDeg(0.0f), m_animationTime(0.0f)
+    : QOpenGLWidget(parent), m_shaderProgram(nullptr), m_cameraPosition(0, 5, 10), m_cameraTarget(0, 0, 0), m_cameraUp(0, 1, 0), m_cameraDistance(15.0f), m_cameraYaw(0.0f), m_cameraPitch(30.0f), m_viewMode(View3DMode), m_orthoZoom(10.0f), m_defaultAltitude(2.0f), m_defaultAcceptanceRadius(0.5f), m_defaultHoldTime(0.0f), m_defaultYawAngle(0.0f), m_selectedWaypoint(-1), m_hoveredWaypoint(-1), m_hoveredSegment(-1), m_mousePressed(false), m_isDragging(false), m_draggingTransform(false), m_activeHandle(TransformHandle::None), m_hasHoverPreview(false), m_pendingCreatePlacement(false), m_createPressOnExistingWaypoint(false), m_applyingHistory(false), m_dragGizmoOriginWorld(), m_dragYawPlaneAngleStartRad(0.0f), m_dragStartYawDeg(0.0f), m_animationTime(0.0f)
 {
     setMinimumSize(600, 400);
     setFocusPolicy(Qt::StrongFocus);
@@ -564,7 +567,7 @@ void PathPlannerOpenGLWidget::drawWaypointLabels(QPainter &painter)
     font.setPointSize(12);
     painter.setFont(font);
 
-    if (m_hasHoverPreview && m_interactionMode == CreateMode)
+    if (m_hasHoverPreview && effectiveCreate())
     {
         const QPoint ghostPos = worldToScreen(m_lastHoverPreviewWorldPos);
         if (ghostPos.x() >= 0 && ghostPos.x() <= width() && ghostPos.y() >= 0 && ghostPos.y() <= height())
@@ -1244,7 +1247,7 @@ bool PathPlannerOpenGLWidget::worldDeltasOnPlaneFromScreenDelta(const QVector3D 
 // logical Z -> world +Y (blue, altitude). Orange = logical XY, purple = XZ, cyan = YZ. Gold arrow + ring = yaw (heading in horizontal plane, degrees).
 void PathPlannerOpenGLWidget::drawGizmo()
 {
-    if (m_selectedWaypoint < 0 || m_interactionMode != TransformMode)
+    if (m_selectedWaypoint < 0 || !effectiveTransform())
         return;
 
     const QVector3D center = gizmoCenterWorld();
@@ -1411,7 +1414,8 @@ void PathPlannerOpenGLWidget::mousePressEvent(QMouseEvent *event)
         m_createPressOnExistingWaypoint = false;
         const Qt::KeyboardModifiers mods = event->modifiers();
 
-        if (m_interactionMode == TransformMode && m_selectedWaypoint >= 0)
+        // Gizmo handles take priority over create-placement and waypoint picking.
+        if (effectiveTransform() && m_selectedWaypoint >= 0)
         {
             const TransformHandle handle = findTransformHandleAt(event->pos());
             if (handle != TransformHandle::None)
@@ -1443,10 +1447,10 @@ void PathPlannerOpenGLWidget::mousePressEvent(QMouseEvent *event)
             // not a new-placement action. Clear any pending create preview.
             m_pendingCreatePlacement = false;
             m_hasHoverPreview = false;
-            if (m_interactionMode == CreateMode)
+            if (effectiveCreate())
                 m_createPressOnExistingWaypoint = true;
 
-            if ((mods & Qt::ControlModifier) && m_interactionMode == TransformMode)
+            if ((mods & Qt::ControlModifier) && effectiveTransform())
             {
                 if (m_selectedWaypointIds.contains(waypointId))
                 {
@@ -1475,7 +1479,7 @@ void PathPlannerOpenGLWidget::mousePressEvent(QMouseEvent *event)
             return;
         }
 
-        if (m_interactionMode == CreateMode && (mods & Qt::ControlModifier) && m_waypoints.size() > 1)
+        if (effectiveCreate() && (mods & Qt::ControlModifier) && m_waypoints.size() > 1)
         {
             QVector3D insertWorld;
             const int segmentIndex = findSegmentAt(event->pos(), &insertWorld, 14.0f);
@@ -1499,7 +1503,7 @@ void PathPlannerOpenGLWidget::mousePressEvent(QMouseEvent *event)
             }
         }
 
-        const bool shouldCreate = (m_interactionMode == CreateMode);
+        const bool shouldCreate = effectiveCreate();
         if (shouldCreate)
         {
             if (m_viewMode == TopDownMode)
@@ -1518,7 +1522,9 @@ void PathPlannerOpenGLWidget::mousePressEvent(QMouseEvent *event)
             return;
         }
 
-        if (m_interactionMode == SelectMode || m_interactionMode == TransformMode)
+        // Clear selection on empty click only when transform is on and create is off
+        // (otherwise create mode uses the click for placement).
+        if (effectiveTransform() && !effectiveCreate())
         {
             m_selectedWaypointIds.clear();
             m_selectedWaypoint = -1;
@@ -1535,7 +1541,7 @@ void PathPlannerOpenGLWidget::mouseMoveEvent(QMouseEvent *event)
     float hoverDistance = 0.0f;
     float hoverDepth = 0.0f;
     m_hoveredWaypoint = findWaypointAt(event->pos(), &hoverDistance, &hoverDepth);
-    if (m_interactionMode == CreateMode && m_pendingCreatePlacement &&
+    if (effectiveCreate() && m_pendingCreatePlacement &&
         !m_createPressOnExistingWaypoint && !(event->buttons() & Qt::RightButton))
     {
         if (m_viewMode == TopDownMode)
@@ -1715,7 +1721,7 @@ void PathPlannerOpenGLWidget::mouseReleaseEvent(QMouseEvent *event)
 {
     if (event->button() == Qt::LeftButton)
     {
-        if (m_interactionMode == CreateMode && m_pendingCreatePlacement && !m_createPressOnExistingWaypoint)
+        if (effectiveCreate() && m_pendingCreatePlacement && !m_createPressOnExistingWaypoint)
         {
             addWaypoint(worldToLogical(m_lastHoverPreviewWorldPos));
         }
@@ -2110,14 +2116,37 @@ void PathPlannerOpenGLWidget::setViewMode(ViewMode mode)
     }
 }
 
-void PathPlannerOpenGLWidget::setInteractionMode(InteractionMode mode)
+bool PathPlannerOpenGLWidget::effectiveCreate() const
 {
-    if (m_interactionMode != mode)
-    {
-        m_interactionMode = mode;
-        m_activeHandle = TransformHandle::None;
-        update();
-    }
+    return !m_navigationOnly && m_createToolEnabled;
+}
+
+bool PathPlannerOpenGLWidget::effectiveTransform() const
+{
+    return !m_navigationOnly && m_transformToolEnabled;
+}
+
+void PathPlannerOpenGLWidget::setNavigationOnly(bool on)
+{
+    if (m_navigationOnly == on)
+        return;
+    m_navigationOnly = on;
+    m_activeHandle = TransformHandle::None;
+    m_draggingTransform = false;
+    m_pendingCreatePlacement = false;
+    m_hasHoverPreview = false;
+    update();
+}
+
+void PathPlannerOpenGLWidget::setEditorTools(bool createEnabled, bool transformEnabled)
+{
+    if (m_createToolEnabled == createEnabled && m_transformToolEnabled == transformEnabled)
+        return;
+    m_createToolEnabled = createEnabled;
+    m_transformToolEnabled = transformEnabled;
+    m_activeHandle = TransformHandle::None;
+    m_draggingTransform = false;
+    update();
 }
 
 void PathPlannerOpenGLWidget::commitEdit(const std::vector<Waypoint> &before, const std::vector<Waypoint> &after)
@@ -2220,13 +2249,13 @@ void PathPlannerOpenGLWidget::resetCamera()
 
 // PathPlannerWidget Implementation
 PathPlannerWidget::PathPlannerWidget(QWidget *parent)
-    : QWidget(parent), m_mainLayout(nullptr), m_contentLayout(nullptr), m_topBarWidget(nullptr), m_controlsLayout(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_viewGroup(nullptr), m_waypointTable(nullptr), m_waypointCountLabel(nullptr), m_waypointDefaultsButton(nullptr), m_defaultAcceptanceRadiusSpinBox(nullptr), m_defaultHoldSpinBox(nullptr), m_defaultYawSpinBox(nullptr), m_pathMenuButton(nullptr), m_uploadMissionButton(nullptr), m_runMissionButton(nullptr), m_cancelMissionButton(nullptr), m_createModeButton(nullptr), m_transformModeButton(nullptr), m_playPathButton(nullptr), m_stopPathButton(nullptr), m_pathNameEdit(nullptr), m_missionStatusLabel(nullptr), m_resetCameraButton(nullptr), m_viewModeButton(nullptr), m_defaultAltitudeSpinBox(nullptr), m_undoEditButton(nullptr), m_redoEditButton(nullptr), m_pathAnimationTimer(nullptr), m_currentAnimationWaypoint(0), m_animationProgress(0.0f), m_isPlayingPath(false), m_selectedWaypoint(-1), m_droneController(nullptr), m_updatingWaypointTable(false), m_reorderingWaypointRows(false)
+    : QWidget(parent), m_mainLayout(nullptr), m_contentLayout(nullptr), m_topBarWidget(nullptr), m_controlsLayout(nullptr), m_topBarPreUploadToolbar(nullptr), m_topBarEditingCluster(nullptr), m_topBarMissionCluster(nullptr), m_topBarReturnToEditButton(nullptr), m_topBarLandButton(nullptr), m_topBarRtlButton(nullptr), m_topBarEstopButton(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_viewGroup(nullptr), m_waypointTable(nullptr), m_waypointCountLabel(nullptr), m_waypointDefaultsButton(nullptr), m_defaultAcceptanceRadiusSpinBox(nullptr), m_defaultHoldSpinBox(nullptr), m_defaultYawSpinBox(nullptr), m_pathMenuButton(nullptr), m_uploadMissionButton(nullptr), m_missionPlayButton(nullptr), m_missionPauseContinueButton(nullptr), m_createModeButton(nullptr), m_transformModeButton(nullptr), m_playPathPreviewButton(nullptr), m_stopPathPreviewButton(nullptr), m_pathNameEdit(nullptr), m_missionStatusLabel(nullptr), m_resetCameraButton(nullptr), m_viewModeButton(nullptr), m_defaultAltitudeSpinBox(nullptr), m_undoEditButton(nullptr), m_redoEditButton(nullptr), m_pathPreviewAnimationTimer(nullptr), m_pathPreviewWaypointIndex(0), m_pathPreviewProgress(0.0f), m_isPlayingPathPreview(false), m_selectedWaypoint(-1), m_droneController(nullptr), m_hasUploadedSnapshot(false), m_waypointsDirtySinceUpload(false), m_editingLocked(false), m_updatingWaypointTable(false), m_reorderingWaypointRows(false)
 {
     setupUI();
 
-    m_pathAnimationTimer = new QTimer(this);
-    m_pathAnimationTimer->setInterval(50); // 20 FPS for path animation
-    connect(m_pathAnimationTimer, &QTimer::timeout, this, &PathPlannerWidget::onPathAnimationTimer);
+    m_pathPreviewAnimationTimer = new QTimer(this);
+    m_pathPreviewAnimationTimer->setInterval(50);
+    connect(m_pathPreviewAnimationTimer, &QTimer::timeout, this, &PathPlannerWidget::onPathPreviewAnimationTimer);
 }
 
 PathPlannerWidget::~PathPlannerWidget()
@@ -2310,6 +2339,7 @@ void PathPlannerWidget::setupUI()
             });
     connect(m_openglWidget, &PathPlannerOpenGLWidget::editHistoryStateChanged,
             this, [this](bool, bool) { updateUndoRedoButtons(); });
+    updateMissionChrome();
 }
 
 void PathPlannerWidget::setupTopBar()
@@ -2341,45 +2371,99 @@ void PathPlannerWidget::setupTopBar()
         return button;
     };
 
-    auto addSectionSeparator = [topLayout]() {
+    // Mission toolbar: tinted icons (not plain gray); no toggle “checked” styling. Avoid emoji codepoints (e.g. U+2B07) that paint a colored blob on Windows.
+    auto makeMissionToolbarButton = [this](const QString &text, const QString &fgNormal, const QString &fgHover,
+                                           int fontSizePx = 14, int fontWeight = 400) {
+        QPushButton *button = new QPushButton(text, m_topBarWidget);
+        button->setFixedSize(26, 24);
+        button->setFlat(true);
+        button->setCheckable(false);
+        button->setAutoDefault(false);
+        button->setDefault(false);
+        button->setFocusPolicy(Qt::NoFocus);
+        button->setStyleSheet(
+            QStringLiteral(
+                "QPushButton { color: %1; background: transparent; border: none; border-radius: 2px; "
+                "font-size: %3px; font-weight: %4; padding: 0px; } "
+                "QPushButton:hover { color: %2; background-color: rgba(255,255,255,0.08); } "
+                "QPushButton:pressed { color: #ffffff; background-color: rgba(255,255,255,0.14); } "
+                "QPushButton:disabled { color: #525a66; background: transparent; }")
+                .arg(fgNormal)
+                .arg(fgHover)
+                .arg(fontSizePx)
+                .arg(fontWeight));
+        return button;
+    };
+
+    auto makeThinSeparator = [](QBoxLayout *lay) {
         QFrame *sep = new QFrame;
         sep->setFrameShape(QFrame::VLine);
         sep->setLineWidth(1);
         sep->setFixedHeight(14);
         sep->setStyleSheet("QFrame { color: #4b5563; background-color: #4b5563; }");
-        topLayout->addSpacing(2);
-        topLayout->addWidget(sep);
-        topLayout->addSpacing(2);
+        lay->addSpacing(2);
+        lay->addWidget(sep);
+        lay->addSpacing(2);
     };
 
     m_undoEditButton = makeTopButton(QString::fromUtf8("\xE2\x86\xB6"));
     m_redoEditButton = makeTopButton(QString::fromUtf8("\xE2\x86\xB7"));
-    m_playPathButton = makeTopButton(QString::fromUtf8("\xE2\x96\xB6"));
-    m_stopPathButton = makeTopButton(QString::fromUtf8("\xE2\x96\xA0"));
+    m_playPathPreviewButton = makeTopButton(QString::fromUtf8("\xE2\x96\xB6"));
+    m_stopPathPreviewButton = makeTopButton(QString::fromUtf8("\xE2\x96\xA0"));
     m_transformModeButton = makeTopButton(QString::fromUtf8("\xE2\x86\x94"));
     m_createModeButton = makeTopButton(QStringLiteral("+"));
     m_uploadMissionButton = makeTopButton(QString::fromUtf8("\xE2\x86\x91"));
-    m_runMissionButton = makeTopButton(QString::fromUtf8("\xE2\x96\xB6"));
-    m_cancelMissionButton = makeTopButton(QString::fromUtf8("\xE2\x96\xA0"));
+    m_topBarReturnToEditButton =
+        makeMissionToolbarButton(QString::fromUtf8("\xE2\x86\xA9"), QStringLiteral("#cbd5e1"), QStringLiteral("#f8fafc"));
+    m_missionPlayButton =
+        makeMissionToolbarButton(QString::fromUtf8("\xE2\x96\xB6"), QStringLiteral("#5eead4"), QStringLiteral("#ccfbf1"));
+    // Same glyph as preview stop (U+25A0): avoids Windows emoji-style ⏸ with blue tile background.
+    m_missionPauseContinueButton =
+        makeMissionToolbarButton(QString::fromUtf8("\xE2\x96\xA0"), QStringLiteral("#5eead4"), QStringLiteral("#ccfbf1"));
+    m_topBarLandButton =
+        makeMissionToolbarButton(QString::fromUtf8("\xE2\x86\x93"), QStringLiteral("#7dd3fc"), QStringLiteral("#e0f2fe"));
+    m_topBarRtlButton = makeMissionToolbarButton(QString(QChar(0x2302)), QStringLiteral("#c4b5fd"),
+                                                 QStringLiteral("#ede9fe"), 15, 650);
+
+    m_topBarEstopButton = new QPushButton(QStringLiteral("!"), m_topBarWidget);
+    m_topBarEstopButton->setFixedSize(26, 24);
+    m_topBarEstopButton->setFlat(true);
+    m_topBarEstopButton->setCheckable(false);
+    m_topBarEstopButton->setAutoDefault(false);
+    m_topBarEstopButton->setDefault(false);
+    m_topBarEstopButton->setFocusPolicy(Qt::NoFocus);
+    m_topBarEstopButton->setStyleSheet(
+        "QPushButton { color: #fecaca; background-color: rgba(127,29,29,0.5); border: 1px solid #dc2626; border-radius: 3px; "
+        "font-size: 13px; font-weight: 700; padding: 0px; } "
+        "QPushButton:hover { color: #ffffff; background-color: rgba(220,38,38,0.72); border-color: #f87171; } "
+        "QPushButton:pressed { background-color: rgba(153,27,27,0.9); } "
+        "QPushButton:disabled { color: #5c6570; background-color: rgba(40,40,40,0.35); border-color: #4b5563; }");
     m_createModeButton->setCheckable(true);
     m_transformModeButton->setCheckable(true);
     m_transformModeButton->setChecked(true);
 
     m_undoEditButton->setToolTip("Undo");
     m_redoEditButton->setToolTip("Redo");
-    m_playPathButton->setToolTip("Play Preview");
-    m_stopPathButton->setToolTip("Stop Preview");
-    m_createModeButton->setToolTip("Create Mode");
-    m_transformModeButton->setToolTip("Transform Mode");
+    m_playPathPreviewButton->setToolTip("Preview path (local playback)");
+    m_stopPathPreviewButton->setToolTip("Stop path preview");
+    m_createModeButton->setToolTip("Create waypoints (independent; works together with Transform)");
+    m_transformModeButton->setToolTip("Transform: show gizmo and drag handles on the selected waypoint");
     m_uploadMissionButton->setToolTip("Upload Mission");
-    m_runMissionButton->setToolTip("Play Mission");
-    m_cancelMissionButton->setToolTip("Stop Mission");
+    m_topBarReturnToEditButton->setToolTip("Return to Edit (unlock path; re-upload required after changes)");
+    m_missionPlayButton->setToolTip("Start Mission");
+    m_missionPauseContinueButton->setToolTip("Pause Mission (hover in place)");
+    m_topBarLandButton->setToolTip("Land");
+    m_topBarRtlButton->setToolTip("Return to Launch");
+    m_topBarEstopButton->setToolTip("Emergency stop");
     m_uploadMissionButton->setEnabled(false);
-    m_runMissionButton->setEnabled(false);
-    m_cancelMissionButton->setEnabled(false);
-    m_stopPathButton->setEnabled(false);
+    m_missionPlayButton->setEnabled(false);
+    m_missionPauseContinueButton->setEnabled(false);
     m_undoEditButton->setEnabled(false);
     m_redoEditButton->setEnabled(false);
+    m_stopPathPreviewButton->setEnabled(false);
+    m_topBarLandButton->setEnabled(false);
+    m_topBarRtlButton->setEnabled(false);
+    m_topBarEstopButton->setEnabled(false);
 
     m_pathMenuButton = new QToolButton(m_topBarWidget);
     m_pathMenuButton->setText(QString::fromUtf8("\xE2\x89\xA1"));
@@ -2402,7 +2486,6 @@ void PathPlannerWidget::setupTopBar()
     connect(loadPathAction, &QAction::triggered, this, &PathPlannerWidget::onLoadPath);
     connect(savePathAction, &QAction::triggered, this, &PathPlannerWidget::onSavePath);
     m_pathMenuButton->setMenu(pathMenu);
-    topLayout->addWidget(m_pathMenuButton);
 
     m_pathNameEdit = new QLineEdit("New Path", m_topBarWidget);
     m_pathNameEdit->setMinimumWidth(220);
@@ -2410,35 +2493,71 @@ void PathPlannerWidget::setupTopBar()
     m_pathNameEdit->setStyleSheet(
         "QLineEdit { background-color: #2b2f35; color: #e5e7eb; border: 1px solid #4b5563; border-radius: 3px; padding: 3px 8px; } "
         "QLineEdit:focus { border: 1px solid #3b82f6; }");
-    topLayout->addWidget(m_pathNameEdit);
     connect(m_pathNameEdit, &QLineEdit::textChanged, this, [this](const QString &text) {
         if (m_waypointGroup)
             m_waypointGroup->setTitle("Waypoints - " + (text.isEmpty() ? QString("New Path") : text));
     });
-    // Top bar order:
-    // path controls, path name, tools (transform/create), undo/redo,
-    // preview controls (play/stop), mission controls (upload/play/stop)
-    addSectionSeparator();
-    topLayout->addWidget(m_transformModeButton);
-    topLayout->addWidget(m_createModeButton);
-    addSectionSeparator();
-    topLayout->addWidget(m_undoEditButton);
-    topLayout->addWidget(m_redoEditButton);
-    addSectionSeparator();
-    topLayout->addWidget(m_playPathButton);
-    topLayout->addWidget(m_stopPathButton);
-    addSectionSeparator();
-    topLayout->addWidget(m_uploadMissionButton);
-    topLayout->addWidget(m_runMissionButton);
-    topLayout->addWidget(m_cancelMissionButton);
+
+    m_topBarEditingCluster = new QWidget(m_topBarWidget);
+    QHBoxLayout *editLay = new QHBoxLayout(m_topBarEditingCluster);
+    editLay->setContentsMargins(0, 0, 0, 0);
+    editLay->setSpacing(4);
+    editLay->addWidget(m_pathMenuButton);
+    editLay->addWidget(m_pathNameEdit);
+    makeThinSeparator(editLay);
+    editLay->addWidget(m_transformModeButton);
+    editLay->addWidget(m_createModeButton);
+    makeThinSeparator(editLay);
+    editLay->addWidget(m_undoEditButton);
+    editLay->addWidget(m_redoEditButton);
+
+    m_topBarPreUploadToolbar = new QWidget(m_topBarWidget);
+    QHBoxLayout *preUploadLay = new QHBoxLayout(m_topBarPreUploadToolbar);
+    preUploadLay->setContentsMargins(0, 0, 0, 0);
+    preUploadLay->setSpacing(4);
+    preUploadLay->addWidget(m_topBarEditingCluster);
+    makeThinSeparator(preUploadLay);
+    preUploadLay->addWidget(m_playPathPreviewButton);
+    preUploadLay->addWidget(m_stopPathPreviewButton);
+    makeThinSeparator(preUploadLay);
+    preUploadLay->addWidget(m_uploadMissionButton);
+
+    m_topBarMissionCluster = new QWidget(m_topBarWidget);
+    QHBoxLayout *missionLay = new QHBoxLayout(m_topBarMissionCluster);
+    missionLay->setContentsMargins(0, 0, 0, 0);
+    missionLay->setSpacing(4);
+
+    missionLay->addWidget(m_topBarReturnToEditButton);
+    makeThinSeparator(missionLay);
+    missionLay->addWidget(m_missionPlayButton);
+    missionLay->addWidget(m_missionPauseContinueButton);
+    makeThinSeparator(missionLay);
+    missionLay->addWidget(m_topBarLandButton);
+    missionLay->addWidget(m_topBarRtlButton);
+    missionLay->addWidget(m_topBarEstopButton);
+
+    topLayout->addWidget(m_topBarPreUploadToolbar);
+    topLayout->addWidget(m_topBarMissionCluster);
+    m_topBarMissionCluster->hide();
+
     topLayout->addStretch();
 
-    m_missionStatusLabel = new QLabel("Status: No mission uploaded", m_topBarWidget);
-    m_missionStatusLabel->setStyleSheet("QLabel { color: #9ca3af; border: none; }");
-    topLayout->addWidget(m_missionStatusLabel);
+    m_missionStatusLabel = new QLabel(m_topBarWidget);
+    m_missionStatusLabel->setTextFormat(Qt::RichText);
+    m_missionStatusLabel->setStyleSheet("QLabel { color: #9ca3af; border: none; font-size: 11px; }");
+    m_missionStatusLabel->setWordWrap(false);
+    m_missionStatusLabel->setMaximumWidth(520);
+    m_missionStatusLabel->setAlignment(Qt::AlignVCenter | Qt::AlignRight);
+    topLayout->addWidget(m_missionStatusLabel, 0, Qt::AlignVCenter);
 
-    connect(m_createModeButton, &QPushButton::clicked, this, [this]() { onInteractionModeChanged(0); });
-    connect(m_transformModeButton, &QPushButton::clicked, this, [this]() { onInteractionModeChanged(1); });
+    connect(m_createModeButton, &QPushButton::toggled, this, &PathPlannerWidget::applyEditorToolsFromButtons);
+    connect(m_transformModeButton, &QPushButton::toggled, this, &PathPlannerWidget::applyEditorToolsFromButtons);
+    connect(m_topBarReturnToEditButton, &QPushButton::clicked, this, &PathPlannerWidget::onReturnToEdit);
+    connect(m_missionPlayButton, &QPushButton::clicked, this, &PathPlannerWidget::onMissionPlayClicked);
+    connect(m_missionPauseContinueButton, &QPushButton::clicked, this, &PathPlannerWidget::onMissionPauseContinueClicked);
+    connect(m_topBarLandButton, &QPushButton::clicked, this, &PathPlannerWidget::onLandMission);
+    connect(m_topBarRtlButton, &QPushButton::clicked, this, &PathPlannerWidget::onReturnToLaunchMission);
+    connect(m_topBarEstopButton, &QPushButton::clicked, this, &PathPlannerWidget::onEmergencyStopMission);
 }
 
 void PathPlannerWidget::setupControls()
@@ -2534,10 +2653,8 @@ void PathPlannerWidget::setupControls()
 
     // Connect signals
     connect(m_uploadMissionButton, &QPushButton::clicked, this, &PathPlannerWidget::onUploadMission);
-    connect(m_runMissionButton, &QPushButton::clicked, this, &PathPlannerWidget::onRunMission);
-    connect(m_cancelMissionButton, &QPushButton::clicked, this, &PathPlannerWidget::onCancelMission);
-    connect(m_playPathButton, &QPushButton::clicked, this, &PathPlannerWidget::onPlayPath);
-    connect(m_stopPathButton, &QPushButton::clicked, this, &PathPlannerWidget::onStopPath);
+    connect(m_playPathPreviewButton, &QPushButton::clicked, this, &PathPlannerWidget::onPlayPathPreview);
+    connect(m_stopPathPreviewButton, &QPushButton::clicked, this, &PathPlannerWidget::onStopPathPreview);
     connect(m_defaultAltitudeSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this](double value)
             { m_openglWidget->setDefaultAltitude(static_cast<float>(value)); });
@@ -2552,12 +2669,16 @@ void PathPlannerWidget::setupControls()
             { m_openglWidget->setDefaultYawAngle(static_cast<float>(value)); });
 
     connect(m_undoEditButton, &QPushButton::clicked, this, [this]() {
+        if (m_editingLocked)
+            return;
         if (m_openglWidget->undo()) {
             updateWaypointTable();
             emitWaypointsChanged();
         }
     });
     connect(m_redoEditButton, &QPushButton::clicked, this, [this]() {
+        if (m_editingLocked)
+            return;
         if (m_openglWidget->redo()) {
             updateWaypointTable();
             emitWaypointsChanged();
@@ -2565,24 +2686,32 @@ void PathPlannerWidget::setupControls()
     });
 
     (void) new QShortcut(QKeySequence(Qt::Key_Delete), this, [this]() {
+        if (m_editingLocked)
+            return;
         if (m_openglWidget->deleteSelectedWaypoint()) {
             updateWaypointTable();
             emitWaypointsChanged();
         }
     });
     (void) new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_D), this, [this]() {
+        if (m_editingLocked)
+            return;
         if (m_openglWidget->duplicateSelectedWaypoint()) {
             updateWaypointTable();
             emitWaypointsChanged();
         }
     });
     (void) new QShortcut(QKeySequence::Undo, this, [this]() {
+        if (m_editingLocked)
+            return;
         if (m_openglWidget->undo()) {
             updateWaypointTable();
             emitWaypointsChanged();
         }
     });
     (void) new QShortcut(QKeySequence::Redo, this, [this]() {
+        if (m_editingLocked)
+            return;
         if (m_openglWidget->redo()) {
             updateWaypointTable();
             emitWaypointsChanged();
@@ -2707,6 +2836,9 @@ void PathPlannerWidget::onClearPath()
     if (!m_openglWidget)
         return;
 
+    if (m_isPlayingPathPreview)
+        stopPathPreviewAnimation();
+
     m_openglWidget->clearWaypoints();
     m_selectedWaypoint = -1;
 
@@ -2825,7 +2957,7 @@ void PathPlannerWidget::onWaypointSelected(int id)
 
 void PathPlannerWidget::onWaypointCellChanged(int row, int column)
 {
-    if (m_updatingWaypointTable || m_reorderingWaypointRows)
+    if (m_editingLocked || m_updatingWaypointTable || m_reorderingWaypointRows)
         return;
 
     if (row < 0 || row >= m_waypointTable->rowCount())
@@ -2919,55 +3051,43 @@ void PathPlannerWidget::onViewModeChanged()
     }
 }
 
-void PathPlannerWidget::onInteractionModeChanged(int index)
+void PathPlannerWidget::applyEditorToolsFromButtons()
 {
-    const bool createMode = (index == 0);
-    PathPlannerOpenGLWidget::InteractionMode mode = createMode
-        ? PathPlannerOpenGLWidget::CreateMode
-        : PathPlannerOpenGLWidget::TransformMode;
-
-    if (m_createModeButton)
-        m_createModeButton->setChecked(createMode);
-    if (m_transformModeButton)
-        m_transformModeButton->setChecked(!createMode);
-    m_openglWidget->setInteractionMode(mode);
+    if (m_editingLocked || !m_openglWidget)
+        return;
+    m_openglWidget->setEditorTools(m_createModeButton->isChecked(), m_transformModeButton->isChecked());
 }
 
-void PathPlannerWidget::onPlayPath()
+void PathPlannerWidget::onPlayPathPreview()
 {
-    if (!m_isPlayingPath && !m_openglWidget->waypoints().empty())
-    {
-        startPathAnimation();
-    }
+    if (!m_isPlayingPathPreview && m_openglWidget && !m_openglWidget->waypoints().empty())
+        startPathPreviewAnimation();
 }
 
-void PathPlannerWidget::onStopPath()
+void PathPlannerWidget::onStopPathPreview()
 {
-    if (m_isPlayingPath)
-    {
-        stopPathAnimation();
-    }
+    if (m_isPlayingPathPreview)
+        stopPathPreviewAnimation();
 }
 
-void PathPlannerWidget::onPathAnimationTimer()
+void PathPlannerWidget::onPathPreviewAnimationTimer()
 {
-    // Simple path animation logic
-    m_animationProgress += 0.02f;
-    if (m_animationProgress >= 1.0f)
+    m_pathPreviewProgress += 0.02f;
+    if (m_pathPreviewProgress >= 1.0f)
     {
-        m_animationProgress = 0.0f;
-        m_currentAnimationWaypoint++;
+        m_pathPreviewProgress = 0.0f;
+        m_pathPreviewWaypointIndex++;
 
         const auto &waypoints = m_openglWidget->waypoints();
-        if (m_currentAnimationWaypoint >= static_cast<int>(waypoints.size()))
+        if (m_pathPreviewWaypointIndex >= static_cast<int>(waypoints.size()))
         {
-            stopPathAnimation();
+            stopPathPreviewAnimation();
             return;
         }
     }
 
-    // Update visualization (this would show a moving drone along the path)
-    m_openglWidget->update();
+    if (m_openglWidget)
+        m_openglWidget->update();
 }
 
 void PathPlannerWidget::updateWaypointTable()
@@ -3029,29 +3149,35 @@ void PathPlannerWidget::updateWaypointTable()
 void PathPlannerWidget::updateUndoRedoButtons()
 {
     if (m_undoEditButton)
-        m_undoEditButton->setEnabled(m_openglWidget && m_openglWidget->canUndo());
+        m_undoEditButton->setEnabled(!m_editingLocked && m_openglWidget && m_openglWidget->canUndo());
     if (m_redoEditButton)
-        m_redoEditButton->setEnabled(m_openglWidget && m_openglWidget->canRedo());
+        m_redoEditButton->setEnabled(!m_editingLocked && m_openglWidget && m_openglWidget->canRedo());
 }
 
-void PathPlannerWidget::startPathAnimation()
+void PathPlannerWidget::startPathPreviewAnimation()
 {
-    m_isPlayingPath = true;
-    m_currentAnimationWaypoint = 0;
-    m_animationProgress = 0.0f;
-    m_pathAnimationTimer->start();
+    m_isPlayingPathPreview = true;
+    m_pathPreviewWaypointIndex = 0;
+    m_pathPreviewProgress = 0.0f;
+    if (m_pathPreviewAnimationTimer)
+        m_pathPreviewAnimationTimer->start();
 
-    m_playPathButton->setEnabled(false);
-    m_stopPathButton->setEnabled(true);
+    if (m_playPathPreviewButton)
+        m_playPathPreviewButton->setEnabled(false);
+    if (m_stopPathPreviewButton)
+        m_stopPathPreviewButton->setEnabled(true);
 }
 
-void PathPlannerWidget::stopPathAnimation()
+void PathPlannerWidget::stopPathPreviewAnimation()
 {
-    m_isPlayingPath = false;
-    m_pathAnimationTimer->stop();
+    m_isPlayingPathPreview = false;
+    if (m_pathPreviewAnimationTimer)
+        m_pathPreviewAnimationTimer->stop();
 
-    m_playPathButton->setEnabled(true);
-    m_stopPathButton->setEnabled(false);
+    if (m_playPathPreviewButton)
+        m_playPathPreviewButton->setEnabled(true);
+    if (m_stopPathPreviewButton)
+        m_stopPathPreviewButton->setEnabled(false);
 }
 
 void PathPlannerWidget::loadPoints(const QVector<QVector3D> &points)
@@ -3093,7 +3219,7 @@ void PathPlannerWidget::updateWaypoint(int id, const Waypoint &wp)
 
 void PathPlannerWidget::onWaypointRowsMoved(const QModelIndex &, int, int, const QModelIndex &, int)
 {
-    if (m_updatingWaypointTable || !m_openglWidget || !m_waypointTable)
+    if (m_editingLocked || m_updatingWaypointTable || !m_openglWidget || !m_waypointTable)
         return;
 
     const auto &waypoints = m_openglWidget->waypoints();
@@ -3141,7 +3267,239 @@ const std::vector<Waypoint> &PathPlannerWidget::waypoints() const
 
 void PathPlannerWidget::emitWaypointsChanged()
 {
+    updateDirtyState();
     emit waypointsChanged(m_openglWidget->waypoints());
+    updateMissionChrome();
+}
+
+QString PathPlannerWidget::waypointFingerprint(const std::vector<Waypoint> &waypoints) const
+{
+    QByteArray payload;
+    payload.reserve(static_cast<int>(waypoints.size()) * 64);
+    for (const Waypoint &wp : waypoints) {
+        payload.append(QByteArray::number(wp.sequence()));
+        payload.append('|');
+        payload.append(QByteArray::number(wp.x(), 'f', 5));
+        payload.append('|');
+        payload.append(QByteArray::number(wp.y(), 'f', 5));
+        payload.append('|');
+        payload.append(QByteArray::number(wp.z(), 'f', 5));
+        payload.append('|');
+        payload.append(QByteArray::number(wp.yawAngle(), 'f', 3));
+        payload.append('|');
+        payload.append(QByteArray::number(wp.holdTime(), 'f', 3));
+        payload.append('\n');
+    }
+    return QString::fromLatin1(QCryptographicHash::hash(payload, QCryptographicHash::Sha256).toHex());
+}
+
+void PathPlannerWidget::updateDirtyState()
+{
+    if (!m_hasUploadedSnapshot) {
+        m_waypointsDirtySinceUpload = false;
+        return;
+    }
+
+    m_waypointsDirtySinceUpload = (waypointFingerprint(m_openglWidget->waypoints()) != m_uploadedWaypointFingerprint);
+}
+
+PathPlannerWidget::MissionWorkspacePhase PathPlannerWidget::currentMissionPhase() const
+{
+    const bool hasWaypoints = m_openglWidget && !m_openglWidget->waypoints().empty();
+    const bool uploaded = m_droneController && m_droneController->getCurrentMission().uploaded && !m_waypointsDirtySinceUpload;
+    const bool running = m_droneController && m_droneController->isMissionRunning();
+    const bool paused = running && m_droneController->isMissionPaused();
+
+    if (paused)
+        return MissionWorkspacePhase::Paused;
+    if (running)
+        return MissionWorkspacePhase::Running;
+    if (uploaded)
+        return MissionWorkspacePhase::UploadedReady;
+    if (hasWaypoints)
+        return MissionWorkspacePhase::ReadyToUpload;
+    return MissionWorkspacePhase::EditingDraft;
+}
+
+void PathPlannerWidget::setEditingLocked(bool locked)
+{
+    if (!m_openglWidget || !m_waypointTable) {
+        m_editingLocked = locked;
+        return;
+    }
+
+    const bool lockChanged = (m_editingLocked != locked);
+    m_editingLocked = locked;
+
+    if (lockChanged) {
+        const QSignalBlocker bc(m_createModeButton);
+        const QSignalBlocker bt(m_transformModeButton);
+        if (locked) {
+            m_createModeButton->setChecked(false);
+            m_transformModeButton->setChecked(false);
+            m_openglWidget->setNavigationOnly(true);
+        } else {
+            m_transformModeButton->setChecked(true);
+            m_createModeButton->setChecked(false);
+            m_openglWidget->setNavigationOnly(false);
+            m_openglWidget->setEditorTools(false, true);
+        }
+    }
+
+    m_createModeButton->setEnabled(!locked);
+    m_transformModeButton->setEnabled(!locked);
+    m_undoEditButton->setEnabled(!locked && m_openglWidget->canUndo());
+    m_redoEditButton->setEnabled(!locked && m_openglWidget->canRedo());
+    m_waypointDefaultsButton->setEnabled(!locked);
+    m_pathNameEdit->setEnabled(!locked);
+    m_waypointTable->setEditTriggers(locked ? QAbstractItemView::NoEditTriggers
+                                            : (QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed));
+}
+
+void PathPlannerWidget::updateMissionChrome()
+{
+    const MissionWorkspacePhase phase = currentMissionPhase();
+    const bool connected = m_droneController && m_droneController->isConnected();
+    const bool hasWaypoints = m_openglWidget && !m_openglWidget->waypoints().empty();
+    const bool uploaded = m_droneController && m_droneController->getCurrentMission().uploaded;
+
+    if (!hasWaypoints && m_isPlayingPathPreview)
+        stopPathPreviewAnimation();
+
+    QString shortMode;
+    switch (phase) {
+    case MissionWorkspacePhase::EditingDraft:
+        shortMode = "Editing";
+        break;
+    case MissionWorkspacePhase::ReadyToUpload:
+        shortMode = "Ready to upload";
+        break;
+    case MissionWorkspacePhase::UploadedReady:
+        shortMode = "Uploaded";
+        break;
+    case MissionWorkspacePhase::Running:
+        shortMode = "Running";
+        break;
+    case MissionWorkspacePhase::Paused:
+        shortMode = "Paused";
+        break;
+    }
+
+    const QString vehicleText = connected
+        ? QString("Connected • %1 • %2")
+              .arg(m_droneController->getCurrentStatus().armed ? "Armed" : "Disarmed")
+              .arg(m_droneController->getCurrentStatus().flightMode)
+        : QStringLiteral("Offline");
+
+    QString detail;
+    if (m_waypointsDirtySinceUpload && uploaded) {
+        detail = "Re-upload to enable Start";
+    } else if (!m_lastControllerError.isEmpty()) {
+        detail = m_lastControllerError;
+    } else if (!connected && uploaded && !m_waypointsDirtySinceUpload && phase == MissionWorkspacePhase::UploadedReady) {
+        detail = "Staged locally (offline test)";
+    } else if (!connected && (phase == MissionWorkspacePhase::UploadedReady ||
+                              phase == MissionWorkspacePhase::Running ||
+                              phase == MissionWorkspacePhase::Paused)) {
+        detail = "Connect to start";
+    } else if (!m_lastMissionStatusText.isEmpty()) {
+        detail = m_lastMissionStatusText;
+    } else if (phase == MissionWorkspacePhase::EditingDraft) {
+        detail = hasWaypoints ? "Toolbar ↑ uploads (works offline)" : "Add waypoints";
+    } else if (phase == MissionWorkspacePhase::ReadyToUpload) {
+        detail = "Tap ↑ to upload";
+    } else if (phase == MissionWorkspacePhase::UploadedReady) {
+        detail = "Ready to run";
+    } else if (phase == MissionWorkspacePhase::Running) {
+        detail = "Mission active";
+    } else if (phase == MissionWorkspacePhase::Paused) {
+        detail = "Mission paused";
+    }
+
+    QString html;
+    if (!detail.isEmpty()) {
+        html = QString("<span style=\"font-weight:600;color:#e5e7eb;\">%1</span>"
+                       " <span style=\"color:#6b7280;\">—</span> "
+                       "<span style=\"color:#fbbf24;\">%2</span>")
+                   .arg(shortMode.toHtmlEscaped(), detail.toHtmlEscaped());
+    } else {
+        html = QString("<span style=\"font-weight:600;color:#e5e7eb;\">%1</span>")
+                   .arg(shortMode.toHtmlEscaped());
+    }
+
+    if (m_missionStatusLabel) {
+        m_missionStatusLabel->setText(html);
+        m_missionStatusLabel->setStyleSheet("QLabel { color: #9ca3af; border: none; font-size: 11px; }");
+        m_missionStatusLabel->setToolTip(connected ? vehicleText : QString());
+    }
+
+    const bool shouldLockEditing = (phase == MissionWorkspacePhase::UploadedReady ||
+                                    phase == MissionWorkspacePhase::Running ||
+                                    phase == MissionWorkspacePhase::Paused) &&
+                                   !m_waypointsDirtySinceUpload;
+    setEditingLocked(shouldLockEditing);
+
+    const bool missionToolbarActive =
+        m_droneController && m_droneController->getCurrentMission().uploaded && !m_waypointsDirtySinceUpload;
+
+    if (missionToolbarActive && m_isPlayingPathPreview)
+        stopPathPreviewAnimation();
+
+    if (m_topBarPreUploadToolbar)
+        m_topBarPreUploadToolbar->setVisible(!missionToolbarActive);
+    if (m_topBarMissionCluster)
+        m_topBarMissionCluster->setVisible(missionToolbarActive);
+
+    if (m_playPathPreviewButton) {
+        if (missionToolbarActive)
+            m_playPathPreviewButton->setEnabled(false);
+        else
+            m_playPathPreviewButton->setEnabled(hasWaypoints && !m_isPlayingPathPreview);
+    }
+
+    const bool canUpload = hasWaypoints;
+    const bool canStart = connected && uploaded && !m_waypointsDirtySinceUpload;
+    const bool running = (phase == MissionWorkspacePhase::Running);
+    const bool paused = (phase == MissionWorkspacePhase::Paused);
+
+    m_uploadMissionButton->setEnabled(canUpload);
+    if (m_missionPlayButton) {
+        m_missionPlayButton->setText(QString::fromUtf8("\xE2\x96\xB6"));
+        if (running) {
+            m_missionPlayButton->setToolTip("Start Mission");
+            m_missionPlayButton->setEnabled(false);
+        } else if (paused) {
+            m_missionPlayButton->setToolTip("Restart mission from the first waypoint");
+            m_missionPlayButton->setEnabled(connected);
+        } else {
+            m_missionPlayButton->setToolTip("Start Mission");
+            m_missionPlayButton->setEnabled(canStart);
+        }
+    }
+    if (m_missionPauseContinueButton) {
+        if (paused) {
+            m_missionPauseContinueButton->setText(QString::fromUtf8("\xE2\x8F\xAF"));
+            m_missionPauseContinueButton->setToolTip("Continue Mission (resume from here)");
+            m_missionPauseContinueButton->setEnabled(connected);
+        } else if (running) {
+            m_missionPauseContinueButton->setText(QString::fromUtf8("\xE2\x96\xA0"));
+            m_missionPauseContinueButton->setToolTip("Pause Mission (hover in place)");
+            m_missionPauseContinueButton->setEnabled(connected);
+        } else {
+            m_missionPauseContinueButton->setText(QString::fromUtf8("\xE2\x96\xA0"));
+            m_missionPauseContinueButton->setToolTip("Pause (available while mission is running)");
+            m_missionPauseContinueButton->setEnabled(false);
+        }
+    }
+
+    const bool missionFlightActive = running || paused;
+    if (m_topBarLandButton)
+        m_topBarLandButton->setEnabled(connected && missionFlightActive);
+    if (m_topBarRtlButton)
+        m_topBarRtlButton->setEnabled(connected && missionFlightActive);
+    if (m_topBarEstopButton)
+        m_topBarEstopButton->setEnabled(connected && missionFlightActive);
+
 }
 
 bool PathPlannerWidget::saveToJson(const QString &path)
@@ -3227,14 +3585,24 @@ bool PathPlannerWidget::loadFromJson(const QString &path)
 void PathPlannerWidget::setDroneController(DroneController *controller)
 {
     m_droneController = controller;
-    
+
     if (m_droneController) {
-        // Enable upload button when waypoints exist
-        connect(this, &PathPlannerWidget::waypointsChanged,
-                this, [this](const std::vector<Waypoint> &waypoints) {
-                    m_uploadMissionButton->setEnabled(!waypoints.empty() && m_droneController != nullptr);
+        connect(m_droneController, &DroneController::connectionStatusChanged,
+                this, [this](bool) { updateMissionChrome(); });
+        connect(m_droneController, &DroneController::statusUpdated,
+                this, [this](const DroneStatus &) { updateMissionChrome(); });
+        connect(m_droneController, &DroneController::missionStatusChanged,
+                this, [this](const QString &status) {
+                    m_lastMissionStatusText = status;
+                    updateMissionChrome();
+                });
+        connect(m_droneController, &DroneController::errorOccurred,
+                this, [this](const QString &error) {
+                    m_lastControllerError = error;
+                    updateMissionChrome();
                 });
     }
+    updateMissionChrome();
 }
 
 void PathPlannerWidget::onUploadMission()
@@ -3249,7 +3617,7 @@ void PathPlannerWidget::onUploadMission()
         QMessageBox::warning(this, "Upload Failed", "No waypoints to upload.");
         return;
     }
-    
+
     // Create FlightPath from current waypoints
     FlightPath missionPath;
     missionPath.setName(m_pathNameEdit->text());
@@ -3276,10 +3644,14 @@ void PathPlannerWidget::onUploadMission()
     file.write(QJsonDocument(missionPath.toJson()).toJson(QJsonDocument::Indented));
     file.close();
     
-    // Upload via VOXLConnection
-    m_missionStatusLabel->setText("Status: Uploading mission...");
-    m_missionStatusLabel->setStyleSheet("color: #fbbf24;");  // Yellow
-    m_uploadMissionButton->setEnabled(false);
+    // Upload via DroneController
+    m_lastControllerError.clear();
+    if (m_missionStatusLabel) {
+        m_missionStatusLabel->setText(
+            "<span style=\"color:#fbbf24;font-weight:600;\">Uploading mission…</span>");
+        m_missionStatusLabel->setStyleSheet("QLabel { border: none; font-size: 11px; }");
+        m_missionStatusLabel->setToolTip(QString());
+    }
     
     // Convert waypoints to legacy format for DroneController
     QVector<QVector3D> legacyWaypoints;
@@ -3287,26 +3659,93 @@ void PathPlannerWidget::onUploadMission()
         legacyWaypoints.append(QVector3D(wp.x(), wp.y(), wp.z()));
     }
     
-    m_droneController->uploadMission(legacyWaypoints);
-    
-    // Show success message
-    QMessageBox::information(this, "Mission Upload", 
-        QString("Mission uploaded successfully!\n\nWaypoints: %1\nTotal Distance: %2 m")
-        .arg(waypoints.size())
-        .arg(missionPath.totalDistance(), 0, 'f', 2));
-    
-    m_missionStatusLabel->setText("Status: Mission uploaded");
-    m_missionStatusLabel->setStyleSheet("color: #10b981;");  // Green
-    m_uploadMissionButton->setEnabled(true);
-    m_runMissionButton->setEnabled(true);
+    if (m_droneController->isConnected())
+        m_droneController->uploadMission(legacyWaypoints);
+    else
+        m_droneController->stageMissionLocally(legacyWaypoints);
+
+    if (m_droneController->getCurrentMission().uploaded) {
+        m_hasUploadedSnapshot = true;
+        m_waypointsDirtySinceUpload = false;
+        m_uploadedWaypointFingerprint = waypointFingerprint(waypoints);
+        m_lastMissionStatusText = m_droneController->isConnected()
+            ? "Mission uploaded successfully"
+            : "Mission staged locally (offline test)";
+        m_lastControllerError.clear();
+        if (m_droneController->isConnected()) {
+            QMessageBox::information(this, "Mission Upload",
+                QString("Mission uploaded successfully.\n\nWaypoints: %1\nTotal Distance: %2 m")
+                    .arg(waypoints.size())
+                    .arg(missionPath.totalDistance(), 0, 'f', 2));
+        } else {
+            QMessageBox::information(this, "Mission Upload (offline test)",
+                QString("Mission staged locally (not sent to a drone).\n\nWaypoints: %1\nTotal Distance: %2 m")
+                    .arg(waypoints.size())
+                    .arg(missionPath.totalDistance(), 0, 'f', 2));
+        }
+    } else if (m_lastControllerError.isEmpty()) {
+        m_lastControllerError = "Mission upload failed.";
+    }
     
     // Clean up temp file
     QFile::remove(missionFilePath);
+    updateMissionChrome();
+}
+
+void PathPlannerWidget::onMissionPlayClicked()
+{
+    if (!m_droneController || !m_droneController->isConnected())
+        return;
+
+    const MissionWorkspacePhase phase = currentMissionPhase();
+    if (phase == MissionWorkspacePhase::Paused) {
+        if (QMessageBox::question(
+                this,
+                "Restart Mission",
+                "Restart the mission from the first waypoint?\n\n"
+                "Use Continue to resume from the current paused position.",
+                QMessageBox::Yes | QMessageBox::No)
+            != QMessageBox::Yes) {
+            return;
+        }
+        m_lastControllerError.clear();
+        m_droneController->startMission();
+        m_lastMissionStatusText = "Mission restarted from start";
+        updateMissionChrome();
+        return;
+    }
+
+    onRunMission();
+}
+
+void PathPlannerWidget::onMissionPauseContinueClicked()
+{
+    if (!m_droneController || !m_droneController->isConnected())
+        return;
+
+    if (m_droneController->isMissionRunning() && m_droneController->isMissionPaused()) {
+        onResumeMission();
+        return;
+    }
+    if (m_droneController->isMissionRunning() && !m_droneController->isMissionPaused()) {
+        onPauseMission();
+    }
 }
 
 void PathPlannerWidget::onRunMission()
 {
     if (!m_droneController) {
+        return;
+    }
+    if (!m_droneController->isConnected()) {
+        QMessageBox::warning(this, "Run Mission", "Drone is disconnected.");
+        m_lastControllerError = "Start unavailable: drone disconnected";
+        updateMissionChrome();
+        return;
+    }
+    if (!m_droneController->getCurrentMission().uploaded || m_waypointsDirtySinceUpload) {
+        QMessageBox::warning(this, "Run Mission", "Upload the latest mission before starting.");
+        updateMissionChrome();
         return;
     }
     
@@ -3315,29 +3754,97 @@ void PathPlannerWidget::onRunMission()
         QMessageBox::Yes | QMessageBox::No);
     
     if (reply == QMessageBox::Yes) {
+        m_lastControllerError.clear();
         m_droneController->startMission();
-        m_missionStatusLabel->setText("Status: Mission running...");
-        m_missionStatusLabel->setStyleSheet("color: #3b82f6;");  // Blue
-        m_runMissionButton->setEnabled(false);
-        m_cancelMissionButton->setEnabled(true);
+        m_lastMissionStatusText = "Mission started";
+        updateMissionChrome();
     }
 }
 
-void PathPlannerWidget::onCancelMission()
+void PathPlannerWidget::onPauseMission()
 {
-    if (!m_droneController) {
+    if (!m_droneController || !m_droneController->isConnected())
+        return;
+
+    m_droneController->pauseMission();
+    m_lastControllerError.clear();
+    m_lastMissionStatusText = "Mission paused";
+    updateMissionChrome();
+}
+
+void PathPlannerWidget::onResumeMission()
+{
+    if (!m_droneController || !m_droneController->isConnected())
+        return;
+
+    m_droneController->resumeMission();
+    m_lastControllerError.clear();
+    m_lastMissionStatusText = "Mission resumed";
+    updateMissionChrome();
+}
+
+void PathPlannerWidget::onLandMission()
+{
+    if (!m_droneController || !m_droneController->isConnected())
+        return;
+
+    if (QMessageBox::question(this, "Land", "Command the drone to land now?") != QMessageBox::Yes)
+        return;
+
+    m_droneController->land();
+    m_lastControllerError.clear();
+    m_lastMissionStatusText = "Land command sent";
+    updateMissionChrome();
+}
+
+void PathPlannerWidget::onReturnToLaunchMission()
+{
+    if (!m_droneController || !m_droneController->isConnected())
+        return;
+
+    if (QMessageBox::question(this, "Return to Launch", "Command return-to-launch now?") != QMessageBox::Yes)
+        return;
+
+    m_droneController->returnToLaunch();
+    m_lastControllerError.clear();
+    m_lastMissionStatusText = "Return-to-launch command sent";
+    updateMissionChrome();
+}
+
+void PathPlannerWidget::onEmergencyStopMission()
+{
+    if (!m_droneController || !m_droneController->isConnected())
+        return;
+
+    if (QMessageBox::critical(this, "Emergency Stop",
+                              "Emergency stop will immediately stop motors.\nUse only for imminent hazards.",
+                              QMessageBox::Yes | QMessageBox::Cancel) != QMessageBox::Yes)
+        return;
+
+    m_droneController->emergencyStop();
+    m_lastControllerError.clear();
+    m_lastMissionStatusText = "Emergency stop requested";
+    updateMissionChrome();
+}
+
+void PathPlannerWidget::onReturnToEdit()
+{
+    if (!m_hasUploadedSnapshot || m_waypointsDirtySinceUpload) {
+        setEditingLocked(false);
+        updateMissionChrome();
         return;
     }
-    
-    QMessageBox::StandardButton reply = QMessageBox::question(this, "Cancel Mission", 
-        "Are you sure you want to cancel the mission?\n\nThe drone will stop following the mission and hover.",
+
+    const QMessageBox::StandardButton reply = QMessageBox::question(
+        this,
+        "Return to Edit",
+        "Unlock editing for this mission?\n\n"
+        "Changes will mark the mission as not uploaded until you upload again.",
         QMessageBox::Yes | QMessageBox::No);
-    
-    if (reply == QMessageBox::Yes) {
-        m_droneController->abortMission();
-        m_missionStatusLabel->setText("Status: Mission cancelled");
-        m_missionStatusLabel->setStyleSheet("color: #ef4444;");  // Red
-        m_runMissionButton->setEnabled(true);
-        m_cancelMissionButton->setEnabled(false);
-    }
+    if (reply != QMessageBox::Yes)
+        return;
+
+    setEditingLocked(false);
+    m_waypointsDirtySinceUpload = true;
+    updateMissionChrome();
 }

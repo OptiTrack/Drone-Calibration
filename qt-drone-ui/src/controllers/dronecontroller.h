@@ -48,6 +48,8 @@ public:
 
     // Mission/waypoint control
     void uploadMission(const QVector<QVector3D> &waypoints);
+    /// Mark mission as uploaded locally without sending commands (UI / SIL testing when disconnected).
+    void stageMissionLocally(const QVector<QVector3D> &waypoints);
     void startMission();
     void pauseMission();
     void resumeMission();
@@ -68,6 +70,8 @@ public:
     // Getters
     DroneStatus getCurrentStatus() const { return m_currentStatus; }
     FlightPlan getCurrentMission() const { return m_currentMission; }
+    bool isMissionRunning() const { return m_missionActive; }
+    bool isMissionPaused() const { return m_missionPaused; }
 
 signals:
     void connectionStatusChanged(bool connected);
@@ -116,6 +120,7 @@ private:
     // Mission tracking
     int m_currentMissionItem;
     bool m_missionActive;
+    bool m_missionPaused;
     
     // Manual control state
     bool m_manualControlActive;

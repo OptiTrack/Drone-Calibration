@@ -19,6 +19,7 @@
 #include <QGroupBox>
 #include <QDoubleSpinBox>
 #include <QMenu>
+#include <QAction>
 #include <QTimer>
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -31,6 +32,7 @@
 #include "../models/waypoint.h"
 
 class DroneController;
+class QFrame;
 
 class PathPlannerOpenGLWidget : public QOpenGLWidget, protected QOpenGLFunctions
 {
@@ -40,13 +42,6 @@ public:
     enum ViewMode {
         TopDownMode,    ///< Orthographic top-down view for planning
         View3DMode      ///< Free 3D inspection mode
-    };
-
-    enum InteractionMode {
-        NavigateMode,   ///< Camera navigation only
-        CreateMode,     ///< Left-click creates waypoints
-        SelectMode,     ///< Left-click selects waypoints
-        TransformMode   ///< Left-drag gizmo handles to move selected waypoint
     };
 
     explicit PathPlannerOpenGLWidget(QWidget *parent = nullptr);
@@ -75,8 +70,10 @@ public:
     float defaultHoldTime() const { return m_defaultHoldTime; }
     void setDefaultYawAngle(float yawDeg) { m_defaultYawAngle = yawDeg; }
     float defaultYawAngle() const { return m_defaultYawAngle; }
-    void setInteractionMode(InteractionMode mode);
-    InteractionMode interactionMode() const { return m_interactionMode; }
+    void setNavigationOnly(bool on);
+    void setEditorTools(bool createEnabled, bool transformEnabled);
+    bool createToolEnabled() const { return m_createToolEnabled; }
+    bool transformToolEnabled() const { return m_transformToolEnabled; }
     bool undo();
     bool redo();
     bool canUndo() const { return !m_undoStack.isEmpty(); }
@@ -167,6 +164,8 @@ private:
                     QVector<float> &vertices, QVector<float> &colors) const;
     void appendSphere(const QVector3D &center, float radius, const QVector3D &color,
                       QVector<float> &vertices, QVector<float> &colors) const;
+    bool effectiveCreate() const;
+    bool effectiveTransform() const;
     void commitEdit(const std::vector<Waypoint> &before, const std::vector<Waypoint> &after);
     void clearRedoHistory();
     void updateHistorySignals();
@@ -190,7 +189,9 @@ private:
     
     // View mode
     ViewMode m_viewMode;
-    InteractionMode m_interactionMode;
+    bool m_navigationOnly = false;
+    bool m_createToolEnabled = false;
+    bool m_transformToolEnabled = true;
     float m_orthoZoom;
     float m_defaultAltitude;
     float m_defaultAcceptanceRadius;
@@ -264,19 +265,34 @@ private slots:
     void onSavePath();
     void onLoadPath();
     void onUploadMission();
+    void onMissionPlayClicked();
+    void onMissionPauseContinueClicked();
     void onRunMission();
-    void onCancelMission();
+    void onPauseMission();
+    void onResumeMission();
+    void onLandMission();
+    void onReturnToLaunchMission();
+    void onEmergencyStopMission();
+    void onReturnToEdit();
     void onWaypointSelected(int id);
     void onWaypointCellChanged(int row, int column);
-    void onPlayPath();
-    void onStopPath();
-    void onPathAnimationTimer();
+    void onPlayPathPreview();
+    void onStopPathPreview();
+    void onPathPreviewAnimationTimer();
     void onViewModeChanged();
-    void onInteractionModeChanged(int index);
+    void applyEditorToolsFromButtons();
     void onWaypointRowsMoved(const QModelIndex &parent, int start, int end,
                              const QModelIndex &destination, int row);
 
 private:
+    enum class MissionWorkspacePhase {
+        EditingDraft,
+        ReadyToUpload,
+        UploadedReady,
+        Running,
+        Paused
+    };
+
     bool eventFilter(QObject *watched, QEvent *event) override;
     void setupUI();
     void setupTopBar();
@@ -284,16 +300,28 @@ private:
     void setupWaypointTable();
     void updateViewTogglePlacement();
     void updateWaypointTable();
-    void startPathAnimation();
-    void stopPathAnimation();
+    void startPathPreviewAnimation();
+    void stopPathPreviewAnimation();
     void emitWaypointsChanged();
     void updateUndoRedoButtons();
+    void updateDirtyState();
+    QString waypointFingerprint(const std::vector<Waypoint> &waypoints) const;
+    MissionWorkspacePhase currentMissionPhase() const;
+    void updateMissionChrome();
+    void setEditingLocked(bool locked);
     
     // Main layouts
     QVBoxLayout *m_mainLayout;
     QHBoxLayout *m_contentLayout;
     QWidget *m_topBarWidget;
     QVBoxLayout *m_controlsLayout;
+    QWidget *m_topBarPreUploadToolbar;
+    QWidget *m_topBarEditingCluster;
+    QWidget *m_topBarMissionCluster;
+    QPushButton *m_topBarReturnToEditButton;
+    QPushButton *m_topBarLandButton;
+    QPushButton *m_topBarRtlButton;
+    QPushButton *m_topBarEstopButton;
     
     // 3D View
     PathPlannerOpenGLWidget *m_openglWidget;
@@ -313,12 +341,12 @@ private:
     // Path controls
     QToolButton *m_pathMenuButton;
     QPushButton *m_uploadMissionButton;
-    QPushButton *m_runMissionButton;
-    QPushButton *m_cancelMissionButton;
+    QPushButton *m_missionPlayButton;
+    QPushButton *m_missionPauseContinueButton;
     QPushButton *m_createModeButton;
     QPushButton *m_transformModeButton;
-    QPushButton *m_playPathButton;
-    QPushButton *m_stopPathButton;
+    QPushButton *m_playPathPreviewButton;
+    QPushButton *m_stopPathPreviewButton;
     QLineEdit *m_pathNameEdit;
     QLabel *m_missionStatusLabel;
     
@@ -328,18 +356,23 @@ private:
     QDoubleSpinBox *m_defaultAltitudeSpinBox;
     QPushButton *m_undoEditButton;
     QPushButton *m_redoEditButton;
-    
-    // Animation
-    QTimer *m_pathAnimationTimer;
-    int m_currentAnimationWaypoint;
-    float m_animationProgress;
-    bool m_isPlayingPath;
-    
+
+    QTimer *m_pathPreviewAnimationTimer;
+    int m_pathPreviewWaypointIndex;
+    float m_pathPreviewProgress;
+    bool m_isPlayingPathPreview;
+
     // Current waypoint selection
     int m_selectedWaypoint;  // ID of selected waypoint (-1 if none)
     
     // Drone connection
     DroneController *m_droneController;
+    bool m_hasUploadedSnapshot;
+    bool m_waypointsDirtySinceUpload;
+    bool m_editingLocked;
+    QString m_uploadedWaypointFingerprint;
+    QString m_lastControllerError;
+    QString m_lastMissionStatusText;
 
     bool m_updatingWaypointTable;
     bool m_reorderingWaypointRows;

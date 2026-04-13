@@ -16,7 +16,6 @@ DroneStatusWidget::DroneStatusWidget(QWidget *parent)
     , m_simFlightMode("STABILIZE")
 {
     ui->setupUi(this);
-    ui->setupUi(this);
     
     // Initialize status
     m_currentStatus.connected = false;

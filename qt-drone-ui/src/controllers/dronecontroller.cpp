@@ -21,6 +21,7 @@ DroneController::DroneController(QObject *parent)
     , m_silPort(14550)
     , m_currentMissionItem(0)
     , m_missionActive(false)
+    , m_missionPaused(false)
     , m_manualControlActive(false)
     , m_manualControlTimer(nullptr)
 {
@@ -136,11 +137,86 @@ void DroneController::updateConnectionStatus(bool connected)
             if (m_manualControlTimer->isActive()) {
                 m_manualControlTimer->stop();
             }
+            m_missionActive = false;
+            m_missionPaused = false;
         }
         
         emit connectionStatusChanged(connected);
         emit statusUpdated(m_currentStatus);
     }
+}
+
+void DroneController::armDrone(bool arm)
+{
+    if (!m_connected) {
+        emit errorOccurred("Cannot change arm state: Not connected to drone");
+        return;
+    }
+
+    sendCommand("arm_disarm", QJsonObject{{"arm", arm}});
+    m_currentStatus.armed = arm;
+    emit statusUpdated(m_currentStatus);
+    emit messageReceived(arm ? "Arm command sent" : "Disarm command sent");
+}
+
+void DroneController::setFlightMode(const QString &mode)
+{
+    if (!m_connected) {
+        emit errorOccurred("Cannot set flight mode: Not connected to drone");
+        return;
+    }
+
+    sendCommand("set_flight_mode", QJsonObject{{"mode", mode}});
+    m_currentStatus.flightMode = mode;
+    emit statusUpdated(m_currentStatus);
+    emit messageReceived(QString("Flight mode change requested: %1").arg(mode));
+}
+
+void DroneController::takeoff(float altitude)
+{
+    if (!m_connected) {
+        emit errorOccurred("Cannot takeoff: Not connected to drone");
+        return;
+    }
+
+    sendCommand("takeoff", QJsonObject{{"altitude", altitude}});
+    emit messageReceived(QString("Takeoff command sent (altitude %1 m)").arg(altitude, 0, 'f', 1));
+}
+
+void DroneController::land()
+{
+    if (!m_connected) {
+        emit errorOccurred("Cannot land: Not connected to drone");
+        return;
+    }
+
+    sendCommand("land");
+    emit messageReceived("Land command sent");
+}
+
+void DroneController::returnToLaunch()
+{
+    if (!m_connected) {
+        emit errorOccurred("Cannot return to launch: Not connected to drone");
+        return;
+    }
+
+    sendCommand("return_to_launch");
+    emit messageReceived("Return-to-launch command sent");
+}
+
+void DroneController::emergencyStop()
+{
+    if (!m_connected) {
+        emit errorOccurred("Cannot emergency stop: Not connected to drone");
+        return;
+    }
+
+    sendCommand("emergency_stop");
+    m_missionActive = false;
+    m_missionPaused = false;
+    emit missionStatusChanged("Emergency stop requested");
+    emit messageReceived("Emergency stop command sent");
 }
 
 void DroneController::sendCommand(const QString &command, const QJsonObject &params)
@@ -251,8 +327,30 @@ void DroneController::uploadMission(const QVector<QVector3D> &waypoints)
     sendCommand("upload_mission", missionData);
     
     m_currentMission.uploaded = true;
+    m_missionActive = false;
+    m_missionPaused = false;
     emit missionStatusChanged("Mission uploaded successfully");
     emit messageReceived(QString("Uploaded mission with %1 waypoints").arg(items.size()));
+}
+
+void DroneController::stageMissionLocally(const QVector<QVector3D> &waypoints)
+{
+    if (waypoints.isEmpty()) {
+        emit errorOccurred("Cannot stage mission: no waypoints");
+        return;
+    }
+
+    QVector<MissionItem> items = waypointsToMissionItems(waypoints);
+
+    m_currentMission.id = QUuid::createUuid().toString();
+    m_currentMission.name = QString("Local_%1").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
+    m_currentMission.items = items;
+    m_currentMission.uploaded = true;
+    m_missionActive = false;
+    m_missionPaused = false;
+
+    emit missionStatusChanged("Mission staged locally (offline test)");
+    emit messageReceived(QString("Offline test: staged %1 waypoints (not sent to drone)").arg(items.size()));
 }
 
 void DroneController::startMission()
@@ -269,6 +367,7 @@ void DroneController::startMission()
     
     sendCommand("start_mission");
     m_missionActive = true;
+    m_missionPaused = false;
     m_currentMissionItem = 0;
     
     emit missionStatusChanged("Mission started");
@@ -282,6 +381,7 @@ void DroneController::pauseMission()
     }
     
     sendCommand("pause_mission");
+    m_missionPaused = true;
     emit missionStatusChanged("Mission paused");
 }
 
@@ -293,6 +393,7 @@ void DroneController::resumeMission()
     
     sendCommand("resume_mission");
     m_missionActive = true;
+    m_missionPaused = false;
     emit missionStatusChanged("Mission resumed");
 }
 
@@ -304,6 +405,7 @@ void DroneController::abortMission()
     
     sendCommand("abort_mission");
     m_missionActive = false;
+    m_missionPaused = false;
     
     emit missionStatusChanged("Mission aborted");
     emit messageReceived("Mission execution aborted");
@@ -314,12 +416,107 @@ void DroneController::clearMission()
     m_currentMission.items.clear();
     m_currentMission.uploaded = false;
     m_missionActive = false;
+    m_missionPaused = false;
     
     if (m_connected) {
         sendCommand("clear_mission");
     }
     
     emit missionStatusChanged("Mission cleared");
+}
+
+void DroneController::setManualControl(float roll, float pitch, float yaw, float throttle)
+{
+    if (!m_connected) {
+        emit errorOccurred("Cannot send manual control: Not connected to drone");
+        return;
+    }
+
+    QJsonObject params;
+    params["roll"] = roll;
+    params["pitch"] = pitch;
+    params["yaw"] = yaw;
+    params["throttle"] = throttle;
+    sendCommand("set_manual_control", params);
+}
+
+void DroneController::setPositionTarget(const QVector3D &position)
+{
+    if (!m_connected) {
+        emit errorOccurred("Cannot set position target: Not connected to drone");
+        return;
+    }
+
+    QJsonObject params;
+    params["x"] = position.x();
+    params["y"] = position.y();
+    params["z"] = position.z();
+    sendCommand("set_position_target", params);
+}
+
+void DroneController::setVelocityTarget(const QVector3D &velocity)
+{
+    if (!m_connected) {
+        emit errorOccurred("Cannot set velocity target: Not connected to drone");
+        return;
+    }
+
+    QJsonObject params;
+    params["x"] = velocity.x();
+    params["y"] = velocity.y();
+    params["z"] = velocity.z();
+    sendCommand("set_velocity_target", params);
+}
+
+void DroneController::startVideoRecording()
+{
+    sendCommand("start_video_recording");
+}
+
+void DroneController::stopVideoRecording()
+{
+    sendCommand("stop_video_recording");
+}
+
+void DroneController::takePicture()
+{
+    sendCommand("take_picture");
+}
+
+void DroneController::setCameraSettings(const QString &mode, int quality)
+{
+    sendCommand("set_camera_settings", QJsonObject{{"mode", mode}, {"quality", quality}});
+}
+
+void DroneController::requestStatus()
+{
+    if (m_voxlConnection && m_connected) {
+        m_voxlConnection->requestStatus();
+    }
+}
+
+void DroneController::processStatusData(const QJsonObject &data)
+{
+    Q_UNUSED(data);
+}
+
+void DroneController::processMissionStatus(const QJsonObject &data)
+{
+    Q_UNUSED(data);
+}
+
+void DroneController::sendMavlinkCommand(int command, float param1, float param2, float param3, float param4, float param5, float param6, float param7)
+{
+    QJsonObject params;
+    params["command"] = command;
+    params["param1"] = param1;
+    params["param2"] = param2;
+    params["param3"] = param3;
+    params["param4"] = param4;
+    params["param5"] = param5;
+    params["param6"] = param6;
+    params["param7"] = param7;
+    sendCommand("mavlink_command_long", params);
 }
 
 QVector<MissionItem> DroneController::waypointsToMissionItems(const QVector<QVector3D> &waypoints)
