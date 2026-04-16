@@ -476,7 +476,7 @@ void RecordedPathsWidget::onEditPath()
             }
         }
         
-        // Load the path into the Flight Planner for editing
+        // Load the path into the Mission tab for editing
         QVector<QVector3D> points;
         for (int i = 0; i < path->waypointCount(); ++i) {
             const Waypoint &wp = path->waypoint(i);

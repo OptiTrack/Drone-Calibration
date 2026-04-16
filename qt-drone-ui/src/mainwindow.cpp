@@ -116,7 +116,6 @@ void MainWindow::setupPlannerMenus()
     QMenu *missionMenu = menuBar()->addMenu("Mission");
     QAction *uploadAction = missionMenu->addAction("Upload Mission");
     QAction *runAction = missionMenu->addAction("Run Mission");
-    QAction *cancelAction = missionMenu->addAction("Cancel Mission");
 
     auto invokePlannerSlot = [this](const char *slotName) {
         if (!m_pathPlannerWidget)
@@ -126,7 +125,6 @@ void MainWindow::setupPlannerMenus()
 
     connect(uploadAction, &QAction::triggered, this, [invokePlannerSlot]() { invokePlannerSlot("onUploadMission"); });
     connect(runAction, &QAction::triggered, this, [invokePlannerSlot]() { invokePlannerSlot("onRunMission"); });
-    connect(cancelAction, &QAction::triggered, this, [invokePlannerSlot]() { invokePlannerSlot("onCancelMission"); });
 }
 
 void MainWindow::setupNavigationBar()
@@ -243,7 +241,7 @@ void MainWindow::setupNavigationBar()
     QList<NavItem> navItems = {
         {"Home", "●", "Dashboard overview"},
         {"Live Camera", "◐", "Real-time camera feed"}, 
-        {"Flight Planner", "◢", "Plan drone waypoints"},
+        {"Mission", "◢", "Plan and execute missions"},
         {"Saved Paths", "◫", "View saved flight paths"},
         {"Media Library", "◨", "Recorded videos"},
         {"System Status", "◉", "Drone telemetry"}
@@ -377,7 +375,7 @@ void MainWindow::setupMainContent()
     m_cameraFeedWidget = new CameraFeedWidget;
     m_contentStack->addWidget(m_cameraFeedWidget);
     
-    // Index 2: Flight Planner
+    // Index 2: Mission
     m_pathPlannerWidget = new PathPlannerWidget;
     m_pathPlannerWidget->setDroneController(m_droneController);  // Connect drone controller
     m_contentStack->addWidget(m_pathPlannerWidget);
