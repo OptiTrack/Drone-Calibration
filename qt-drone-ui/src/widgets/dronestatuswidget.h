@@ -53,7 +53,6 @@ public:
 
 signals:
     void armDisarmRequested(bool arm);
-    void flightModeChangeRequested(const QString &mode);
     void takeoffRequested();
     void landRequested();
     void returnToLaunchRequested();
@@ -65,7 +64,6 @@ private slots:
     void onLandClicked();
     void onRTLClicked();
     void onEmergencyStopClicked();
-    void onFlightModeChanged(const QString &mode);
     void onStatusUpdateTimer();
     void onClearMessages();
 
@@ -83,13 +81,6 @@ private:
     // Data and timers
     DroneStatus m_currentStatus;
     QTimer *m_statusUpdateTimer;
-    QTimer *m_simulationTimer;
-    
-    // Simulation state (for demo purposes)
-    bool m_simulationMode;
-    float m_simBatteryLevel;
-    bool m_simArmed;
-    QString m_simFlightMode;
 };
 
 #endif // DRONESTATUSWIDGET_H

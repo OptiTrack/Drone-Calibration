@@ -16,7 +16,7 @@ DroneController::DroneController(QObject *parent)
     , m_dronePort(14550)
     , m_heartbeatTimer(nullptr)
     , m_statusUpdateTimer(nullptr)
-    , m_silMode(true) // Default to Software in the Loop
+    , m_silMode(false)
     , m_silHost("127.0.0.1")
     , m_silPort(14550)
     , m_currentMissionItem(0)
@@ -29,7 +29,7 @@ DroneController::DroneController(QObject *parent)
     m_currentStatus.connected = false;
     m_currentStatus.batteryPercentage = 0.0f;
     m_currentStatus.batteryVoltage = 0.0f;
-    m_currentStatus.flightMode = "UNKNOWN";
+    m_currentStatus.flightMode = "--";
     m_currentStatus.armed = false;
     m_currentStatus.gpsLock = false;
     m_currentStatus.gpsNumSats = 0;
@@ -39,7 +39,7 @@ DroneController::DroneController(QObject *parent)
     m_currentStatus.position = QVector3D(0, 0, 0);
     m_currentStatus.velocity = QVector3D(0, 0, 0);
     m_currentStatus.attitude = QVector3D(0, 0, 0);
-    m_currentStatus.systemStatus = "STANDBY";
+    m_currentStatus.systemStatus = "DISCONNECTED";
     
     // Initialize mission
     m_currentMission.id = "";
@@ -88,7 +88,6 @@ bool DroneController::connectToDrone(const QString &host, int port)
     m_droneHost = host;
     m_dronePort = port;
     
-    // In SIL mode, connect to localhost
     QString connectHost = m_silMode ? m_silHost : host;
     int connectPort = m_silMode ? m_silPort : port;
     
@@ -101,7 +100,7 @@ bool DroneController::connectToDrone(const QString &host, int port)
     // so that SCP uploads and the runner REST API target the actual VOXL 2.
     m_voxlConnection->setVoxlHost(host);
 
-    bool success = m_voxlConnection->connectToVOXL(connectHost, connectPort, VOXLConnection::TCP_CONNECTION);
+    bool success = m_voxlConnection->connectToVOXL(connectHost, connectPort, VOXLConnection::UDP_CONNECTION);
     
     if (success) {
         emit messageReceived("Connection initiated...");
@@ -137,6 +136,20 @@ void DroneController::updateConnectionStatus(bool connected)
             if (m_manualControlTimer->isActive()) {
                 m_manualControlTimer->stop();
             }
+            m_currentStatus.batteryPercentage = 0.0f;
+            m_currentStatus.batteryVoltage = 0.0f;
+            m_currentStatus.flightMode = "--";
+            m_currentStatus.armed = false;
+            m_currentStatus.gpsLock = false;
+            m_currentStatus.gpsNumSats = 0;
+            m_currentStatus.altitude = 0.0f;
+            m_currentStatus.groundSpeed = 0.0f;
+            m_currentStatus.verticalSpeed = 0.0f;
+            m_currentStatus.position = QVector3D(0, 0, 0);
+            m_currentStatus.velocity = QVector3D(0, 0, 0);
+            m_currentStatus.attitude = QVector3D(0, 0, 0);
+            m_currentStatus.lastHeartbeat.clear();
+            m_currentStatus.systemStatus = "DISCONNECTED";
             m_missionActive = false;
             m_missionPaused = false;
         }
@@ -157,19 +170,6 @@ void DroneController::armDrone(bool arm)
     m_currentStatus.armed = arm;
     emit statusUpdated(m_currentStatus);
     emit messageReceived(arm ? "Arm command sent" : "Disarm command sent");
-}
-
-void DroneController::setFlightMode(const QString &mode)
-{
-    if (!m_connected) {
-        emit errorOccurred("Cannot set flight mode: Not connected to drone");
-        return;
-    }
-
-    sendCommand("set_flight_mode", QJsonObject{{"mode", mode}});
-    m_currentStatus.flightMode = mode;
-    emit statusUpdated(m_currentStatus);
-    emit messageReceived(QString("Flight mode change requested: %1").arg(mode));
 }
 
 void DroneController::takeoff(float altitude)
@@ -249,15 +249,39 @@ void DroneController::onVOXLDataReceived(const QJsonObject &data)
     QString messageType = data["type"].toString();
     
     if (messageType == "status") {
-        // Process status data
         QJsonObject statusData = data["data"].toObject();
-        
+
         if (statusData.contains("battery")) {
             QJsonObject battery = statusData["battery"].toObject();
             m_currentStatus.batteryPercentage = battery["percentage"].toDouble();
             m_currentStatus.batteryVoltage = battery["voltage"].toDouble();
         }
-        
+
+        if (statusData.contains("batteryPercentage")) {
+            m_currentStatus.batteryPercentage = static_cast<float>(statusData["batteryPercentage"].toDouble());
+        }
+        if (statusData.contains("batteryVoltage")) {
+            m_currentStatus.batteryVoltage = static_cast<float>(statusData["batteryVoltage"].toDouble());
+        }
+        if (statusData.contains("flightMode")) {
+            m_currentStatus.flightMode = statusData["flightMode"].toString();
+        }
+        if (statusData.contains("armed")) {
+            m_currentStatus.armed = statusData["armed"].toBool();
+        }
+        if (statusData.contains("gpsLock")) {
+            m_currentStatus.gpsLock = statusData["gpsLock"].toBool();
+        }
+        if (statusData.contains("gpsNumSats")) {
+            m_currentStatus.gpsNumSats = statusData["gpsNumSats"].toInt();
+        }
+        if (statusData.contains("systemStatus")) {
+            m_currentStatus.systemStatus = statusData["systemStatus"].toString();
+        }
+        if (statusData.contains("lastHeartbeat")) {
+            m_currentStatus.lastHeartbeat = statusData["lastHeartbeat"].toString();
+        }
+
         if (statusData.contains("position")) {
             QJsonObject pos = statusData["position"].toObject();
             m_currentStatus.position = QVector3D(
@@ -267,7 +291,40 @@ void DroneController::onVOXLDataReceived(const QJsonObject &data)
             );
             m_currentStatus.altitude = pos["alt"].toDouble();
         }
-        
+
+        if (statusData.contains("latitude") || statusData.contains("longitude")) {
+            m_currentStatus.position.setX(static_cast<float>(statusData["latitude"].toDouble(m_currentStatus.position.x())));
+            m_currentStatus.position.setY(static_cast<float>(statusData["longitude"].toDouble(m_currentStatus.position.y())));
+        }
+        if (statusData.contains("altitude")) {
+            m_currentStatus.altitude = static_cast<float>(statusData["altitude"].toDouble());
+            m_currentStatus.position.setZ(m_currentStatus.altitude);
+        } else if (statusData.contains("gpsAltitude")) {
+            m_currentStatus.position.setZ(static_cast<float>(statusData["gpsAltitude"].toDouble()));
+        } else if (statusData.contains("localAltitude")) {
+            m_currentStatus.altitude = static_cast<float>(statusData["localAltitude"].toDouble());
+        }
+        if (statusData.contains("groundSpeed")) {
+            m_currentStatus.groundSpeed = static_cast<float>(statusData["groundSpeed"].toDouble());
+        }
+        if (statusData.contains("verticalSpeed")) {
+            m_currentStatus.verticalSpeed = static_cast<float>(statusData["verticalSpeed"].toDouble());
+        }
+        if (statusData.contains("velocityX") || statusData.contains("velocityY") || statusData.contains("velocityZ")) {
+            m_currentStatus.velocity = QVector3D(
+                static_cast<float>(statusData["velocityX"].toDouble(m_currentStatus.velocity.x())),
+                static_cast<float>(statusData["velocityY"].toDouble(m_currentStatus.velocity.y())),
+                static_cast<float>(statusData["velocityZ"].toDouble(m_currentStatus.velocity.z()))
+            );
+        }
+        if (statusData.contains("roll") || statusData.contains("pitch") || statusData.contains("yaw")) {
+            m_currentStatus.attitude = QVector3D(
+                static_cast<float>(statusData["roll"].toDouble(m_currentStatus.attitude.x())),
+                static_cast<float>(statusData["pitch"].toDouble(m_currentStatus.attitude.y())),
+                static_cast<float>(statusData["yaw"].toDouble(m_currentStatus.attitude.z()))
+            );
+        }
+
         emit statusUpdated(m_currentStatus);
     } else if (messageType == "error") {
         emit errorOccurred(data["message"].toString());

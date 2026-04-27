@@ -3,17 +3,11 @@
 #include <QDateTime>
 #include <QMessageBox>
 #include <QListWidgetItem>
-#include <QtMath>
 
 DroneStatusWidget::DroneStatusWidget(QWidget *parent)
     : QWidget(parent)
     , ui(new Ui::DroneStatusWidget)
     , m_statusUpdateTimer(nullptr)
-    , m_simulationTimer(nullptr)
-    , m_simulationMode(true)
-    , m_simBatteryLevel(85.0f)
-    , m_simArmed(false)
-    , m_simFlightMode("STABILIZE")
 {
     ui->setupUi(this);
     
@@ -21,7 +15,7 @@ DroneStatusWidget::DroneStatusWidget(QWidget *parent)
     m_currentStatus.connected = false;
     m_currentStatus.batteryPercentage = 0.0f;
     m_currentStatus.batteryVoltage = 0.0f;
-    m_currentStatus.flightMode = "UNKNOWN";
+    m_currentStatus.flightMode = "--";
     m_currentStatus.armed = false;
     m_currentStatus.gpsLock = false;
     m_currentStatus.gpsNumSats = 0;
@@ -31,7 +25,7 @@ DroneStatusWidget::DroneStatusWidget(QWidget *parent)
     m_currentStatus.position = QVector3D(0, 0, 0);
     m_currentStatus.velocity = QVector3D(0, 0, 0);
     m_currentStatus.attitude = QVector3D(0, 0, 0);
-    m_currentStatus.systemStatus = "STANDBY";
+    m_currentStatus.systemStatus = "DISCONNECTED";
     
     setupConnections();
     
@@ -41,45 +35,10 @@ DroneStatusWidget::DroneStatusWidget(QWidget *parent)
     connect(m_statusUpdateTimer, &QTimer::timeout, this, &DroneStatusWidget::onStatusUpdateTimer);
     m_statusUpdateTimer->start();
     
-    // Simulation timer for demo data
-    m_simulationTimer = new QTimer(this);
-    m_simulationTimer->setInterval(500); // Update every 500ms
-    connect(m_simulationTimer, &QTimer::timeout, [this]() {
-        if (m_simulationMode) {
-            // Simulate changing battery level
-            m_simBatteryLevel -= 0.01f; // Drain 0.01% every 500ms
-            if (m_simBatteryLevel < 0) m_simBatteryLevel = 100.0f;
-            
-            // Create simulated status
-            DroneStatus simStatus;
-            simStatus.connected = true;
-            simStatus.batteryPercentage = m_simBatteryLevel;
-            simStatus.batteryVoltage = 11.1f + (m_simBatteryLevel / 100.0f) * 1.5f;
-            simStatus.flightMode = m_simFlightMode;
-            simStatus.armed = m_simArmed;
-            simStatus.gpsLock = true;
-            simStatus.gpsNumSats = 12;
-            simStatus.altitude = 10.5f + sin(QDateTime::currentMSecsSinceEpoch() / 1000.0) * 2.0f;
-            simStatus.groundSpeed = m_simArmed ? 2.5f : 0.0f;
-            simStatus.verticalSpeed = sin(QDateTime::currentMSecsSinceEpoch() / 2000.0) * 0.5f;
-            simStatus.position = QVector3D(37.7749f, -122.4194f, simStatus.altitude);
-            simStatus.velocity = QVector3D(simStatus.groundSpeed, 0, simStatus.verticalSpeed);
-            simStatus.attitude = QVector3D(
-                sin(QDateTime::currentMSecsSinceEpoch() / 3000.0) * 5.0f, // roll
-                cos(QDateTime::currentMSecsSinceEpoch() / 4000.0) * 3.0f, // pitch
-                45.0f // yaw
-            );
-            simStatus.lastHeartbeat = QDateTime::currentDateTime().toString("hh:mm:ss");
-            simStatus.systemStatus = m_simArmed ? "ACTIVE" : "STANDBY";
-            
-            updateDroneStatus(simStatus);
-        }
-    });
-    m_simulationTimer->start();
-    
     // Add initial message
     addMessage("Drone Status Widget initialized", "info");
-    addMessage("Running in simulation mode - Connect to real drone to see live data", "warning");
+    addMessage("Connect to a drone to see live telemetry", "info");
+    updateDroneStatus(m_currentStatus);
 }
 
 DroneStatusWidget::~DroneStatusWidget()
@@ -89,8 +48,9 @@ DroneStatusWidget::~DroneStatusWidget()
 
 void DroneStatusWidget::setupConnections()
 {
-    // Connect flight mode combo
-    connect(ui->flightModeCombo, &QComboBox::currentTextChanged, this, &DroneStatusWidget::onFlightModeChanged);
+    ui->batteryStatusLabel->hide();
+    ui->flightModeSelectLabel->hide();
+    ui->flightModeCombo->hide();
     
     // Connect control buttons
     connect(ui->armDisarmButton, &QPushButton::clicked, this, &DroneStatusWidget::onArmDisarmClicked);
@@ -116,20 +76,43 @@ void DroneStatusWidget::updateDroneStatus(const DroneStatus &status)
 void DroneStatusWidget::setConnectionStatus(bool connected)
 {
     m_currentStatus.connected = connected;
-    updateFlightDisplay();
-    updateControlsDisplay();
     
     if (connected) {
         addMessage("Connected to drone", "info");
-        m_simulationMode = false;
     } else {
+        m_currentStatus.batteryPercentage = 0.0f;
+        m_currentStatus.batteryVoltage = 0.0f;
+        m_currentStatus.flightMode = "--";
+        m_currentStatus.armed = false;
+        m_currentStatus.gpsLock = false;
+        m_currentStatus.gpsNumSats = 0;
+        m_currentStatus.altitude = 0.0f;
+        m_currentStatus.groundSpeed = 0.0f;
+        m_currentStatus.verticalSpeed = 0.0f;
+        m_currentStatus.position = QVector3D(0, 0, 0);
+        m_currentStatus.velocity = QVector3D(0, 0, 0);
+        m_currentStatus.attitude = QVector3D(0, 0, 0);
+        m_currentStatus.lastHeartbeat.clear();
+        m_currentStatus.systemStatus = "DISCONNECTED";
         addMessage("Disconnected from drone", "warning");
-        m_simulationMode = true;
     }
+
+    updateDroneStatus(m_currentStatus);
 }
 
 void DroneStatusWidget::updateBatteryDisplay()
 {
+    if (!m_currentStatus.connected) {
+        ui->batteryPercentageLabel->setText("Battery: --");
+        ui->batteryProgressBar->setValue(0);
+        ui->batteryVoltageLabel->setText("Voltage: --");
+        ui->batteryProgressBar->setStyleSheet(
+            "QProgressBar { border: 1px solid #4b5563; border-radius: 4px; text-align: center; } "
+            "QProgressBar::chunk { background-color: #4b5563; border-radius: 3px; }"
+        );
+        return;
+    }
+
     float percentage = m_currentStatus.batteryPercentage;
     
     ui->batteryPercentageLabel->setText(QString("Battery: %1%").arg(percentage, 0, 'f', 1));
@@ -137,33 +120,22 @@ void DroneStatusWidget::updateBatteryDisplay()
     ui->batteryVoltageLabel->setText(QString("Voltage: %1V").arg(m_currentStatus.batteryVoltage, 0, 'f', 2));
     
     // Update battery status color based on level
-    QString statusText;
-    QString color;
     if (percentage > 50) {
-        statusText = "Good";
-        color = "#10b981";
         ui->batteryProgressBar->setStyleSheet(
             "QProgressBar { border: 1px solid #4b5563; border-radius: 4px; text-align: center; } "
             "QProgressBar::chunk { background-color: #10b981; border-radius: 3px; }"
         );
     } else if (percentage > 25) {
-        statusText = "Warning";
-        color = "#f59e0b";
         ui->batteryProgressBar->setStyleSheet(
             "QProgressBar { border: 1px solid #4b5563; border-radius: 4px; text-align: center; } "
             "QProgressBar::chunk { background-color: #f59e0b; border-radius: 3px; }"
         );
     } else {
-        statusText = "Critical";
-        color = "#ef4444";
         ui->batteryProgressBar->setStyleSheet(
             "QProgressBar { border: 1px solid #4b5563; border-radius: 4px; text-align: center; } "
             "QProgressBar::chunk { background-color: #ef4444; border-radius: 3px; }"
         );
     }
-    
-    ui->batteryStatusLabel->setText(QString("Status: %1").arg(statusText));
-    ui->batteryStatusLabel->setStyleSheet(QString("QLabel { color: %1; font-weight: bold; }").arg(color));
 }
 
 void DroneStatusWidget::updateFlightDisplay()
@@ -175,6 +147,17 @@ void DroneStatusWidget::updateFlightDisplay()
     } else {
         ui->connectionStatusLabel->setText("Disconnected");
         ui->connectionStatusLabel->setStyleSheet("QLabel { color: #ef4444; font-weight: bold; }");
+        ui->flightModeLabel->setText("--");
+        ui->armedStatusLabel->setText("--");
+        ui->armedStatusLabel->setStyleSheet("QLabel { color: #9ca3af; }");
+        ui->gpsStatusLabel->setText("--");
+        ui->gpsStatusLabel->setStyleSheet("QLabel { color: #9ca3af; }");
+        ui->altitudeLabel->setText("--");
+        ui->groundSpeedLabel->setText("--");
+        ui->verticalSpeedLabel->setText("--");
+        ui->systemStatusLabel->setText("DISCONNECTED");
+        ui->systemStatusLabel->setStyleSheet("QLabel { color: #9ca3af; font-weight: bold; }");
+        return;
     }
     
     // Flight mode
@@ -216,6 +199,16 @@ void DroneStatusWidget::updateFlightDisplay()
 
 void DroneStatusWidget::updatePositionDisplay()
 {
+    if (!m_currentStatus.connected) {
+        ui->latitudeLabel->setText("--");
+        ui->longitudeLabel->setText("--");
+        ui->altitudeAbsLabel->setText("--");
+        ui->rollLabel->setText("--");
+        ui->pitchLabel->setText("--");
+        ui->yawLabel->setText("--");
+        return;
+    }
+
     ui->latitudeLabel->setText(formatCoordinate(m_currentStatus.position.x(), "°"));
     ui->longitudeLabel->setText(formatCoordinate(m_currentStatus.position.y(), "°"));
     ui->altitudeAbsLabel->setText(QString("%1 m").arg(m_currentStatus.position.z(), 0, 'f', 1));
@@ -229,9 +222,6 @@ void DroneStatusWidget::updateControlsDisplay()
 {
     bool connected = m_currentStatus.connected;
     bool armed = m_currentStatus.armed;
-    
-    // Update flight mode combo
-    ui->flightModeCombo->setEnabled(connected && !armed);
     
     // Update arm/disarm button
     if (armed) {
@@ -310,12 +300,6 @@ void DroneStatusWidget::onArmDisarmClicked()
     }
     
     emit armDisarmRequested(shouldArm);
-    
-    // In simulation mode, update immediately
-    if (m_simulationMode) {
-        m_simArmed = shouldArm;
-        addMessage(shouldArm ? "Drone armed" : "Drone disarmed", "info");
-    }
 }
 
 void DroneStatusWidget::onTakeoffClicked()
@@ -359,19 +343,6 @@ void DroneStatusWidget::onEmergencyStopClicked()
     if (ret == QMessageBox::Yes) {
         emit emergencyStopRequested();
         addMessage("EMERGENCY STOP ACTIVATED", "error");
-    }
-}
-
-void DroneStatusWidget::onFlightModeChanged(const QString &mode)
-{
-    if (m_currentStatus.connected) {
-        emit flightModeChangeRequested(mode);
-        addMessage(QString("Flight mode change requested: %1").arg(mode), "info");
-        
-        // In simulation mode, update immediately
-        if (m_simulationMode) {
-            m_simFlightMode = mode;
-        }
     }
 }
 

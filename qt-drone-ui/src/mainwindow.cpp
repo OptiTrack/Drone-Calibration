@@ -17,6 +17,8 @@
 #include <QListWidgetItem>
 #include <QMessageBox>
 #include <QMetaObject>
+#include <QInputDialog>
+#include <QLineEdit>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -28,6 +30,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_navigationList(nullptr)
     , m_drawerToggleButton(nullptr)
     , m_reopenSidebarButton(nullptr)
+    , m_connectionStatusDot(nullptr)
+    , m_connectionStatusText(nullptr)
     , m_contentStack(nullptr)
     , m_mainSplitter(nullptr)
     , m_dashboardWidget(nullptr)
@@ -113,6 +117,40 @@ void MainWindow::setupUI()
 
 void MainWindow::setupPlannerMenus()
 {
+    QMenu *connectionMenu = menuBar()->addMenu("Connection");
+    QAction *connectAction = connectionMenu->addAction("Connect to Starling 2 Max");
+    QAction *disconnectAction = connectionMenu->addAction("Disconnect");
+
+    connect(connectAction, &QAction::triggered, this, [this]() {
+        bool ok = false;
+        const QString host = QInputDialog::getText(this,
+                                                   "Connect to Starling 2 Max",
+                                                   "VOXL IP address:",
+                                                   QLineEdit::Normal,
+                                                   "192.168.8.1",
+                                                   &ok);
+        if (!ok || host.trimmed().isEmpty()) {
+            return;
+        }
+
+        const int port = QInputDialog::getInt(this,
+                                              "Connect to Starling 2 Max",
+                                              "MAVLink UDP port:",
+                                              14550,
+                                              1,
+                                              65535,
+                                              1,
+                                              &ok);
+        if (!ok) {
+            return;
+        }
+
+        m_droneController->connectToDrone(host.trimmed(), port);
+    });
+
+    connect(disconnectAction, &QAction::triggered,
+            m_droneController, &DroneController::disconnectFromDrone);
+
     QMenu *missionMenu = menuBar()->addMenu("Mission");
     QAction *uploadAction = missionMenu->addAction("Upload Mission");
     QAction *runAction = missionMenu->addAction("Run Mission");
@@ -334,16 +372,16 @@ void MainWindow::setupNavigationBar()
     
     // Connection status
     QHBoxLayout *connectionLayout = new QHBoxLayout;
-    QLabel *statusDot = new QLabel(QString::fromUtf8("\xE2\x97\x8F"));
-    statusDot->setStyleSheet("color: #ef4444; font-size: 12px;"); // Red for disconnected
+    m_connectionStatusDot = new QLabel(QString::fromUtf8("\xE2\x97\x8F"));
+    m_connectionStatusDot->setStyleSheet("color: #ef4444; font-size: 12px;");
     
-    QLabel *statusText = new QLabel("Drone Disconnected");
-    statusText->setStyleSheet(
+    m_connectionStatusText = new QLabel("Drone Disconnected");
+    m_connectionStatusText->setStyleSheet(
         "QLabel { color: #dcdcdc; font-size: 12px; }"
     );
     
-    connectionLayout->addWidget(statusDot);
-    connectionLayout->addWidget(statusText);
+    connectionLayout->addWidget(m_connectionStatusDot);
+    connectionLayout->addWidget(m_connectionStatusText);
     connectionLayout->addStretch();
     
     // Version info
@@ -456,7 +494,28 @@ void MainWindow::connectSignals()
             this, [this](bool connected) {
                 QString status = connected ? "Connected to VOXL 2" : "Disconnected from drone";
                 statusBar()->showMessage(status);
+                m_connectionStatusDot->setStyleSheet(
+                    connected ? "color: #10b981; font-size: 12px;" : "color: #ef4444; font-size: 12px;");
+                m_connectionStatusText->setText(connected ? "Drone Connected" : "Drone Disconnected");
+                m_droneStatusWidget->setConnectionStatus(connected);
             });
+    connect(m_droneController, &DroneController::statusUpdated,
+            m_droneStatusWidget, &DroneStatusWidget::updateDroneStatus);
+    connect(m_droneController, &DroneController::messageReceived,
+            this, [this](const QString &message) { statusBar()->showMessage(message, 5000); });
+    connect(m_droneController, &DroneController::errorOccurred,
+            this, [this](const QString &error) { statusBar()->showMessage(error, 7000); });
+
+    connect(m_droneStatusWidget, &DroneStatusWidget::armDisarmRequested,
+            m_droneController, &DroneController::armDrone);
+    connect(m_droneStatusWidget, &DroneStatusWidget::takeoffRequested,
+            m_droneController, [this]() { m_droneController->takeoff(10.0f); });
+    connect(m_droneStatusWidget, &DroneStatusWidget::landRequested,
+            m_droneController, &DroneController::land);
+    connect(m_droneStatusWidget, &DroneStatusWidget::returnToLaunchRequested,
+            m_droneController, &DroneController::returnToLaunch);
+    connect(m_droneStatusWidget, &DroneStatusWidget::emergencyStopRequested,
+            m_droneController, &DroneController::emergencyStop);
 }
 
 void MainWindow::onNavigationItemClicked(int index)

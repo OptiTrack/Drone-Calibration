@@ -6,6 +6,125 @@
 #include <QUrlQuery>
 #include <QHttpMultiPart>
 #include <QNetworkRequest>
+#include <QDateTime>
+#include <QtEndian>
+#include <QtMath>
+#include <cstring>
+
+namespace {
+constexpr quint8 MavlinkV1Magic = 0xFE;
+constexpr quint8 MavlinkV2Magic = 0xFD;
+constexpr quint8 GroundStationSystemId = 255;
+constexpr quint8 GroundStationComponentId = 190; // MAV_COMP_ID_MISSIONPLANNER
+constexpr quint8 MavTypeGcs = 6;
+constexpr quint8 MavAutopilotInvalid = 8;
+constexpr quint8 MavStateActive = 4;
+constexpr int MavlinkHeartbeatTimeoutMs = 5000;
+
+enum MavCommand : quint16 {
+    MavCmdNavReturnToLaunch = 20,
+    MavCmdNavLand = 21,
+    MavCmdNavTakeoff = 22,
+    MavCmdComponentArmDisarm = 400,
+};
+
+quint16 crcAccumulate(quint8 data, quint16 crc)
+{
+    data ^= static_cast<quint8>(crc & 0xff);
+    data ^= data << 4;
+    return static_cast<quint16>((crc >> 8) ^ (static_cast<quint16>(data) << 8) ^
+                                (static_cast<quint16>(data) << 3) ^
+                                (static_cast<quint16>(data) >> 4));
+}
+
+quint16 mavlinkCrc(const QByteArray &data, quint8 crcExtra)
+{
+    quint16 crc = 0xffff;
+    for (char byte : data) {
+        crc = crcAccumulate(static_cast<quint8>(byte), crc);
+    }
+    return crcAccumulate(crcExtra, crc);
+}
+
+template <typename T>
+T readLe(const QByteArray &payload, int offset)
+{
+    T value {};
+    if (offset < 0 || offset + static_cast<int>(sizeof(T)) > payload.size()) {
+        return value;
+    }
+
+    memcpy(&value, payload.constData() + offset, sizeof(T));
+    return qFromLittleEndian(value);
+}
+
+float readFloatLe(const QByteArray &payload, int offset)
+{
+    quint32 raw = readLe<quint32>(payload, offset);
+    float value = 0.0f;
+    memcpy(&value, &raw, sizeof(value));
+    return value;
+}
+
+void appendLe16(QByteArray &payload, quint16 value)
+{
+    char bytes[sizeof(value)];
+    qToLittleEndian(value, bytes);
+    payload.append(bytes, sizeof(value));
+}
+
+void appendLe32(QByteArray &payload, quint32 value)
+{
+    char bytes[sizeof(value)];
+    qToLittleEndian(value, bytes);
+    payload.append(bytes, sizeof(value));
+}
+
+void appendFloatLe(QByteArray &payload, float value)
+{
+    quint32 raw = 0;
+    memcpy(&raw, &value, sizeof(raw));
+    appendLe32(payload, raw);
+}
+
+QString px4ModeName(quint32 customMode)
+{
+    const quint8 mainMode = static_cast<quint8>((customMode >> 16) & 0xff);
+    const quint8 subMode = static_cast<quint8>((customMode >> 24) & 0xff);
+
+    switch (mainMode) {
+    case 1: return "MANUAL";
+    case 2: return "ALTCTL";
+    case 3: return "POSCTL";
+    case 4: return "AUTO";
+    case 5: return "ACRO";
+    case 6: return "OFFBOARD";
+    case 7: return "STABILIZED";
+    case 8: return "RATTITUDE";
+    default:
+        if (subMode != 0) {
+            return QString("PX4 %1.%2").arg(mainMode).arg(subMode);
+        }
+        return QString("PX4 %1").arg(mainMode);
+    }
+}
+
+QString systemStatusName(quint8 status)
+{
+    switch (status) {
+    case 0: return "UNINIT";
+    case 1: return "BOOT";
+    case 2: return "CALIBRATING";
+    case 3: return "STANDBY";
+    case 4: return "ACTIVE";
+    case 5: return "CRITICAL";
+    case 6: return "EMERGENCY";
+    case 7: return "POWEROFF";
+    case 8: return "TERMINATING";
+    default: return "UNKNOWN";
+    }
+}
+}
 
 VOXLConnection::VOXLConnection(QObject *parent) 
     : QObject(parent)
@@ -17,6 +136,11 @@ VOXLConnection::VOXLConnection(QObject *parent)
     , m_port(0)
     , m_connected(false)
     , m_connectionTimeout(5000)
+    , m_remotePort(0)
+    , m_mavlinkSequence(0)
+    , m_targetSystemId(1)
+    , m_targetComponentId(1)
+    , m_haveAutopilotTarget(false)
     , m_heartbeatTimer(new QTimer(this))
     , m_connectionTimer(new QTimer(this))
     , m_heartbeatInterval(1000)
@@ -42,35 +166,139 @@ VOXLConnection::~VOXLConnection()
     }
 }
 
-// Basic method implementations
 bool VOXLConnection::connectToVOXL(const QString &host, int port, ConnectionType type)
 {
-    qDebug() << "Connecting to VOXL at" << host << ":" << port;
-    return true; // Stub implementation
+    disconnect();
+
+    m_host = host;
+    m_port = port;
+    m_connectionType = type;
+    m_remoteAddress = QHostAddress(host);
+    m_remotePort = static_cast<quint16>(port);
+    m_connected = false;
+    m_haveAutopilotTarget = false;
+    m_dataBuffer.clear();
+
+    if (m_remoteAddress.isNull()) {
+        emit errorOccurred(QString("Invalid VOXL host address: %1").arg(host));
+        return false;
+    }
+
+    if (type != UDP_CONNECTION) {
+        emit errorOccurred("Only UDP MAVLink connections are implemented for VOXL telemetry.");
+        return false;
+    }
+
+    m_udpSocket = new QUdpSocket(this);
+    connect(m_udpSocket, &QUdpSocket::readyRead, this, &VOXLConnection::onUdpDataReceived);
+    connect(m_udpSocket, QOverload<QAbstractSocket::SocketError>::of(&QUdpSocket::errorOccurred),
+            this, &VOXLConnection::onUdpError);
+
+    bool bound = m_udpSocket->bind(QHostAddress::AnyIPv4,
+                                   static_cast<quint16>(port),
+                                   QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint);
+    if (!bound) {
+        bound = m_udpSocket->bind(QHostAddress::AnyIPv4, 0);
+    }
+
+    if (!bound) {
+        const QString error = QString("Failed to bind UDP socket for MAVLink: %1")
+                                  .arg(m_udpSocket->errorString());
+        emit errorOccurred(error);
+        m_udpSocket->deleteLater();
+        m_udpSocket = nullptr;
+        return false;
+    }
+
+    m_lastHeartbeatTimer.invalidate();
+    m_heartbeatTimer->start(m_heartbeatInterval);
+    m_connectionTimer->start(1000);
+    sendHeartbeat();
+
+    emit statusChanged(QString("Waiting for MAVLink heartbeat from %1:%2").arg(host).arg(port));
+    return true;
 }
 
 void VOXLConnection::disconnect()
 {
-    qDebug() << "Disconnecting from VOXL";
+    m_heartbeatTimer->stop();
+    m_connectionTimer->stop();
+
+    if (m_udpSocket) {
+        m_udpSocket->close();
+        m_udpSocket->deleteLater();
+        m_udpSocket = nullptr;
+    }
+
+    if (m_connected) {
+        m_connected = false;
+        emit disconnected();
+    }
 }
 
 void VOXLConnection::sendCommand(const QString &command, const QJsonObject &params)
 {
-    qDebug() << "Sending command:" << command;
+    if (!m_udpSocket) {
+        emit errorOccurred("Cannot send command: MAVLink UDP socket is not open.");
+        return;
+    }
+
+    if (command == "heartbeat") {
+        sendHeartbeat();
+    } else if (command == "arm_disarm") {
+        sendMavlinkCommandLong(MavCmdComponentArmDisarm, params["arm"].toBool() ? 1.0f : 0.0f);
+    } else if (command == "takeoff") {
+        sendMavlinkCommandLong(MavCmdNavTakeoff, 0.0f, 0.0f, 0.0f, qQNaN(), 0.0f, 0.0f,
+                               static_cast<float>(params["altitude"].toDouble(10.0)));
+    } else if (command == "land") {
+        sendMavlinkCommandLong(MavCmdNavLand);
+    } else if (command == "return_to_launch") {
+        sendMavlinkCommandLong(MavCmdNavReturnToLaunch);
+    } else if (command == "emergency_stop") {
+        sendMavlinkCommandLong(MavCmdComponentArmDisarm, 0.0f, 21196.0f);
+    } else if (command == "mavlink_command_long") {
+        sendMavlinkCommandLong(static_cast<quint16>(params["command"].toInt()),
+                               static_cast<float>(params["param1"].toDouble()),
+                               static_cast<float>(params["param2"].toDouble()),
+                               static_cast<float>(params["param3"].toDouble()),
+                               static_cast<float>(params["param4"].toDouble()),
+                               static_cast<float>(params["param5"].toDouble()),
+                               static_cast<float>(params["param6"].toDouble()),
+                               static_cast<float>(params["param7"].toDouble()));
+    } else {
+        emit errorOccurred(QString("MAVLink command is not implemented yet: %1").arg(command));
+    }
 }
 
 void VOXLConnection::requestStatus()
 {
-    qDebug() << "Requesting status";
+    // VOXL/PX4 streams telemetry continuously after it sees our GCS heartbeat.
+    sendHeartbeat();
 }
 
-// Slot implementations - minimal stubs
+// Slot implementations
 void VOXLConnection::onTcpConnected() {}
 void VOXLConnection::onTcpDisconnected() {}
 void VOXLConnection::onTcpDataReceived() {}
 void VOXLConnection::onTcpError(QAbstractSocket::SocketError) {}
-void VOXLConnection::onUdpDataReceived() {}
-void VOXLConnection::onUdpError(QAbstractSocket::SocketError) {}
+void VOXLConnection::onUdpDataReceived()
+{
+    while (m_udpSocket && m_udpSocket->hasPendingDatagrams()) {
+        QByteArray datagram;
+        datagram.resize(static_cast<int>(m_udpSocket->pendingDatagramSize()));
+        QHostAddress sender;
+        quint16 senderPort = 0;
+        m_udpSocket->readDatagram(datagram.data(), datagram.size(), &sender, &senderPort);
+        processReceivedData(datagram);
+    }
+}
+
+void VOXLConnection::onUdpError(QAbstractSocket::SocketError)
+{
+    if (m_udpSocket) {
+        emit errorOccurred(QString("MAVLink UDP error: %1").arg(m_udpSocket->errorString()));
+    }
+}
 void VOXLConnection::onWebSocketConnected() {}
 void VOXLConnection::onWebSocketDisconnected() {}
 void VOXLConnection::onWebSocketTextMessageReceived(const QString &) {}
@@ -78,8 +306,324 @@ void VOXLConnection::onWebSocketBinaryMessageReceived(const QByteArray &) {}
 void VOXLConnection::onWebSocketError(QAbstractSocket::SocketError) {}
 void VOXLConnection::onHttpRequestFinished() {}
 void VOXLConnection::onHttpError(QNetworkReply::NetworkError) {}
-void VOXLConnection::onHeartbeatTimer() {}
-void VOXLConnection::onConnectionTimer() {}
+void VOXLConnection::onHeartbeatTimer()
+{
+    sendHeartbeat();
+}
+
+void VOXLConnection::onConnectionTimer()
+{
+    if (!m_connected || !m_lastHeartbeatTimer.isValid()) {
+        return;
+    }
+
+    if (m_lastHeartbeatTimer.elapsed() > MavlinkHeartbeatTimeoutMs) {
+        m_connected = false;
+        emit disconnected();
+        emit statusChanged("MAVLink heartbeat timed out");
+    }
+}
+
+bool VOXLConnection::isConnected() const
+{
+    return m_connected;
+}
+
+void VOXLConnection::sendMavlinkMessage(const QByteArray &mavlinkData)
+{
+    if (!m_udpSocket) {
+        return;
+    }
+
+    m_udpSocket->writeDatagram(mavlinkData, m_remoteAddress, m_remotePort);
+}
+
+void VOXLConnection::processReceivedData(const QByteArray &data)
+{
+    m_dataBuffer.append(data);
+
+    while (!m_dataBuffer.isEmpty()) {
+        const quint8 magic = static_cast<quint8>(m_dataBuffer.at(0));
+        if (magic != MavlinkV1Magic && magic != MavlinkV2Magic) {
+            m_dataBuffer.remove(0, 1);
+            continue;
+        }
+
+        const bool mavlink2 = magic == MavlinkV2Magic;
+        const int headerLength = mavlink2 ? 10 : 6;
+        if (m_dataBuffer.size() < headerLength) {
+            return;
+        }
+
+        const int payloadLength = static_cast<quint8>(m_dataBuffer.at(1));
+        const bool signedPacket = mavlink2 && (static_cast<quint8>(m_dataBuffer.at(2)) & 0x01);
+        const int signatureLength = signedPacket ? 13 : 0;
+        const int packetLength = headerLength + payloadLength + 2 + signatureLength;
+        if (m_dataBuffer.size() < packetLength) {
+            return;
+        }
+
+        QByteArray packet = m_dataBuffer.left(packetLength);
+        m_dataBuffer.remove(0, packetLength);
+
+        quint32 messageId = 0;
+        quint8 systemId = 0;
+        quint8 componentId = 0;
+        QByteArray payload;
+        if (mavlink2) {
+            systemId = static_cast<quint8>(packet.at(5));
+            componentId = static_cast<quint8>(packet.at(6));
+            messageId = static_cast<quint8>(packet.at(7)) |
+                        (static_cast<quint8>(packet.at(8)) << 8) |
+                        (static_cast<quint8>(packet.at(9)) << 16);
+            payload = packet.mid(10, payloadLength);
+        } else {
+            systemId = static_cast<quint8>(packet.at(3));
+            componentId = static_cast<quint8>(packet.at(4));
+            messageId = static_cast<quint8>(packet.at(5));
+            payload = packet.mid(6, payloadLength);
+        }
+
+        processMavlinkMessage(messageId, payload, systemId, componentId);
+    }
+}
+
+void VOXLConnection::processMavlinkMessage(quint32 messageId,
+                                           const QByteArray &payload,
+                                           quint8 systemId,
+                                           quint8 componentId)
+{
+    QJsonObject status;
+
+    switch (messageId) {
+    case 0: { // HEARTBEAT
+        const quint32 customMode = readLe<quint32>(payload, 0);
+        const quint8 vehicleType = readLe<quint8>(payload, 4);
+        const quint8 autopilot = readLe<quint8>(payload, 5);
+        const quint8 baseMode = readLe<quint8>(payload, 6);
+        const quint8 systemStatus = readLe<quint8>(payload, 7);
+
+        if (vehicleType == MavTypeGcs || autopilot == MavAutopilotInvalid) {
+            return;
+        }
+
+        m_targetSystemId = systemId;
+        m_targetComponentId = componentId;
+        m_haveAutopilotTarget = true;
+        m_lastHeartbeatTimer.restart();
+        if (!m_connected) {
+            m_connected = true;
+            emit connected();
+        }
+
+        status["flightMode"] = px4ModeName(customMode);
+        status["armed"] = (baseMode & 0x80) != 0;
+        status["systemStatus"] = systemStatusName(systemStatus);
+        status["lastHeartbeat"] = QDateTime::currentDateTime().toString("hh:mm:ss");
+        break;
+    }
+    case 1: { // SYS_STATUS
+        if (m_haveAutopilotTarget && systemId != m_targetSystemId) {
+            return;
+        }
+
+        const quint16 millivolts = readLe<quint16>(payload, 14);
+        const qint8 remaining = static_cast<qint8>(readLe<quint8>(payload, 30));
+        if (millivolts != UINT16_MAX && millivolts > 0) {
+            status["batteryVoltage"] = millivolts / 1000.0;
+        }
+        if (remaining >= 0 && remaining <= 100) {
+            status["batteryPercentage"] = remaining;
+        }
+        break;
+    }
+    case 24: { // GPS_RAW_INT
+        if (m_haveAutopilotTarget && systemId != m_targetSystemId) {
+            return;
+        }
+
+        const qint32 lat = readLe<qint32>(payload, 8);
+        const qint32 lon = readLe<qint32>(payload, 12);
+        const qint32 alt = readLe<qint32>(payload, 16);
+        const quint8 fixType = readLe<quint8>(payload, 28);
+        const quint8 satellites = readLe<quint8>(payload, 29);
+        status["gpsLock"] = fixType >= 3;
+        status["gpsNumSats"] = satellites;
+        status["latitude"] = lat / 10000000.0;
+        status["longitude"] = lon / 10000000.0;
+        status["gpsAltitude"] = alt / 1000.0;
+        break;
+    }
+    case 30: { // ATTITUDE
+        if (m_haveAutopilotTarget && systemId != m_targetSystemId) {
+            return;
+        }
+
+        status["roll"] = qRadiansToDegrees(readFloatLe(payload, 4));
+        status["pitch"] = qRadiansToDegrees(readFloatLe(payload, 8));
+        status["yaw"] = qRadiansToDegrees(readFloatLe(payload, 12));
+        break;
+    }
+    case 32: { // LOCAL_POSITION_NED
+        if (m_haveAutopilotTarget && systemId != m_targetSystemId) {
+            return;
+        }
+
+        status["velocityX"] = readFloatLe(payload, 16);
+        status["velocityY"] = readFloatLe(payload, 20);
+        status["velocityZ"] = readFloatLe(payload, 24);
+        status["localAltitude"] = -readFloatLe(payload, 12);
+        break;
+    }
+    case 33: { // GLOBAL_POSITION_INT
+        if (m_haveAutopilotTarget && systemId != m_targetSystemId) {
+            return;
+        }
+
+        const qint32 lat = readLe<qint32>(payload, 4);
+        const qint32 lon = readLe<qint32>(payload, 8);
+        const qint32 relativeAlt = readLe<qint32>(payload, 16);
+        const qint16 vx = readLe<qint16>(payload, 20);
+        const qint16 vy = readLe<qint16>(payload, 22);
+        const qint16 vz = readLe<qint16>(payload, 24);
+        status["latitude"] = lat / 10000000.0;
+        status["longitude"] = lon / 10000000.0;
+        status["altitude"] = relativeAlt / 1000.0;
+        status["velocityX"] = vx / 100.0;
+        status["velocityY"] = vy / 100.0;
+        status["velocityZ"] = vz / 100.0;
+        break;
+    }
+    case 74: { // VFR_HUD
+        if (m_haveAutopilotTarget && systemId != m_targetSystemId) {
+            return;
+        }
+
+        status["groundSpeed"] = readFloatLe(payload, 4);
+        status["altitude"] = readFloatLe(payload, 12);
+        status["verticalSpeed"] = readFloatLe(payload, 16);
+        break;
+    }
+    case 147: { // BATTERY_STATUS
+        if (m_haveAutopilotTarget && systemId != m_targetSystemId) {
+            return;
+        }
+
+        int validCells = 0;
+        int totalMillivolts = 0;
+        for (int i = 0; i < 10; ++i) {
+            const quint16 cellMillivolts = readLe<quint16>(payload, 10 + (i * 2));
+            if (cellMillivolts > 0 && cellMillivolts != UINT16_MAX) {
+                totalMillivolts += cellMillivolts;
+                ++validCells;
+            }
+        }
+        const qint8 remaining = static_cast<qint8>(readLe<quint8>(payload, 35));
+        if (validCells > 0) {
+            status["batteryVoltage"] = totalMillivolts / 1000.0;
+        }
+        if (remaining >= 0 && remaining <= 100) {
+            status["batteryPercentage"] = remaining;
+        }
+        break;
+    }
+    case 77: { // COMMAND_ACK
+        const quint16 command = readLe<quint16>(payload, 0);
+        const quint8 result = readLe<quint8>(payload, 2);
+        emit statusChanged(QString("MAVLink command %1 acknowledged with result %2").arg(command).arg(result));
+        break;
+    }
+    default:
+        break;
+    }
+
+    if (!status.isEmpty()) {
+        emit dataReceived(QJsonObject{{"type", "status"}, {"data", status}});
+        emit telemetryReceived(status);
+    }
+}
+
+void VOXLConnection::sendHeartbeat()
+{
+    if (!m_udpSocket || m_remoteAddress.isNull()) {
+        return;
+    }
+
+    QByteArray payload;
+    appendLe32(payload, 0); // custom_mode
+    payload.append(static_cast<char>(MavTypeGcs));
+    payload.append(static_cast<char>(MavAutopilotInvalid));
+    payload.append(static_cast<char>(0));
+    payload.append(static_cast<char>(MavStateActive));
+    payload.append(static_cast<char>(3));
+
+    sendMavlinkPacket(0, payload, 50);
+}
+
+void VOXLConnection::sendMavlinkCommandLong(quint16 command,
+                                            float param1,
+                                            float param2,
+                                            float param3,
+                                            float param4,
+                                            float param5,
+                                            float param6,
+                                            float param7)
+{
+    QByteArray payload;
+    appendFloatLe(payload, param1);
+    appendFloatLe(payload, param2);
+    appendFloatLe(payload, param3);
+    appendFloatLe(payload, param4);
+    appendFloatLe(payload, param5);
+    appendFloatLe(payload, param6);
+    appendFloatLe(payload, param7);
+    appendLe16(payload, command);
+    payload.append(static_cast<char>(m_targetSystemId));
+    payload.append(static_cast<char>(m_targetComponentId));
+    payload.append(static_cast<char>(0)); // confirmation
+
+    sendMavlinkPacket(76, payload, 152);
+}
+
+void VOXLConnection::sendMavlinkPacket(quint32 messageId, const QByteArray &payload, quint8 crcExtra)
+{
+    QByteArray header;
+    header.append(static_cast<char>(MavlinkV2Magic));
+    header.append(static_cast<char>(payload.size()));
+    header.append(static_cast<char>(0)); // incompat flags
+    header.append(static_cast<char>(0)); // compat flags
+    header.append(static_cast<char>(m_mavlinkSequence++));
+    header.append(static_cast<char>(GroundStationSystemId));
+    header.append(static_cast<char>(GroundStationComponentId));
+    header.append(static_cast<char>(messageId & 0xff));
+    header.append(static_cast<char>((messageId >> 8) & 0xff));
+    header.append(static_cast<char>((messageId >> 16) & 0xff));
+
+    QByteArray crcInput = header.mid(1);
+    crcInput.append(payload);
+    const quint16 crc = mavlinkCrc(crcInput, crcExtra);
+
+    QByteArray packet = header;
+    packet.append(payload);
+    appendLe16(packet, crc);
+
+    sendMavlinkMessage(packet);
+}
+
+void VOXLConnection::processJsonMessage(const QJsonObject &json)
+{
+    emit dataReceived(json);
+}
+
+void VOXLConnection::processVideoFrame(const QByteArray &frameData)
+{
+    emit videoFrameReceived(frameData);
+}
+
+QJsonObject VOXLConnection::createCommand(const QString &command, const QJsonObject &params)
+{
+    return QJsonObject{{"command", command}, {"params", params}};
+}
 
 // ============================================================================
 // Mission Upload and Control (VOXL2 Runner API Integration)
