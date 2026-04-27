@@ -30,6 +30,7 @@ _Figure 2 — Live SLAM map produced by the drone as it flies, showing the volum
   alt="Interactive 3D model of the calibration drone used in this project"
   camera-controls
   auto-rotate
+  camera-orbit="0deg 75deg auto"
   shadow-intensity="1"
   style="width: 100%; height: 500px;">
   Interactive 3D model of the calibration drone — view at the GitHub Pages site to rotate and inspect.
