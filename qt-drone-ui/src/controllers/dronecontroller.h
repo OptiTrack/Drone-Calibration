@@ -40,7 +40,6 @@ public:
 
     // Flight control
     void armDrone(bool arm);
-    void setFlightMode(const QString &mode);
     void takeoff(float altitude = 10.0f);
     void land();
     void returnToLaunch();

@@ -11,6 +11,8 @@
 #include <QJsonDocument>
 #include <QBuffer>
 #include <QProcess>
+#include <QHostAddress>
+#include <QElapsedTimer>
 
 class VOXLConnection : public QObject
 {
@@ -109,9 +111,21 @@ private:
     void cleanupConnections();
     void processReceivedData(const QByteArray &data);
     void processJsonMessage(const QJsonObject &json);
-    void processMavlinkMessage(const QByteArray &mavlinkData);
+    void processMavlinkMessage(quint32 messageId,
+                               const QByteArray &payload,
+                               quint8 systemId,
+                               quint8 componentId);
     void processVideoFrame(const QByteArray &frameData);
     void sendHeartbeat();
+    void sendMavlinkCommandLong(quint16 command,
+                                float param1 = 0.0f,
+                                float param2 = 0.0f,
+                                float param3 = 0.0f,
+                                float param4 = 0.0f,
+                                float param5 = 0.0f,
+                                float param6 = 0.0f,
+                                float param7 = 0.0f);
+    void sendMavlinkPacket(quint32 messageId, const QByteArray &payload, quint8 crcExtra);
     QJsonObject createCommand(const QString &command, const QJsonObject &params = QJsonObject());
     
     // Connection objects
@@ -126,6 +140,13 @@ private:
     int m_port;
     bool m_connected;
     int m_connectionTimeout;
+    QHostAddress m_remoteAddress;
+    quint16 m_remotePort;
+    QElapsedTimer m_lastHeartbeatTimer;
+    quint8 m_mavlinkSequence;
+    quint8 m_targetSystemId;
+    quint8 m_targetComponentId;
+    bool m_haveAutopilotTarget;
     
     // Timers
     QTimer *m_heartbeatTimer;

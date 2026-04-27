@@ -61,6 +61,8 @@ private:
     QListWidget *m_navigationList;
     QPushButton *m_drawerToggleButton;
     QPushButton *m_reopenSidebarButton;
+    QLabel *m_connectionStatusDot;
+    QLabel *m_connectionStatusText;
     QStackedWidget *m_contentStack;
     QSplitter *m_mainSplitter;
     
