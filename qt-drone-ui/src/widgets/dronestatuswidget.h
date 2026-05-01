@@ -56,14 +56,16 @@ signals:
     void takeoffRequested();
     void landRequested();
     void returnToLaunchRequested();
-    void emergencyStopRequested();
+    void forceDisarmRequested();
+    void flightTerminationRequested();
 
 private slots:
     void onArmDisarmClicked();
     void onTakeoffClicked();
     void onLandClicked();
     void onRTLClicked();
-    void onEmergencyStopClicked();
+    void onForceDisarmClicked();
+    void onFlightTerminationClicked();
     void onStatusUpdateTimer();
     void onClearMessages();
 

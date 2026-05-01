@@ -387,14 +387,26 @@ QPushButton:disabled { background-color: #374151; }</string>
            </widget>
           </item>
           <item>
-           <widget class="QPushButton" name="emergencyStopButton">
+           <widget class="QPushButton" name="forceDisarmButton">
             <property name="styleSheet">
              <string notr="true">QPushButton { background-color: #dc2626; color: white; border: none; padding: 10px; border-radius: 4px; font-weight: bold; } 
 QPushButton:hover { background-color: #b91c1c; }
 QPushButton:disabled { background-color: #374151; }</string>
             </property>
             <property name="text">
-             <string>EMERGENCY STOP</string>
+             <string>Force disarm</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="flightTerminationButton">
+            <property name="styleSheet">
+             <string notr="true">QPushButton { background-color: #7f1d1d; color: white; border: none; padding: 10px; border-radius: 4px; font-weight: bold; } 
+QPushButton:hover { background-color: #450a0a; }
+QPushButton:disabled { background-color: #374151; }</string>
+            </property>
+            <property name="text">
+             <string>Flight termination</string>
             </property>
            </widget>
           </item>

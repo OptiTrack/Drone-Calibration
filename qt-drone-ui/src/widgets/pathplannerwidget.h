@@ -9,6 +9,7 @@
 #include <QOpenGLVertexArrayObject>
 #include <QMatrix4x4>
 #include <QVector3D>
+#include <QColor>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QPushButton>
@@ -80,6 +81,9 @@ public:
     bool canRedo() const { return !m_redoStack.isEmpty(); }
     bool duplicateSelectedWaypoint();
     bool deleteSelectedWaypoint();
+    void setDronePoseLogical(const QVector3D &positionLogical, float yawDeg);
+    void setMapperRenderData(const QVector<QVector3D> &positionsLogical, const QVector<QColor> &colors);
+    void setMapperMeshData(const QVector<QVector3D> &positionsLogical, const QVector<QColor> &colors, const QVector<quint32> &triangleIndices);
 
 signals:
     void waypointSelected(int id);
@@ -127,6 +131,8 @@ private:
     void drawWaypoints();
     void drawPath();
     void drawAxes();
+    void drawDroneAxes();
+    void drawMapperRenderData();
     void drawGizmo();
     void drawWaypointLabels(QPainter &painter);
     void updateCamera();
@@ -169,6 +175,8 @@ private:
     void commitEdit(const std::vector<Waypoint> &before, const std::vector<Waypoint> &after);
     void clearRedoHistory();
     void updateHistorySignals();
+    void normalizeMapperHomeAndRenumberSequences();
+    bool selectedWaypointIsMapperHome() const;
     
     // OpenGL resources
     QOpenGLShaderProgram *m_shaderProgram;
@@ -197,6 +205,14 @@ private:
     float m_defaultAcceptanceRadius;
     float m_defaultHoldTime;
     float m_defaultYawAngle;
+    QVector3D m_dronePositionLogical;
+    float m_droneYawDeg;
+    bool m_hasDronePose;
+    QVector<QVector3D> m_mapperRenderPositionsLogical;
+    QVector<QColor> m_mapperRenderColors;
+    QVector<QVector3D> m_mapperMeshPositionsLogical;
+    QVector<QColor> m_mapperMeshColors;
+    QVector<quint32> m_mapperMeshTriangleIndices;
     
     // Waypoints
     std::vector<Waypoint> m_waypoints;
@@ -253,8 +269,11 @@ public:
     void clearPath();
     
     // JSON persistence
-    bool saveToJson(const QString &path);
+    bool saveToJson(const QString &path, const QString &mapperMapBundleFolderName = QString());
     bool loadFromJson(const QString &path);
+    /// Load waypoints + mapper metadata from disk; clears local mesh/plan preview; optional map reload uses clear-then-load on VOXL.
+    bool loadPathFromFile(const QString &fileName, bool showSuccessDialog = true);
+    void clearMapperVisualization();
 
 signals:
     void pathSaved(const QString &name, const QVector<QVector3D> &points);
@@ -264,6 +283,7 @@ private slots:
     void onClearPath();
     void onSavePath();
     void onLoadPath();
+    void onMapperBundleDownloadFinished(bool success, const QString &message);
     void onUploadMission();
     void onMissionPlayClicked();
     void onMissionPauseContinueClicked();
@@ -272,7 +292,8 @@ private slots:
     void onResumeMission();
     void onLandMission();
     void onReturnToLaunchMission();
-    void onEmergencyStopMission();
+    void onForceDisarmMission();
+    void onFlightTerminationMission();
     void onReturnToEdit();
     void onWaypointSelected(int id);
     void onWaypointCellChanged(int row, int column);
@@ -308,6 +329,7 @@ private:
     QString waypointFingerprint(const std::vector<Waypoint> &waypoints) const;
     MissionWorkspacePhase currentMissionPhase() const;
     void updateMissionChrome();
+    void clearStaleMapperErrorBanner();
     void setEditingLocked(bool locked);
     
     // Main layouts
@@ -321,7 +343,8 @@ private:
     QPushButton *m_topBarReturnToEditButton;
     QPushButton *m_topBarLandButton;
     QPushButton *m_topBarRtlButton;
-    QPushButton *m_topBarEstopButton;
+    QPushButton *m_topBarForceDisarmButton;
+    QPushButton *m_topBarFlightTermButton;
     
     // 3D View
     PathPlannerOpenGLWidget *m_openglWidget;
@@ -356,6 +379,10 @@ private:
     QDoubleSpinBox *m_defaultAltitudeSpinBox;
     QPushButton *m_undoEditButton;
     QPushButton *m_redoEditButton;
+    QString m_mapperMapPath;
+    QString m_mapperMapBundleDir;
+    QString m_backgroundBundleJsonPath;
+    QString m_backgroundBundleFolderName;
 
     QTimer *m_pathPreviewAnimationTimer;
     int m_pathPreviewWaypointIndex;
@@ -376,6 +403,8 @@ private:
 
     bool m_updatingWaypointTable;
     bool m_reorderingWaypointRows;
+
+    void removeMapperHomeWaypointAndRefresh();
 };
 
 #endif // PATHPLANNERWIDGET_H
