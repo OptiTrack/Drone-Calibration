@@ -59,6 +59,15 @@ public:
     void setHoldTime(float time) { m_holdTime = time; }
     void setYawAngle(float angle) { m_yawAngle = angle; }
     void setPassThrough(bool passThrough) { m_passThrough = passThrough; }
+
+    // Recorded-trajectory fields
+    // Elapsed time from the start of a trajectory in ms; 0 means "not timed".
+    qint64 timestampMs() const { return m_timestampMs; }
+    void setTimestampMs(qint64 ms) { m_timestampMs = ms; }
+
+    // Desired speed on the segment to this waypoint in m/s; 0 uses default cruise speed.
+    float speed() const { return m_speed; }
+    void setSpeed(float speed) { m_speed = speed; }
     
     // Utility functions
     float distanceTo(const Waypoint &other) const;
@@ -90,6 +99,9 @@ private:
     float m_yawAngle;
     bool m_passThrough;
     QDateTime m_createdAt;
+    // Timed trajectory fields
+    qint64 m_timestampMs = 0;  // 0 = no timestamp
+    float  m_speed       = 0.0f; // 0 = use mission default
 };
 
 Q_DECLARE_METATYPE(Waypoint)

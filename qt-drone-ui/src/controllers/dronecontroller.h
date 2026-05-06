@@ -3,9 +3,15 @@
 
 #include <QObject>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QVector3D>
 #include <QJsonObject>
+#include <QFile>
+#include <QTextStream>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include "../widgets/dronestatuswidget.h"
+#include "../models/flightpath.h"
 
 class VOXLConnection;
 
@@ -66,6 +72,20 @@ public:
     void takePicture();
     void setCameraSettings(const QString &mode, int quality);
 
+    // Manual-flight recording
+    void startFlightRecording(const QString &name = QString());
+    FlightPath stopFlightRecording();
+    bool isRecordingFlight() const { return m_recordingFlight; }
+
+    // Timed trajectory playback
+    bool loadTrajectoryFromFile(const QString &filePath, FlightPath *outPath = nullptr);
+    bool saveTrajectoryToFile(const FlightPath &path, const QString &filePath);
+    void uploadAndPlayTrajectory(const FlightPath &path,
+                                 const QString &remotePath = "/data/trajectories/inbox/trajectory.json");
+    void startTrajectoryPlayback(const FlightPath &trajectory);
+    void stopTrajectoryPlayback();
+    bool isTrajectoryPlaybackActive() const { return m_playbackActive; }
+
     // Getters
     DroneStatus getCurrentStatus() const { return m_currentStatus; }
     FlightPlan getCurrentMission() const { return m_currentMission; }
@@ -79,6 +99,11 @@ signals:
     void errorOccurred(const QString &error);
     void warningIssued(const QString &warning);
     void messageReceived(const QString &message);
+    void flightRecordingStarted(const QString &name);
+    void flightRecordingStopped(const QString &name, int waypointCount);
+    void trajectoryPlaybackStarted(const QString &name, int waypointCount);
+    void trajectoryPlaybackProgress(int index, int total);
+    void trajectoryPlaybackFinished(const QString &name);
 
 private slots:
     void onHeartbeatTimer();
@@ -86,6 +111,7 @@ private slots:
     void onVOXLDataReceived(const QJsonObject &data);
     void onVOXLConnectionStatusChanged(bool connected);
     void onVOXLError(const QString &error);
+    void onTrajectoryPlaybackTick();
 
 private:
     void initializeConnection();
@@ -124,6 +150,23 @@ private:
     // Manual control state
     bool m_manualControlActive;
     QTimer *m_manualControlTimer;
+
+    // Manual flight recording
+    bool m_recordingFlight;
+    QElapsedTimer m_recordingTimer;
+    FlightPath m_recordingPath;
+    qint64 m_lastRecordedPointMs;
+
+    // Timed trajectory playback
+    bool m_playbackActive;
+    FlightPath m_playbackPath;
+    int m_playbackIndex;
+    QElapsedTimer m_playbackTimer;
+    QTimer *m_playbackTickTimer;
+
+    // Deferred runner start after SCP upload completes
+    bool m_runTrajectoryAfterUpload;
+    QString m_pendingTrajectoryFileName;
 };
 
 #endif // DRONECONTROLLER_H

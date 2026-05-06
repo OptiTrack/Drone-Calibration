@@ -14,6 +14,8 @@ Waypoint::Waypoint()
     , m_yawAngle(0.0f)
     , m_passThrough(false)
     , m_createdAt(QDateTime::currentDateTime())
+    , m_timestampMs(0)
+    , m_speed(0.0f)
 {
 }
 
@@ -30,6 +32,8 @@ Waypoint::Waypoint(const QVector3D &position, const QString &name)
     , m_yawAngle(0.0f)
     , m_passThrough(false)
     , m_createdAt(QDateTime::currentDateTime())
+    , m_timestampMs(0)
+    , m_speed(0.0f)
 {
 }
 
@@ -46,6 +50,8 @@ Waypoint::Waypoint(float x, float y, float z, const QString &name)
     , m_yawAngle(0.0f)
     , m_passThrough(false)
     , m_createdAt(QDateTime::currentDateTime())
+    , m_timestampMs(0)
+    , m_speed(0.0f)
 {
 }
 
@@ -81,7 +87,15 @@ QJsonObject Waypoint::toJson() const
     json["type"] = m_waypointType;
     json["acceptance_radius"] = static_cast<double>(m_acceptanceRadius);
     json["pass_through"] = m_passThrough;
-    
+
+    // Timed trajectory fields (optional for planned waypoints)
+    if (m_timestampMs > 0) {
+        json["timestamp_ms"] = static_cast<qint64>(m_timestampMs);
+    }
+    if (m_speed > 0.0f) {
+        json["speed_m_s"] = static_cast<double>(m_speed);
+    }
+
     // Local position for UI
     QJsonObject posObj;
     posObj["x"] = static_cast<double>(m_position.x());
@@ -110,6 +124,13 @@ Waypoint Waypoint::fromJson(const QJsonObject &json)
     wp.m_waypointType = json["type"].toString("NAV_WAYPOINT");
     wp.m_acceptanceRadius = static_cast<float>(json["acceptance_radius"].toDouble(0.5));
     wp.m_passThrough = json["pass_through"].toBool(false);
+    wp.m_timestampMs = static_cast<qint64>(json["timestamp_ms"].toDouble(0.0));
+    if (json.contains("speed_m_s")) {
+        wp.m_speed = static_cast<float>(json["speed_m_s"].toDouble(0.0));
+    } else {
+        // Backward-compatible fallback used in some earlier files.
+        wp.m_speed = static_cast<float>(json["speed_ms"].toDouble(0.0));
+    }
     
     // Local position
     if (json.contains("local_position")) {
@@ -152,7 +173,9 @@ bool Waypoint::operator==(const Waypoint &other) const
            std::abs(m_relativeAltitudeM - other.m_relativeAltitudeM) < kFloatEps &&
            std::abs(m_acceptanceRadius - other.m_acceptanceRadius) < kFloatEps &&
            std::abs(m_holdTime - other.m_holdTime) < kFloatEps &&
-           std::abs(m_yawAngle - other.m_yawAngle) < kFloatEps;
+           std::abs(m_yawAngle - other.m_yawAngle) < kFloatEps &&
+           m_timestampMs == other.m_timestampMs &&
+           std::abs(m_speed - other.m_speed) < kFloatEps;
 }
 
 bool Waypoint::operator!=(const Waypoint &other) const

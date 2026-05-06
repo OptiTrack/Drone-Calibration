@@ -4,6 +4,7 @@
 #include <QJsonArray>
 #include <QDebug>
 #include <QDateTime>
+#include <QFileInfo>
 #include <QUuid>
 #include <QVector3D>
 #include <QtMath>
@@ -24,6 +25,12 @@ DroneController::DroneController(QObject *parent)
     , m_missionPaused(false)
     , m_manualControlActive(false)
     , m_manualControlTimer(nullptr)
+    , m_recordingFlight(false)
+    , m_lastRecordedPointMs(0)
+    , m_playbackActive(false)
+    , m_playbackIndex(0)
+    , m_playbackTickTimer(nullptr)
+    , m_runTrajectoryAfterUpload(false)
 {
     // Initialize status
     m_currentStatus.connected = false;
@@ -39,6 +46,7 @@ DroneController::DroneController(QObject *parent)
     m_currentStatus.position = QVector3D(0, 0, 0);
     m_currentStatus.velocity = QVector3D(0, 0, 0);
     m_currentStatus.attitude = QVector3D(0, 0, 0);
+    m_currentStatus.slamPosition = QVector3D(0, 0, 0);
     m_currentStatus.systemStatus = "DISCONNECTED";
     
     // Initialize mission
@@ -68,6 +76,18 @@ void DroneController::initializeConnection()
             this, &DroneController::onVOXLDataReceived);
     connect(m_voxlConnection, &VOXLConnection::errorOccurred,
             this, &DroneController::onVOXLError);
+    connect(m_voxlConnection, &VOXLConnection::missionUploadComplete,
+            this, [this]() {
+                if (!m_runTrajectoryAfterUpload) {
+                    return;
+                }
+                m_runTrajectoryAfterUpload = false;
+                const QString fileName = m_pendingTrajectoryFileName.isEmpty()
+                    ? QStringLiteral("trajectory.json")
+                    : m_pendingTrajectoryFileName;
+                m_voxlConnection->runMission(fileName);
+                emit messageReceived(QString("Started uploaded trajectory: %1").arg(fileName));
+            });
     
     // Set up timers
     m_heartbeatTimer = new QTimer(this);
@@ -81,6 +101,12 @@ void DroneController::initializeConnection()
     // Manual control timer
     m_manualControlTimer = new QTimer(this);
     m_manualControlTimer->setInterval(50); // 20 Hz manual control
+
+    // Trajectory playback timer
+    m_playbackTickTimer = new QTimer(this);
+    m_playbackTickTimer->setInterval(20); // 50 Hz scheduler for smooth timing
+    connect(m_playbackTickTimer, &QTimer::timeout,
+            this, &DroneController::onTrajectoryPlaybackTick);
 }
 
 bool DroneController::connectToDrone(const QString &host, int port)
@@ -148,6 +174,7 @@ void DroneController::updateConnectionStatus(bool connected)
             m_currentStatus.position = QVector3D(0, 0, 0);
             m_currentStatus.velocity = QVector3D(0, 0, 0);
             m_currentStatus.attitude = QVector3D(0, 0, 0);
+            m_currentStatus.slamPosition = QVector3D(0, 0, 0);
             m_currentStatus.lastHeartbeat.clear();
             m_currentStatus.systemStatus = "DISCONNECTED";
             m_missionActive = false;
@@ -323,6 +350,31 @@ void DroneController::onVOXLDataReceived(const QJsonObject &data)
                 static_cast<float>(statusData["pitch"].toDouble(m_currentStatus.attitude.y())),
                 static_cast<float>(statusData["yaw"].toDouble(m_currentStatus.attitude.z()))
             );
+        }
+        // VIO/SLAM local NED position (from LOCAL_POSITION_NED, msg 32)
+        if (statusData.contains("localX") || statusData.contains("localY")) {
+            m_currentStatus.slamPosition.setX(
+                static_cast<float>(statusData["localX"].toDouble(m_currentStatus.slamPosition.x())));
+            m_currentStatus.slamPosition.setY(
+                static_cast<float>(statusData["localY"].toDouble(m_currentStatus.slamPosition.y())));
+        }
+        if (statusData.contains("localAltitude")) {
+            m_currentStatus.slamPosition.setZ(
+                static_cast<float>(statusData["localAltitude"].toDouble(m_currentStatus.slamPosition.z())));
+        }
+
+        if (m_recordingFlight) {
+            const qint64 nowMs = m_recordingTimer.elapsed();
+            constexpr qint64 kMinSpacingMs = 200; // ~5 Hz sample rate for path recording
+            if (nowMs - m_lastRecordedPointMs >= kMinSpacingMs) {
+                Waypoint wp(m_currentStatus.slamPosition,
+                            QString("REC %1").arg(m_recordingPath.waypointCount() + 1));
+                wp.setTimestampMs(nowMs);
+                wp.setYawAngle(m_currentStatus.attitude.z());
+                wp.setSpeed(qMax(0.0f, m_currentStatus.groundSpeed));
+                m_recordingPath.addWaypoint(wp);
+                m_lastRecordedPointMs = nowMs;
+            }
         }
 
         emit statusUpdated(m_currentStatus);
@@ -594,4 +646,180 @@ QVector<MissionItem> DroneController::waypointsToMissionItems(const QVector<QVec
     }
     
     return items;
+}
+
+void DroneController::startFlightRecording(const QString &name)
+{
+    if (m_recordingFlight) {
+        emit warningIssued("Flight recording already in progress");
+        return;
+    }
+
+    const QString recordingName = name.trimmed().isEmpty()
+        ? QString("ManualFlight_%1").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"))
+        : name.trimmed();
+
+    m_recordingPath = FlightPath(recordingName);
+    m_recordingPath.setDescription("Recorded manual flight trajectory");
+    m_recordingTimer.restart();
+    m_lastRecordedPointMs = 0;
+    m_recordingFlight = true;
+
+    emit messageReceived(QString("Flight recording started: %1").arg(recordingName));
+    emit flightRecordingStarted(recordingName);
+}
+
+FlightPath DroneController::stopFlightRecording()
+{
+    if (!m_recordingFlight) {
+        return FlightPath();
+    }
+
+    m_recordingFlight = false;
+    m_recordingPath.updateSequences();
+
+    emit messageReceived(QString("Flight recording stopped: %1 points")
+                         .arg(m_recordingPath.waypointCount()));
+    emit flightRecordingStopped(m_recordingPath.name(), m_recordingPath.waypointCount());
+    return m_recordingPath;
+}
+
+bool DroneController::saveTrajectoryToFile(const FlightPath &path, const QString &filePath)
+{
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        emit errorOccurred(QString("Failed to write trajectory file: %1").arg(file.errorString()));
+        return false;
+    }
+
+    QJsonDocument doc(path.toRunnerTrajectoryJson());
+    file.write(doc.toJson(QJsonDocument::Indented));
+    file.close();
+    return true;
+}
+
+bool DroneController::loadTrajectoryFromFile(const QString &filePath, FlightPath *outPath)
+{
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        emit errorOccurred(QString("Failed to open trajectory file: %1").arg(file.errorString()));
+        return false;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
+    file.close();
+
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        emit errorOccurred(QString("Invalid trajectory JSON: %1").arg(parseError.errorString()));
+        return false;
+    }
+
+    FlightPath parsed = FlightPath::fromRunnerTrajectoryJson(doc.object());
+    if (parsed.waypointCount() <= 0) {
+        emit errorOccurred("Trajectory file contains no waypoints");
+        return false;
+    }
+
+    if (outPath) {
+        *outPath = parsed;
+    }
+    return true;
+}
+
+void DroneController::uploadAndPlayTrajectory(const FlightPath &path, const QString &remotePath)
+{
+    if (!m_voxlConnection || !m_connected) {
+        emit errorOccurred("Cannot upload trajectory: not connected");
+        return;
+    }
+    if (path.waypointCount() <= 0) {
+        emit errorOccurred("Cannot upload trajectory: no waypoints");
+        return;
+    }
+
+    const QString tempPath = QString("/tmp/%1_trajectory.json")
+        .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    if (!saveTrajectoryToFile(path, tempPath)) {
+        return;
+    }
+
+    m_pendingTrajectoryFileName = QFileInfo(remotePath).fileName();
+    if (m_pendingTrajectoryFileName.isEmpty()) {
+        m_pendingTrajectoryFileName = QStringLiteral("trajectory.json");
+    }
+    m_runTrajectoryAfterUpload = true;
+    m_voxlConnection->uploadMissionFile(tempPath, remotePath);
+    emit messageReceived(QString("Uploading trajectory for autonomous run: %1").arg(path.name()));
+}
+
+void DroneController::startTrajectoryPlayback(const FlightPath &trajectory)
+{
+    if (!m_connected) {
+        emit errorOccurred("Cannot playback trajectory: not connected");
+        return;
+    }
+    if (trajectory.waypointCount() <= 0) {
+        emit errorOccurred("Cannot playback trajectory: no waypoints");
+        return;
+    }
+
+    m_playbackPath = trajectory;
+    m_playbackIndex = 0;
+    m_playbackActive = true;
+    m_playbackTimer.restart();
+
+    if (m_playbackTickTimer) {
+        m_playbackTickTimer->start();
+    }
+
+    emit messageReceived(QString("Trajectory playback started: %1 (%2 points)")
+                         .arg(trajectory.name())
+                         .arg(trajectory.waypointCount()));
+    emit trajectoryPlaybackStarted(trajectory.name(), trajectory.waypointCount());
+}
+
+void DroneController::stopTrajectoryPlayback()
+{
+    if (!m_playbackActive) {
+        return;
+    }
+
+    m_playbackActive = false;
+    if (m_playbackTickTimer) {
+        m_playbackTickTimer->stop();
+    }
+
+    emit messageReceived(QString("Trajectory playback finished: %1").arg(m_playbackPath.name()));
+    emit trajectoryPlaybackFinished(m_playbackPath.name());
+}
+
+void DroneController::onTrajectoryPlaybackTick()
+{
+    if (!m_playbackActive || !m_connected) {
+        stopTrajectoryPlayback();
+        return;
+    }
+    if (m_playbackIndex >= m_playbackPath.waypointCount()) {
+        stopTrajectoryPlayback();
+        return;
+    }
+
+    const qint64 nowMs = m_playbackTimer.elapsed();
+    const Waypoint &nextWp = m_playbackPath.waypoint(m_playbackIndex);
+    const qint64 targetMs = nextWp.timestampMs();
+
+    // If timestamps are not provided, fall back to immediate sequential playback.
+    const bool due = (targetMs <= 0) || (nowMs >= targetMs);
+    if (!due) {
+        return;
+    }
+
+    setPositionTarget(nextWp.position());
+    emit trajectoryPlaybackProgress(m_playbackIndex + 1, m_playbackPath.waypointCount());
+    ++m_playbackIndex;
+
+    if (m_playbackIndex >= m_playbackPath.waypointCount()) {
+        stopTrajectoryPlayback();
+    }
 }

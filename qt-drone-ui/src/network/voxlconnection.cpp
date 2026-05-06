@@ -464,15 +464,18 @@ void VOXLConnection::processMavlinkMessage(quint32 messageId,
         status["yaw"] = qRadiansToDegrees(readFloatLe(payload, 12));
         break;
     }
-    case 32: { // LOCAL_POSITION_NED
+    case 32: { // LOCAL_POSITION_NED  (VIO/SLAM position from voxl-qvio-server)
         if (m_haveAutopilotTarget && systemId != m_targetSystemId) {
             return;
         }
-
-        status["velocityX"] = readFloatLe(payload, 16);
-        status["velocityY"] = readFloatLe(payload, 20);
-        status["velocityZ"] = readFloatLe(payload, 24);
-        status["localAltitude"] = -readFloatLe(payload, 12);
+        // Payload: time_boot_ms(u32) | x(f) | y(f) | z(f) | vx(f) | vy(f) | vz(f)
+        // NED frame: x=North, y=East, z=Down. Negate z for altitude (up positive).
+        status["localX"]        = readFloatLe(payload, 4);   // North (m)
+        status["localY"]        = readFloatLe(payload, 8);   // East  (m)
+        status["localAltitude"] = -readFloatLe(payload, 12); // Up    (m)
+        status["velocityX"]     = readFloatLe(payload, 16);
+        status["velocityY"]     = readFloatLe(payload, 20);
+        status["velocityZ"]     = readFloatLe(payload, 24);
         break;
     }
     case 33: { // GLOBAL_POSITION_INT

@@ -73,6 +73,11 @@ public:
     void updateSequences();
     FlightPath reversed() const;
     FlightPath optimized() const; // Simple TSP optimization
+
+    // Trajectory helpers for VOXL runner + manual flight record/playback
+    QJsonObject toRunnerTrajectoryJson() const;
+    static FlightPath fromRunnerTrajectoryJson(const QJsonObject &json,
+                                               const QString &displayName = QString());
     
     // Operators
     bool operator==(const FlightPath &other) const;

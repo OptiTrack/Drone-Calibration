@@ -258,6 +258,108 @@ FlightPath FlightPath::fromJson(const QJsonObject &json)
     return path;
 }
 
+QJsonObject FlightPath::toRunnerTrajectoryJson() const
+{
+    QJsonObject json;
+    json["format"] = "voxl_runner_trajectory_v1";
+    json["name"] = m_name;
+
+    // Runner trajectory shape:
+    // {
+    //   "waypoints": [ {"t_s": 0.0, "x":..., "y":..., "z":..., "yaw":...}, ... ]
+    // }
+    QJsonArray runnerWaypoints;
+    double tSec = 0.0;
+    const double cruise = qMax(0.1, static_cast<double>(m_cruiseSpeedMS));
+
+    for (int i = 0; i < m_waypoints.size(); ++i) {
+        const Waypoint &wp = m_waypoints[i];
+
+        if (wp.timestampMs() > 0) {
+            // Recorded trajectory: trust explicit per-point timestamps.
+            tSec = static_cast<double>(wp.timestampMs()) / 1000.0;
+        } else if (i > 0) {
+            // Planned trajectory: derive timing from segment distance and cruise speed.
+            const Waypoint &prev = m_waypoints[i - 1];
+            const double distM = static_cast<double>(prev.distanceTo(wp));
+            tSec += distM / cruise;
+        }
+
+        QJsonObject pt;
+        pt["t_s"] = tSec;
+        pt["x"] = static_cast<double>(wp.x());
+        pt["y"] = static_cast<double>(wp.y());
+        pt["z"] = static_cast<double>(wp.z());
+        pt["yaw"] = static_cast<double>(wp.yawAngle());
+        runnerWaypoints.append(pt);
+    }
+
+    json["waypoints"] = runnerWaypoints;
+
+    // Keep existing app metadata for round-trip compatibility.
+    json["home_relative"] = m_homeRelative;
+    json["takeoff_alt_m"] = static_cast<double>(m_takeoffAltM);
+    json["cruise_speed_m_s"] = static_cast<double>(m_cruiseSpeedMS);
+    json["land"] = m_autoLand;
+    return json;
+}
+
+FlightPath FlightPath::fromRunnerTrajectoryJson(const QJsonObject &json,
+                                                const QString &displayName)
+{
+    FlightPath path;
+
+    if (json.contains("waypoints") && json["waypoints"].isArray()) {
+        const QJsonArray points = json["waypoints"].toArray();
+        for (int i = 0; i < points.size(); ++i) {
+            const QJsonObject pt = points.at(i).toObject();
+
+            // Handle classic mission style or runner x/y/z style.
+            const bool hasLocal = pt.contains("x") || pt.contains("y") || pt.contains("z");
+            if (hasLocal) {
+                Waypoint wp(
+                    static_cast<float>(pt["x"].toDouble()),
+                    static_cast<float>(pt["y"].toDouble()),
+                    static_cast<float>(pt["z"].toDouble()),
+                    QString("WP %1").arg(i + 1));
+                wp.setYawAngle(static_cast<float>(pt["yaw"].toDouble(pt["yaw_deg"].toDouble(0.0))));
+                wp.setTimestampMs(static_cast<qint64>(pt["t_s"].toDouble(0.0) * 1000.0));
+                wp.setSpeed(static_cast<float>(pt["speed_m_s"].toDouble(0.0)));
+                path.addWaypoint(wp);
+            } else {
+                path.addWaypoint(Waypoint::fromJson(pt));
+            }
+        }
+    } else if (json.contains("trajectory_points") && json["trajectory_points"].isArray()) {
+        const QJsonArray points = json["trajectory_points"].toArray();
+        for (int i = 0; i < points.size(); ++i) {
+            const QJsonObject pt = points.at(i).toObject();
+            Waypoint wp(
+                static_cast<float>(pt["x"].toDouble()),
+                static_cast<float>(pt["y"].toDouble()),
+                static_cast<float>(pt["z"].toDouble()),
+                QString("WP %1").arg(i + 1));
+            wp.setYawAngle(static_cast<float>(pt["yaw_deg"].toDouble(0.0)));
+            wp.setTimestampMs(static_cast<qint64>(pt["t_ms"].toDouble(0.0)));
+            wp.setSpeed(static_cast<float>(pt["speed_m_s"].toDouble(0.0)));
+            path.addWaypoint(wp);
+        }
+    }
+
+    path.setHomeRelative(json["home_relative"].toBool(path.homeRelative()));
+    path.setTakeoffAltM(static_cast<float>(json["takeoff_alt_m"].toDouble(path.takeoffAltM())));
+    path.setCruiseSpeedMS(static_cast<float>(json["cruise_speed_m_s"].toDouble(path.cruiseSpeedMS())));
+    path.setAutoLand(json["land"].toBool(path.autoLand()));
+
+    if (!displayName.trimmed().isEmpty()) {
+        path.setName(displayName.trimmed());
+    } else if (json.contains("name")) {
+        path.setName(json["name"].toString(path.name()));
+    }
+
+    return path;
+}
+
 void FlightPath::updateSequences()
 {
     for (int i = 0; i < m_waypoints.size(); ++i) {

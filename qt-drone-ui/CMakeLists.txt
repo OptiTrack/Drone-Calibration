@@ -65,6 +65,7 @@ set(HEADERS
     src/models/flightpath.h
     src/models/recording.h
     src/network/voxlconnection.h
+    src/services/voxlmapperservice.h
     src/utils/settings.h
 )
 
@@ -83,6 +84,7 @@ set(SOURCES
     src/models/flightpath.cpp
     src/models/recording.cpp
     src/network/voxlconnection.cpp
+    src/services/voxlmapperservice.cpp
     src/utils/settings.cpp
 )
 

@@ -27,13 +27,15 @@ struct DroneStatus {
     float altitude;
     float groundSpeed;
     float verticalSpeed;
-    QVector3D position;
+    QVector3D position;    // GPS (lat, lon, alt)
     QVector3D velocity;
-    QVector3D attitude; // roll, pitch, yaw in degrees
+    QVector3D attitude;    // roll, pitch, yaw in degrees
     QString lastHeartbeat;
     QString systemStatus;
     QStringList errors;
     QStringList warnings;
+    // VIO / SLAM local-frame position (from LOCAL_POSITION_NED, NED → NEU)
+    QVector3D slamPosition; // x=North(m), y=East(m), z=Up(m) relative to VIO origin
 };
 
 QT_BEGIN_NAMESPACE
