@@ -145,7 +145,10 @@ void MainWindow::setupPlannerMenus()
             return;
         }
 
-        m_droneController->connectToDrone(host.trimmed(), port);
+        const QString cleanHost = host.trimmed();
+        if (m_cameraFeedWidget)
+            m_cameraFeedWidget->setVoxlHost(cleanHost);
+        m_droneController->connectToDrone(cleanHost, port);
     });
 
     connect(disconnectAction, &QAction::triggered,
@@ -500,6 +503,8 @@ void MainWindow::connectSignals()
                     connected ? "color: #10b981; font-size: 12px;" : "color: #ef4444; font-size: 12px;");
                 m_connectionStatusText->setText(connected ? "Drone Connected" : "Drone Disconnected");
                 m_droneStatusWidget->setConnectionStatus(connected);
+                if (connected && m_cameraFeedWidget)
+                    m_cameraFeedWidget->setVoxlHost(m_droneController->voxlHost());
             });
     connect(m_droneController, &DroneController::statusUpdated,
             m_droneStatusWidget, &DroneStatusWidget::updateDroneStatus);

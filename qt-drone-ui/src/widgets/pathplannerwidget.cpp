@@ -36,6 +36,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 
 static QString plannerPathsDirectory()
 {
@@ -73,6 +74,82 @@ static QVector3D worldToLogical(const QVector3D &worldPos)
 static QVector3D waypointToWorld(const Waypoint &wp)
 {
     return logicalToWorld(QVector3D(wp.x(), wp.y(), wp.z()));
+}
+
+static QJsonArray vector3DListToJson(const QVector<QVector3D> &positions)
+{
+    QJsonArray array;
+    for (const QVector3D &p : positions) {
+        QJsonArray item;
+        item.append(static_cast<double>(p.x()));
+        item.append(static_cast<double>(p.y()));
+        item.append(static_cast<double>(p.z()));
+        array.append(item);
+    }
+    return array;
+}
+
+static QVector<QVector3D> vector3DListFromJson(const QJsonArray &array)
+{
+    QVector<QVector3D> positions;
+    positions.reserve(array.size());
+    for (const QJsonValue &value : array) {
+        const QJsonArray item = value.toArray();
+        if (item.size() < 3)
+            continue;
+        positions.append(QVector3D(static_cast<float>(item.at(0).toDouble()),
+                                   static_cast<float>(item.at(1).toDouble()),
+                                   static_cast<float>(item.at(2).toDouble())));
+    }
+    return positions;
+}
+
+static QJsonArray colorListToJson(const QVector<QColor> &colors)
+{
+    QJsonArray array;
+    for (const QColor &color : colors) {
+        QJsonArray item;
+        item.append(color.red());
+        item.append(color.green());
+        item.append(color.blue());
+        array.append(item);
+    }
+    return array;
+}
+
+static QVector<QColor> colorListFromJson(const QJsonArray &array)
+{
+    QVector<QColor> colors;
+    colors.reserve(array.size());
+    for (const QJsonValue &value : array) {
+        const QJsonArray item = value.toArray();
+        if (item.size() < 3)
+            continue;
+        colors.append(QColor(qBound(0, item.at(0).toInt(), 255),
+                             qBound(0, item.at(1).toInt(), 255),
+                             qBound(0, item.at(2).toInt(), 255)));
+    }
+    return colors;
+}
+
+static QJsonArray indexListToJson(const QVector<quint32> &indices)
+{
+    QJsonArray array;
+    for (quint32 index : indices)
+        array.append(static_cast<double>(index));
+    return array;
+}
+
+static QVector<quint32> indexListFromJson(const QJsonArray &array)
+{
+    QVector<quint32> indices;
+    indices.reserve(array.size());
+    for (const QJsonValue &value : array) {
+        const double n = value.toDouble(-1.0);
+        if (n >= 0.0 && n <= static_cast<double>(std::numeric_limits<quint32>::max()))
+            indices.append(static_cast<quint32>(n));
+    }
+    return indices;
 }
 
 class WaypointTableWidget : public QTableWidget
@@ -2750,7 +2827,7 @@ void PathPlannerWidget::setupTopBar()
             return;
         m_mapperMapPath = path.trimmed();
         clearMapperVisualization();
-        m_droneController->replaceMapperMap(m_mapperMapPath);
+        m_droneController->loadMapperMap(m_mapperMapPath);
     });
     connect(uploadMapperMapAction, &QAction::triggered, this, [this]() {
         if (!m_droneController || !m_droneController->isConnected()) {
@@ -4010,6 +4087,32 @@ bool PathPlannerWidget::saveToJson(const QString &path, const QString &mapperMap
     if (!mapperMapBundleFolderName.trimmed().isEmpty())
         root["mapper_map_bundle"] = mapperMapBundleFolderName.trimmed();
 
+    if (m_openglWidget) {
+        const bool hasRenderSnapshot = !m_openglWidget->mapperRenderPositionsLogical().isEmpty()
+                                       || !m_openglWidget->mapperMeshPositionsLogical().isEmpty();
+        if (hasRenderSnapshot) {
+            QJsonObject snapshot;
+            snapshot["format"] = QStringLiteral("planner-logical-v1");
+
+            if (!m_openglWidget->mapperRenderPositionsLogical().isEmpty()) {
+                QJsonObject pathRender;
+                pathRender["positions"] = vector3DListToJson(m_openglWidget->mapperRenderPositionsLogical());
+                pathRender["colors"] = colorListToJson(m_openglWidget->mapperRenderColors());
+                snapshot["path_render"] = pathRender;
+            }
+
+            if (!m_openglWidget->mapperMeshPositionsLogical().isEmpty()) {
+                QJsonObject mesh;
+                mesh["positions"] = vector3DListToJson(m_openglWidget->mapperMeshPositionsLogical());
+                mesh["colors"] = colorListToJson(m_openglWidget->mapperMeshColors());
+                mesh["triangle_indices"] = indexListToJson(m_openglWidget->mapperMeshTriangleIndices());
+                snapshot["mesh"] = mesh;
+            }
+
+            root["mapper_render_snapshot"] = snapshot;
+        }
+    }
+
     QJsonArray waypointsArray;
     const auto &waypoints = m_openglWidget->waypoints();
     for (const auto &wp : waypoints)
@@ -4078,6 +4181,26 @@ bool PathPlannerWidget::loadFromJson(const QString &path)
     }
 
     m_openglWidget->setWaypoints(waypoints);
+
+    QVector<QVector3D> renderPositions;
+    QVector<QColor> renderColors;
+    QVector<QVector3D> meshPositions;
+    QVector<QColor> meshColors;
+    QVector<quint32> meshTriangleIndices;
+    const QJsonObject snapshot = root.value(QStringLiteral("mapper_render_snapshot")).toObject();
+    if (!snapshot.isEmpty()) {
+        const QJsonObject pathRender = snapshot.value(QStringLiteral("path_render")).toObject();
+        renderPositions = vector3DListFromJson(pathRender.value(QStringLiteral("positions")).toArray());
+        renderColors = colorListFromJson(pathRender.value(QStringLiteral("colors")).toArray());
+
+        const QJsonObject mesh = snapshot.value(QStringLiteral("mesh")).toObject();
+        meshPositions = vector3DListFromJson(mesh.value(QStringLiteral("positions")).toArray());
+        meshColors = colorListFromJson(mesh.value(QStringLiteral("colors")).toArray());
+        meshTriangleIndices = indexListFromJson(mesh.value(QStringLiteral("triangle_indices")).toArray());
+    }
+    m_openglWidget->setMapperRenderData(renderPositions, renderColors);
+    m_openglWidget->setMapperMeshData(meshPositions, meshColors, meshTriangleIndices);
+
     updateWaypointTable();
     emitWaypointsChanged();
 

@@ -84,6 +84,11 @@ public:
     void setDronePoseLogical(const QVector3D &positionLogical, float yawDeg);
     void setMapperRenderData(const QVector<QVector3D> &positionsLogical, const QVector<QColor> &colors);
     void setMapperMeshData(const QVector<QVector3D> &positionsLogical, const QVector<QColor> &colors, const QVector<quint32> &triangleIndices);
+    const QVector<QVector3D> &mapperRenderPositionsLogical() const { return m_mapperRenderPositionsLogical; }
+    const QVector<QColor> &mapperRenderColors() const { return m_mapperRenderColors; }
+    const QVector<QVector3D> &mapperMeshPositionsLogical() const { return m_mapperMeshPositionsLogical; }
+    const QVector<QColor> &mapperMeshColors() const { return m_mapperMeshColors; }
+    const QVector<quint32> &mapperMeshTriangleIndices() const { return m_mapperMeshTriangleIndices; }
 
 signals:
     void waypointSelected(int id);

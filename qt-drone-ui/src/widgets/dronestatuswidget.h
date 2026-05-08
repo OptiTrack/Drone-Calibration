@@ -28,6 +28,7 @@ struct DroneStatus {
     float groundSpeed;
     float verticalSpeed;
     QVector3D position;
+    bool positionIsMapperLocal;
     QVector3D velocity;
     QVector3D attitude; // roll, pitch, yaw in degrees
     QString lastHeartbeat;

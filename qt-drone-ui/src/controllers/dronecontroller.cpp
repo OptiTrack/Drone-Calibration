@@ -29,6 +29,8 @@ DroneController::DroneController(QObject *parent)
     , m_mapperMissionState(MapperMissionState::Idle)
     , m_mapperMissionTimer(nullptr)
     , m_haveMapperPose(false)
+    , m_mapperPlanReceivedForCurrentTarget(false)
+    , m_mapperFollowIssuedForCurrentTarget(false)
     , m_resumeMissionItem(0)
     , m_pendingMapperMapCommand(PendingMapperMapCommand::None)
     , m_mapperPortalWatchdog(nullptr)
@@ -47,6 +49,7 @@ DroneController::DroneController(QObject *parent)
     m_currentStatus.groundSpeed = 0.0f;
     m_currentStatus.verticalSpeed = 0.0f;
     m_currentStatus.position = QVector3D(0, 0, 0);
+    m_currentStatus.positionIsMapperLocal = false;
     m_currentStatus.velocity = QVector3D(0, 0, 0);
     m_currentStatus.attitude = QVector3D(0, 0, 0);
     m_currentStatus.systemStatus = "DISCONNECTED";
@@ -214,6 +217,7 @@ void DroneController::updateConnectionStatus(bool connected)
             m_currentStatus.groundSpeed = 0.0f;
             m_currentStatus.verticalSpeed = 0.0f;
             m_currentStatus.position = QVector3D(0, 0, 0);
+            m_currentStatus.positionIsMapperLocal = false;
             m_currentStatus.velocity = QVector3D(0, 0, 0);
             m_currentStatus.attitude = QVector3D(0, 0, 0);
             m_currentStatus.lastHeartbeat.clear();
@@ -379,18 +383,22 @@ void DroneController::onVOXLDataReceived(const QJsonObject &data)
                 pos["lon"].toDouble(),
                 pos["alt"].toDouble()
             );
+            m_currentStatus.positionIsMapperLocal = false;
             m_currentStatus.altitude = pos["alt"].toDouble();
         }
 
         if (statusData.contains("latitude") || statusData.contains("longitude")) {
+            m_currentStatus.positionIsMapperLocal = false;
             m_currentStatus.position.setX(static_cast<float>(statusData["latitude"].toDouble(m_currentStatus.position.x())));
             m_currentStatus.position.setY(static_cast<float>(statusData["longitude"].toDouble(m_currentStatus.position.y())));
         }
         if (statusData.contains("altitude")) {
             m_currentStatus.altitude = static_cast<float>(statusData["altitude"].toDouble());
-            m_currentStatus.position.setZ(m_currentStatus.altitude);
+            if (!m_currentStatus.positionIsMapperLocal)
+                m_currentStatus.position.setZ(m_currentStatus.altitude);
         } else if (statusData.contains("gpsAltitude")) {
-            m_currentStatus.position.setZ(static_cast<float>(statusData["gpsAltitude"].toDouble()));
+            if (!m_currentStatus.positionIsMapperLocal)
+                m_currentStatus.position.setZ(static_cast<float>(statusData["gpsAltitude"].toDouble()));
         } else if (statusData.contains("localAltitude")) {
             m_currentStatus.altitude = static_cast<float>(statusData["localAltitude"].toDouble());
         }
@@ -591,12 +599,15 @@ void DroneController::startMission()
     m_resumeMissionItem = 0;
     m_mapperMissionState = MapperMissionState::Planning;
     m_mapperStateTimer.restart();
+    m_mapperDebugTimer.restart();
     if (m_mapperMissionTimer)
         m_mapperMissionTimer->start();
     commandCurrentMapperWaypoint();
 
     emit missionStatusChanged("Mapper mission started");
-    emit messageReceived("Mapper mission execution started");
+    emit messageReceived(QStringLiteral("Mapper mission execution started at waypoint 1/%1 (no home leg).")
+                             .arg(m_mapperMission.size()));
+    emit messageReceived(QStringLiteral("Mapper mission command sequence: plan_to first waypoint, then follow_path when mapper returns a plan."));
 }
 
 void DroneController::pauseMission()
@@ -633,6 +644,7 @@ void DroneController::resumeMission()
     m_missionPaused = false;
     m_mapperMissionState = MapperMissionState::Planning;
     m_mapperStateTimer.restart();
+    m_mapperDebugTimer.restart();
     if (m_mapperMissionTimer)
         m_mapperMissionTimer->start();
     commandCurrentMapperWaypoint();
@@ -657,6 +669,8 @@ void DroneController::clearMission()
     m_currentMission.uploaded = false;
     m_missionActive = false;
     m_missionPaused = false;
+    m_mapperPlanReceivedForCurrentTarget = false;
+    m_mapperFollowIssuedForCurrentTarget = false;
     
     if (m_connected) {
         if (m_mapperClient && m_mapperClient->isConnected())
@@ -1078,6 +1092,7 @@ void DroneController::onMapperPoseReceived(const QVector3D &positionFrd, const Q
 
     // Keep the UI in the planner's logical frame while retaining FRD internally.
     m_currentStatus.position = mapperFrdToLogical(positionFrd);
+    m_currentStatus.positionIsMapperLocal = true;
     m_currentStatus.velocity = mapperFrdToLogical(velocityFrd);
     m_currentStatus.altitude = m_currentStatus.position.z();
     m_currentStatus.attitude.setZ(-qRadiansToDegrees(yawRad));
@@ -1100,10 +1115,20 @@ void DroneController::onMapperRenderReceived(const QString &name, int format, co
     }
 
     emit mapperRenderUpdated(positionsLogical, colors);
-    if (!points.isEmpty())
+    if (!points.isEmpty()) {
         emit messageReceived(QStringLiteral("VOXL Mapper render update: %1 points from %2")
                                  .arg(points.size())
                                  .arg(name.trimmed().isEmpty() ? QStringLiteral("mesh/plan") : name.trimmed()));
+        if (m_missionActive && !m_missionPaused && m_mapperMissionState == MapperMissionState::Planning) {
+            m_mapperPlanReceivedForCurrentTarget = true;
+            issueMapperFollowForCurrentWaypoint(QStringLiteral("non-empty mapper plan render (%1 point(s))")
+                                                    .arg(points.size()));
+        }
+    } else if (m_missionActive && m_mapperMissionState == MapperMissionState::Planning) {
+        emit warningIssued(QStringLiteral("VOXL Mapper returned an empty plan render while planning waypoint %1/%2.")
+                               .arg(m_currentMissionItem + 1)
+                               .arg(m_mapperMission.size()));
+    }
 }
 
 void DroneController::onMapperMeshReceived(const QVector<MapperPathPoint> &vertices, const QVector<quint32> &triangleIndices)
@@ -1140,27 +1165,48 @@ void DroneController::onMapperTick()
     const MapperMissionWaypoint &target = m_mapperMission[m_currentMissionItem];
 
     if (m_mapperMissionState == MapperMissionState::Planning) {
-        if (m_mapperStateTimer.elapsed() > 1000) {
-            if (m_mapperClient && m_mapperClient->isConnected())
-                m_mapperClient->followPath();
-            m_mapperMissionState = MapperMissionState::Following;
-            m_mapperStateTimer.restart();
-            emit missionStatusChanged(QString("Following mapper waypoint %1/%2")
-                                          .arg(m_currentMissionItem + 1)
-                                          .arg(m_mapperMission.size()));
+        if (!m_mapperFollowIssuedForCurrentTarget && m_mapperStateTimer.elapsed() > 250) {
+            issueMapperFollowForCurrentWaypoint(QStringLiteral("250 ms fallback before plan render arrived"));
+        }
+        if (!m_mapperPlanReceivedForCurrentTarget && m_mapperDebugTimer.elapsed() > 1000) {
+            emit messageReceived(QStringLiteral(
+                                     "Mapper debug: waiting for plan render for waypoint %1/%2; target FRD (%3, %4, %5).")
+                                     .arg(m_currentMissionItem + 1)
+                                     .arg(m_mapperMission.size())
+                                     .arg(target.frdPosition.x(), 0, 'f', 2)
+                                     .arg(target.frdPosition.y(), 0, 'f', 2)
+                                     .arg(target.frdPosition.z(), 0, 'f', 2));
+            m_mapperDebugTimer.restart();
         }
         return;
     }
 
     if (m_mapperMissionState == MapperMissionState::Following) {
         if (!m_haveMapperPose) {
-            if (m_mapperStateTimer.elapsed() > 8000)
+            if (m_mapperDebugTimer.elapsed() > 1000) {
                 emit warningIssued("Waiting for VOXL Mapper pose before waypoint arrival checks.");
+                m_mapperDebugTimer.restart();
+            }
             return;
         }
 
         const float distance = (m_mapperPositionFrd - target.frdPosition).length();
         const float speed = m_mapperVelocityFrd.length();
+        if (m_mapperDebugTimer.elapsed() > 1000) {
+            emit messageReceived(QStringLiteral(
+                                     "Mapper debug: waypoint %1/%2 distance %3 m, speed %4 m/s, current FRD (%5, %6, %7), target FRD (%8, %9, %10).")
+                                     .arg(m_currentMissionItem + 1)
+                                     .arg(m_mapperMission.size())
+                                     .arg(distance, 0, 'f', 2)
+                                     .arg(speed, 0, 'f', 2)
+                                     .arg(m_mapperPositionFrd.x(), 0, 'f', 2)
+                                     .arg(m_mapperPositionFrd.y(), 0, 'f', 2)
+                                     .arg(m_mapperPositionFrd.z(), 0, 'f', 2)
+                                     .arg(target.frdPosition.x(), 0, 'f', 2)
+                                     .arg(target.frdPosition.y(), 0, 'f', 2)
+                                     .arg(target.frdPosition.z(), 0, 'f', 2));
+            m_mapperDebugTimer.restart();
+        }
         if (distance <= target.acceptanceRadiusM && speed < 0.35f) {
             if (target.holdTimeSec > 0.0f) {
                 m_mapperMissionState = MapperMissionState::Holding;
@@ -1203,15 +1249,62 @@ void DroneController::commandCurrentMapperWaypoint()
         return;
 
     const MapperMissionWaypoint &target = m_mapperMission[m_currentMissionItem];
+    m_mapperPlanReceivedForCurrentTarget = false;
+    m_mapperFollowIssuedForCurrentTarget = false;
     m_mapperClient->planToFrd(target.frdPosition);
     m_mapperMissionState = MapperMissionState::Planning;
     m_mapperStateTimer.restart();
+    m_mapperDebugTimer.restart();
     emit missionStatusChanged(QString("Planning mapper waypoint %1/%2: FRD (%3, %4, %5)")
                                   .arg(m_currentMissionItem + 1)
                                   .arg(m_mapperMission.size())
                                   .arg(target.frdPosition.x(), 0, 'f', 2)
                                   .arg(target.frdPosition.y(), 0, 'f', 2)
                                   .arg(target.frdPosition.z(), 0, 'f', 2));
+    emit messageReceived(QStringLiteral(
+                             "Mapper command: plan_to waypoint %1/%2 logical (%3, %4, %5) -> FRD (%6, %7, %8), acceptance %9 m, hold %10 s.")
+                             .arg(m_currentMissionItem + 1)
+                             .arg(m_mapperMission.size())
+                             .arg(target.logicalPosition.x(), 0, 'f', 2)
+                             .arg(target.logicalPosition.y(), 0, 'f', 2)
+                             .arg(target.logicalPosition.z(), 0, 'f', 2)
+                             .arg(target.frdPosition.x(), 0, 'f', 2)
+                             .arg(target.frdPosition.y(), 0, 'f', 2)
+                             .arg(target.frdPosition.z(), 0, 'f', 2)
+                             .arg(target.acceptanceRadiusM, 0, 'f', 2)
+                             .arg(target.holdTimeSec, 0, 'f', 1));
+    if (m_haveMapperPose) {
+        emit messageReceived(QStringLiteral("Mapper debug: current FRD before plan_to (%1, %2, %3), distance to target %4 m.")
+                                 .arg(m_mapperPositionFrd.x(), 0, 'f', 2)
+                                 .arg(m_mapperPositionFrd.y(), 0, 'f', 2)
+                                 .arg(m_mapperPositionFrd.z(), 0, 'f', 2)
+                                 .arg((m_mapperPositionFrd - target.frdPosition).length(), 0, 'f', 2));
+    } else {
+        emit warningIssued(QStringLiteral("Mapper debug: no pose received yet when starting waypoint %1.").arg(m_currentMissionItem + 1));
+    }
+}
+
+void DroneController::issueMapperFollowForCurrentWaypoint(const QString &reason)
+{
+    if (m_mapperFollowIssuedForCurrentTarget)
+        return;
+    if (!m_mapperClient || !m_mapperClient->isConnected())
+        return;
+    if (m_currentMissionItem < 0 || m_currentMissionItem >= m_mapperMission.size())
+        return;
+
+    m_mapperFollowIssuedForCurrentTarget = true;
+    m_mapperClient->followPath();
+    m_mapperMissionState = MapperMissionState::Following;
+    m_mapperStateTimer.restart();
+    m_mapperDebugTimer.restart();
+    emit missionStatusChanged(QString("Following mapper waypoint %1/%2")
+                                  .arg(m_currentMissionItem + 1)
+                                  .arg(m_mapperMission.size()));
+    emit messageReceived(QStringLiteral("Mapper command: follow_path for waypoint %1/%2 (%3).")
+                             .arg(m_currentMissionItem + 1)
+                             .arg(m_mapperMission.size())
+                             .arg(reason));
 }
 
 void DroneController::finishMapperMission(const QString &message)
@@ -1224,6 +1317,8 @@ void DroneController::finishMapperMission(const QString &message)
     m_missionActive = false;
     m_missionPaused = false;
     m_resumeMissionItem = 0;
+    m_mapperPlanReceivedForCurrentTarget = false;
+    m_mapperFollowIssuedForCurrentTarget = false;
     emit missionStatusChanged(message);
     emit messageReceived(message);
 }

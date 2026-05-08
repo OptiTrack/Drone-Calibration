@@ -144,6 +144,7 @@ private:
     static QVector3D mapperFrdToLogical(const QVector3D &positionFrd);
     void advanceMapperMission();
     void commandCurrentMapperWaypoint();
+    void issueMapperFollowForCurrentWaypoint(const QString &reason);
     void finishMapperMission(const QString &message);
     void updateConnectionStatus(bool connected);
     /// Stops VOXL Mapper follow_path and local sequencer so PX4 can own modes (Land, RTL, etc.).
@@ -185,9 +186,12 @@ private:
     QTimer *m_mapperMissionTimer;
     QElapsedTimer m_mapperStateTimer;
     QElapsedTimer m_mapperHoldTimer;
+    QElapsedTimer m_mapperDebugTimer;
     QVector3D m_mapperPositionFrd;
     QVector3D m_mapperVelocityFrd;
     bool m_haveMapperPose;
+    bool m_mapperPlanReceivedForCurrentTarget;
+    bool m_mapperFollowIssuedForCurrentTarget;
     int m_resumeMissionItem;
     enum class PendingMapperMapCommand {
         None,

@@ -23,6 +23,7 @@ DroneStatusWidget::DroneStatusWidget(QWidget *parent)
     m_currentStatus.groundSpeed = 0.0f;
     m_currentStatus.verticalSpeed = 0.0f;
     m_currentStatus.position = QVector3D(0, 0, 0);
+    m_currentStatus.positionIsMapperLocal = false;
     m_currentStatus.velocity = QVector3D(0, 0, 0);
     m_currentStatus.attitude = QVector3D(0, 0, 0);
     m_currentStatus.systemStatus = "DISCONNECTED";
@@ -91,6 +92,7 @@ void DroneStatusWidget::setConnectionStatus(bool connected)
         m_currentStatus.groundSpeed = 0.0f;
         m_currentStatus.verticalSpeed = 0.0f;
         m_currentStatus.position = QVector3D(0, 0, 0);
+        m_currentStatus.positionIsMapperLocal = false;
         m_currentStatus.velocity = QVector3D(0, 0, 0);
         m_currentStatus.attitude = QVector3D(0, 0, 0);
         m_currentStatus.lastHeartbeat.clear();
@@ -200,6 +202,26 @@ void DroneStatusWidget::updateFlightDisplay()
 
 void DroneStatusWidget::updatePositionDisplay()
 {
+    if (m_currentStatus.connected) {
+        const QString degree = QString::fromUtf8("\xC2\xB0");
+        if (m_currentStatus.positionIsMapperLocal) {
+            ui->positionGroup->setTitle("VOXL Mapper Local Position & Attitude");
+            ui->latitudeLabel->setText(QString("X: %1 m").arg(m_currentStatus.position.x(), 0, 'f', 3));
+            ui->longitudeLabel->setText(QString("Y: %1 m").arg(m_currentStatus.position.y(), 0, 'f', 3));
+            ui->altitudeAbsLabel->setText(QString("Z: %1 m").arg(m_currentStatus.position.z(), 0, 'f', 3));
+        } else {
+            ui->positionGroup->setTitle("GPS Position & Attitude");
+            ui->latitudeLabel->setText(QString("Latitude: %1%2").arg(m_currentStatus.position.x(), 0, 'f', 6).arg(degree));
+            ui->longitudeLabel->setText(QString("Longitude: %1%2").arg(m_currentStatus.position.y(), 0, 'f', 6).arg(degree));
+            ui->altitudeAbsLabel->setText(QString("Alt: %1 m").arg(m_currentStatus.position.z(), 0, 'f', 1));
+        }
+
+        ui->rollLabel->setText(QString("Roll: %1%2").arg(m_currentStatus.attitude.x(), 0, 'f', 3).arg(degree));
+        ui->pitchLabel->setText(QString("Pitch: %1%2").arg(m_currentStatus.attitude.y(), 0, 'f', 3).arg(degree));
+        ui->yawLabel->setText(QString("Yaw: %1%2").arg(m_currentStatus.attitude.z(), 0, 'f', 3).arg(degree));
+        return;
+    }
+
     if (!m_currentStatus.connected) {
         ui->latitudeLabel->setText("--");
         ui->longitudeLabel->setText("--");
@@ -207,6 +229,7 @@ void DroneStatusWidget::updatePositionDisplay()
         ui->rollLabel->setText("--");
         ui->pitchLabel->setText("--");
         ui->yawLabel->setText("--");
+        ui->positionGroup->setTitle("Position & Attitude");
         return;
     }
 
