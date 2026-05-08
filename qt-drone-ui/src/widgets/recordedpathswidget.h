@@ -33,6 +33,8 @@ public:
 signals:
     void pathDeleted(const QString &pathId);
     void pathLoadRequested(const QVector<QVector3D> &points);
+    /// Full planner JSON (waypoints + mapper_map_path); preferred when the list entry came from disk.
+    void pathJsonLoadRequested(const QString &absoluteJsonPath);
 
 private slots:
     void onPathSelectionChanged();

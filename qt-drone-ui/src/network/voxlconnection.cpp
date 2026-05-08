@@ -2,6 +2,7 @@
 #include <QDebug>
 #include <QFile>
 #include <QFileInfo>
+#include <QDir>
 #include <QUrl>
 #include <QUrlQuery>
 #include <QHttpMultiPart>
@@ -25,6 +26,7 @@ enum MavCommand : quint16 {
     MavCmdNavReturnToLaunch = 20,
     MavCmdNavLand = 21,
     MavCmdNavTakeoff = 22,
+    MavCmdDoFlightTermination = 185,
     MavCmdComponentArmDisarm = 400,
 };
 
@@ -137,6 +139,8 @@ VOXLConnection::VOXLConnection(QObject *parent)
     , m_connected(false)
     , m_connectionTimeout(5000)
     , m_remotePort(0)
+    , m_mavlinkPeerPort(0)
+    , m_haveMavlinkPeer(false)
     , m_mavlinkSequence(0)
     , m_targetSystemId(1)
     , m_targetComponentId(1)
@@ -151,7 +155,9 @@ VOXLConnection::VOXLConnection(QObject *parent)
     , m_telemetryStreamPort(14550)
     , m_runnerApiPort(8080)
     , m_scpProcess(nullptr)
+    , m_scpMode(ScpMode::Upload)
     , m_missionApiReply(nullptr)
+    , m_currentUploadLabel(QStringLiteral("file"))
 {
     connect(m_heartbeatTimer, &QTimer::timeout, this, &VOXLConnection::onHeartbeatTimer);
     connect(m_connectionTimer, &QTimer::timeout, this, &VOXLConnection::onConnectionTimer);
@@ -175,6 +181,7 @@ bool VOXLConnection::connectToVOXL(const QString &host, int port, ConnectionType
     m_connectionType = type;
     m_remoteAddress = QHostAddress(host);
     m_remotePort = static_cast<quint16>(port);
+    m_haveMavlinkPeer = false;
     m_connected = false;
     m_haveAutopilotTarget = false;
     m_dataBuffer.clear();
@@ -230,6 +237,8 @@ void VOXLConnection::disconnect()
         m_udpSocket = nullptr;
     }
 
+    m_haveMavlinkPeer = false;
+
     if (m_connected) {
         m_connected = false;
         emit disconnected();
@@ -254,8 +263,12 @@ void VOXLConnection::sendCommand(const QString &command, const QJsonObject &para
         sendMavlinkCommandLong(MavCmdNavLand);
     } else if (command == "return_to_launch") {
         sendMavlinkCommandLong(MavCmdNavReturnToLaunch);
-    } else if (command == "emergency_stop") {
+    } else if (command == "force_disarm" || command == "emergency_stop") {
+        // MAV_CMD_COMPONENT_ARM_DISARM: disarm with param2=21196 = force (in flight, bypass normal disarm checks).
         sendMavlinkCommandLong(MavCmdComponentArmDisarm, 0.0f, 21196.0f);
+    } else if (command == "flight_termination") {
+        // MAV_CMD_DO_FLIGHTTERMINATION: PX4 flight termination (requires CBRK_FLIGHTTERM=0; may need power-cycle).
+        sendMavlinkCommandLong(MavCmdDoFlightTermination, 1.0f);
     } else if (command == "mavlink_command_long") {
         sendMavlinkCommandLong(static_cast<quint16>(params["command"].toInt()),
                                static_cast<float>(params["param1"].toDouble()),
@@ -289,15 +302,23 @@ void VOXLConnection::onUdpDataReceived()
         QHostAddress sender;
         quint16 senderPort = 0;
         m_udpSocket->readDatagram(datagram.data(), datagram.size(), &sender, &senderPort);
+        if (!sender.isNull()) {
+            m_mavlinkPeerAddress = sender;
+            m_mavlinkPeerPort = senderPort;
+            m_haveMavlinkPeer = true;
+        }
         processReceivedData(datagram);
     }
 }
 
-void VOXLConnection::onUdpError(QAbstractSocket::SocketError)
+void VOXLConnection::onUdpError(QAbstractSocket::SocketError error)
 {
-    if (m_udpSocket) {
-        emit errorOccurred(QString("MAVLink UDP error: %1").arg(m_udpSocket->errorString()));
-    }
+    if (!m_udpSocket)
+        return;
+    // Windows reports ConnectionRefusedError when an ICMP "port unreachable" arrives for UDP; often benign after a bad send.
+    if (error == QAbstractSocket::ConnectionRefusedError)
+        return;
+    emit errorOccurred(QString("MAVLink UDP error: %1").arg(m_udpSocket->errorString()));
 }
 void VOXLConnection::onWebSocketConnected() {}
 void VOXLConnection::onWebSocketDisconnected() {}
@@ -335,7 +356,12 @@ void VOXLConnection::sendMavlinkMessage(const QByteArray &mavlinkData)
         return;
     }
 
-    m_udpSocket->writeDatagram(mavlinkData, m_remoteAddress, m_remotePort);
+    const QHostAddress dest = m_haveMavlinkPeer ? m_mavlinkPeerAddress : m_remoteAddress;
+    const quint16 destPort = m_haveMavlinkPeer ? m_mavlinkPeerPort : m_remotePort;
+    if (dest.isNull())
+        return;
+
+    m_udpSocket->writeDatagram(mavlinkData, dest, destPort);
 }
 
 void VOXLConnection::processReceivedData(const QByteArray &data)
@@ -631,6 +657,12 @@ QJsonObject VOXLConnection::createCommand(const QString &command, const QJsonObj
 
 void VOXLConnection::uploadMissionFile(const QString &localFilePath, const QString &remotePath)
 {
+    uploadFileToVoxl(localFilePath, remotePath, QStringLiteral("mission file"));
+}
+
+void VOXLConnection::uploadFileToVoxl(const QString &localFilePath, const QString &remotePath, const QString &uploadLabel)
+{
+    m_scpMode = ScpMode::Upload;
     if (m_voxlHost.isEmpty()) {
         emit errorOccurred("VOXL host not set. Call setVoxlHost() first.");
         return;
@@ -638,12 +670,13 @@ void VOXLConnection::uploadMissionFile(const QString &localFilePath, const QStri
     
     QFileInfo fileInfo(localFilePath);
     if (!fileInfo.exists()) {
-        emit errorOccurred(QString("Mission file not found: %1").arg(localFilePath));
+        emit errorOccurred(QString("Upload file not found: %1").arg(localFilePath));
         return;
     }
     
-    qDebug() << "Uploading mission file to VOXL2:" << localFilePath << "->" << remotePath;
-    emit statusChanged("Uploading mission file...");
+    const QString label = uploadLabel.trimmed().isEmpty() ? QStringLiteral("file") : uploadLabel.trimmed();
+    qDebug() << "Uploading" << label << "to VOXL2:" << localFilePath << "->" << remotePath;
+    emit statusChanged(QString("Uploading %1...").arg(label));
     
     // Use SCP to transfer the file to VOXL2
     // Command: scp localFilePath root@<voxl_ip>:<remotePath>
@@ -667,9 +700,106 @@ void VOXLConnection::uploadMissionFile(const QString &localFilePath, const QStri
               << remoteTarget;
     
     m_currentMissionFile = fileInfo.fileName();
+    m_currentUploadLabel = label;
     
     qDebug() << "Running: scp" << arguments.join(" ");
     m_scpProcess->start("scp", arguments);
+}
+
+void VOXLConnection::downloadDirectoryFromVoxl(const QString &localDir, const QString &remotePath)
+{
+    if (m_voxlHost.isEmpty()) {
+        emit mapperBundleDownloadFinished(false, QStringLiteral("VOXL host not set."));
+        return;
+    }
+    const QString cleanRemote = remotePath.trimmed();
+    if (cleanRemote.isEmpty()) {
+        emit mapperBundleDownloadFinished(false, QStringLiteral("Remote map path is empty."));
+        return;
+    }
+
+    const QString nativeLocal = QDir::toNativeSeparators(localDir);
+    const QFileInfo localInfo(nativeLocal);
+    QDir().mkpath(localInfo.absolutePath());
+    if (QDir(nativeLocal).exists())
+        QDir(nativeLocal).removeRecursively();
+
+    if (m_scpProcess) {
+        m_scpProcess->kill();
+        m_scpProcess->deleteLater();
+        m_scpProcess = nullptr;
+    }
+
+    m_scpProcess = new QProcess(this);
+    m_scpMode = ScpMode::Download;
+    m_scpDownloadLocalPath = nativeLocal;
+    connect(m_scpProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, &VOXLConnection::onScpProcessFinished);
+    connect(m_scpProcess, &QProcess::errorOccurred,
+            this, &VOXLConnection::onScpProcessError);
+
+    QString remoteArg = QStringLiteral("root@%1:%2").arg(m_voxlHost, QDir::fromNativeSeparators(cleanRemote));
+    if (!remoteArg.endsWith(QLatin1Char('/')))
+        remoteArg += QLatin1Char('/');
+
+    QStringList arguments;
+    arguments << QStringLiteral("-r")
+              << QStringLiteral("-o") << QStringLiteral("StrictHostKeyChecking=no")
+              << QStringLiteral("-o") << QStringLiteral("UserKnownHostsFile=/dev/null")
+              << remoteArg
+              << nativeLocal;
+
+    emit statusChanged(QStringLiteral("Downloading mapper map from VOXL via scp…"));
+    m_scpProcess->start(QStringLiteral("scp"), arguments);
+}
+
+void VOXLConnection::uploadDirectoryToVoxl(const QString &localDir, const QString &remotePath)
+{
+    if (m_voxlHost.isEmpty()) {
+        emit mapperBundleUploadFinished(false, QStringLiteral("VOXL host not set."));
+        return;
+    }
+    const QString cleanLocal = QDir::cleanPath(localDir);
+    if (cleanLocal.isEmpty() || !QDir(cleanLocal).exists()) {
+        emit mapperBundleUploadFinished(false, QStringLiteral("Local map bundle folder not found."));
+        return;
+    }
+    const QString cleanRemote = remotePath.trimmed();
+    if (cleanRemote.isEmpty()) {
+        emit mapperBundleUploadFinished(false, QStringLiteral("Remote map path is empty."));
+        return;
+    }
+
+    if (m_scpProcess) {
+        m_scpProcess->kill();
+        m_scpProcess->deleteLater();
+        m_scpProcess = nullptr;
+    }
+
+    m_scpProcess = new QProcess(this);
+    m_scpMode = ScpMode::UploadDirectory;
+    connect(m_scpProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, &VOXLConnection::onScpProcessFinished);
+    connect(m_scpProcess, &QProcess::errorOccurred,
+            this, &VOXLConnection::onScpProcessError);
+
+    QString localArg = QDir::fromNativeSeparators(cleanLocal);
+    if (!localArg.endsWith(QLatin1String("/.")))
+        localArg += QStringLiteral("/.");
+
+    QString remoteArg = QStringLiteral("root@%1:%2").arg(m_voxlHost, QDir::fromNativeSeparators(cleanRemote));
+    if (!remoteArg.endsWith(QLatin1Char('/')))
+        remoteArg += QLatin1Char('/');
+
+    QStringList arguments;
+    arguments << QStringLiteral("-r")
+              << QStringLiteral("-o") << QStringLiteral("StrictHostKeyChecking=no")
+              << QStringLiteral("-o") << QStringLiteral("UserKnownHostsFile=/dev/null")
+              << localArg
+              << remoteArg;
+
+    emit statusChanged(QStringLiteral("Uploading mapper map bundle to VOXL via scp…"));
+    m_scpProcess->start(QStringLiteral("scp"), arguments);
 }
 
 void VOXLConnection::runMission(const QString &missionFileName)
@@ -761,11 +891,44 @@ void VOXLConnection::cancelMission()
 
 void VOXLConnection::onScpProcessFinished(int exitCode)
 {
+    const bool isDownload = (m_scpMode == ScpMode::Download);
+    const bool isUploadDir = (m_scpMode == ScpMode::UploadDirectory);
     if (exitCode == 0) {
-        qDebug() << "Mission file uploaded successfully";
+        if (isDownload) {
+            m_scpMode = ScpMode::Upload;
+            emit statusChanged(QStringLiteral("Mapper map copied from VOXL."));
+            emit mapperBundleDownloadFinished(true, m_scpDownloadLocalPath);
+            return;
+        }
+        if (isUploadDir) {
+            m_scpMode = ScpMode::Upload;
+            emit statusChanged(QStringLiteral("Mapper map bundle uploaded to VOXL."));
+            emit mapperBundleUploadFinished(true, QString());
+            return;
+        }
+        const QString label = m_currentUploadLabel.isEmpty() ? QStringLiteral("file") : m_currentUploadLabel;
+        qDebug() << label << "uploaded successfully";
         emit missionUploadComplete();
-        emit statusChanged("Mission file uploaded");
+        emit statusChanged(QString("%1 uploaded").arg(label.left(1).toUpper() + label.mid(1)));
     } else {
+        if (isDownload) {
+            QString errorMsg = QStringLiteral("SCP download failed with exit code %1").arg(exitCode);
+            if (m_scpProcess)
+                errorMsg += QStringLiteral(": %1").arg(QString::fromLocal8Bit(m_scpProcess->readAllStandardError()));
+            qWarning() << errorMsg;
+            m_scpMode = ScpMode::Upload;
+            emit mapperBundleDownloadFinished(false, errorMsg);
+            return;
+        }
+        if (isUploadDir) {
+            QString errorMsg = QStringLiteral("SCP bundle upload failed with exit code %1").arg(exitCode);
+            if (m_scpProcess)
+                errorMsg += QStringLiteral(": %1").arg(QString::fromLocal8Bit(m_scpProcess->readAllStandardError()));
+            qWarning() << errorMsg;
+            m_scpMode = ScpMode::Upload;
+            emit mapperBundleUploadFinished(false, errorMsg);
+            return;
+        }
         QString errorMsg = QString("SCP upload failed with exit code %1").arg(exitCode);
         if (m_scpProcess) {
             errorMsg += QString(": %1").arg(QString::fromLocal8Bit(m_scpProcess->readAllStandardError()));
@@ -778,11 +941,23 @@ void VOXLConnection::onScpProcessFinished(int exitCode)
 
 void VOXLConnection::onScpProcessError()
 {
-    QString errorMsg = "SCP process error";
+    const bool isDownload = (m_scpMode == ScpMode::Download);
+    const bool isUploadDir = (m_scpMode == ScpMode::UploadDirectory);
+    QString errorMsg = QStringLiteral("SCP process error");
     if (m_scpProcess) {
         errorMsg += QString(": %1").arg(m_scpProcess->errorString());
     }
     qWarning() << errorMsg;
+    if (isDownload) {
+        m_scpMode = ScpMode::Upload;
+        emit mapperBundleDownloadFinished(false, errorMsg);
+        return;
+    }
+    if (isUploadDir) {
+        m_scpMode = ScpMode::Upload;
+        emit mapperBundleUploadFinished(false, errorMsg);
+        return;
+    }
     emit missionUploadFailed(errorMsg);
     emit errorOccurred(errorMsg);
 }

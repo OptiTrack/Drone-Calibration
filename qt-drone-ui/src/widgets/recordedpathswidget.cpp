@@ -15,6 +15,8 @@
 #include <QDebug>
 #include <QRegularExpression>
 #include <QFileDevice>
+#include <QStyleFactory>
+#include <QFontMetrics>
 #include <cmath>
 
 namespace {
@@ -75,6 +77,10 @@ RecordedPathsWidget::RecordedPathsWidget(QWidget *parent)
     , m_selectedPathIndex(-1)
 {
     ui->setupUi(this);
+    // Windows "Vista" style paints an inset frame inside selected list items; Fusion draws a flat fill.
+    if (QStyle *fusion = QStyleFactory::create(QStringLiteral("Fusion")))
+        ui->pathList->setStyle(fusion);
+    ui->pathList->setTextElideMode(Qt::ElideNone);
     setupConnections();
     clearPathDetails();
     loadPaths();
@@ -234,9 +240,12 @@ void RecordedPathsWidget::updatePathList()
                           .arg(path.name())
                           .arg(path.waypointCount())
                           .arg(created.toString("MMM dd, yyyy hh:mm"));
-        
+
         QListWidgetItem *item = new QListWidgetItem(itemText);
-        item->setSizeHint(QSize(0, 50));
+        // Stylesheet padding (~20px) + two text lines; 50px was clipping the metadata row.
+        const QFontMetrics fm(ui->pathList->font());
+        const int itemH = fm.lineSpacing() * 2 + 28;
+        item->setSizeHint(QSize(0, qMax(itemH, 64)));
         ui->pathList->addItem(item);
     }
     
@@ -345,15 +354,21 @@ void RecordedPathsWidget::onLoadPath()
 {
     m_selectedPathIndex = ui->pathList->currentRow();
     FlightPath *path = getSelectedPath();
-    if (path) {
-        // Convert Waypoints to QVector3D for compatibility
-        QVector<QVector3D> points;
-        for (int i = 0; i < path->waypointCount(); ++i) {
-            const Waypoint &wp = path->waypoint(i);
-            points.append(QVector3D(wp.x(), wp.y(), wp.z()));
-        }
-        emit pathLoadRequested(points);
+    if (!path)
+        return;
+
+    const QString jsonPath = canonicalOrAbsolutePath(path->sourceFilePath());
+    if (!jsonPath.isEmpty() && QFile::exists(jsonPath)) {
+        emit pathJsonLoadRequested(jsonPath);
+        return;
     }
+
+    QVector<QVector3D> points;
+    for (int i = 0; i < path->waypointCount(); ++i) {
+        const Waypoint &wp = path->waypoint(i);
+        points.append(QVector3D(wp.x(), wp.y(), wp.z()));
+    }
+    emit pathLoadRequested(points);
 }
 
 void RecordedPathsWidget::onDeletePath()
@@ -476,7 +491,12 @@ void RecordedPathsWidget::onEditPath()
             }
         }
         
-        // Load the path into the Mission tab for editing
+        const QString jsonPath = canonicalOrAbsolutePath(path->sourceFilePath());
+        if (!jsonPath.isEmpty() && QFile::exists(jsonPath)) {
+            emit pathJsonLoadRequested(jsonPath);
+            return;
+        }
+
         QVector<QVector3D> points;
         for (int i = 0; i < path->waypointCount(); ++i) {
             const Waypoint &wp = path->waypoint(i);

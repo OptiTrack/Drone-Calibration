@@ -51,6 +51,9 @@ public:
     
     // Mission upload and control (VOXL2 Runner API)
     void uploadMissionFile(const QString &localFilePath, const QString &remotePath = "/data/trajectories/inbox/trajectory.json");
+    void uploadFileToVoxl(const QString &localFilePath, const QString &remotePath, const QString &uploadLabel = QStringLiteral("file"));
+    void downloadDirectoryFromVoxl(const QString &localDir, const QString &remotePath);
+    void uploadDirectoryToVoxl(const QString &localDir, const QString &remotePath);
     void runMission(const QString &missionFileName);
     void getMissionStatus();
     void cancelMission();
@@ -75,6 +78,8 @@ signals:
     void missionUploadProgress(int percent);
     void missionUploadComplete();
     void missionUploadFailed(const QString &error);
+    void mapperBundleDownloadFinished(bool success, const QString &message);
+    void mapperBundleUploadFinished(bool success, const QString &message);
     void missionStatusReceived(const QJsonObject &status);
     void missionCompleted();
     void missionCancelled();
@@ -142,6 +147,9 @@ private:
     int m_connectionTimeout;
     QHostAddress m_remoteAddress;
     quint16 m_remotePort;
+    QHostAddress m_mavlinkPeerAddress;
+    quint16 m_mavlinkPeerPort;
+    bool m_haveMavlinkPeer;
     QElapsedTimer m_lastHeartbeatTimer;
     quint8 m_mavlinkSequence;
     quint8 m_targetSystemId;
@@ -171,9 +179,13 @@ private:
     // Mission upload management (VOXL2 Runner API)
     QString m_voxlHost;
     int m_runnerApiPort;  // Default: 8080
+    enum class ScpMode { Upload, Download, UploadDirectory };
     QProcess *m_scpProcess;
+    ScpMode m_scpMode;
+    QString m_scpDownloadLocalPath;
     QNetworkReply *m_missionApiReply;
     QString m_currentMissionFile;
+    QString m_currentUploadLabel;
 };
 
 #endif // VOXLCONNECTION_H

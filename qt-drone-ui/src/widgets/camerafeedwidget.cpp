@@ -49,7 +49,7 @@ CameraFeedWidget::CameraFeedWidget(QWidget *parent)
     , m_feedSource("demo") // Start with demo by default
     , m_recordingDuration(0)
     , m_recordingStartTime(0)
-    , m_voxlHost("192.168.1.10") // Default VOXL IP
+    , m_voxlHost(QStringLiteral("192.168.8.1"))
     , m_voxlPort(8080)
 {
     // Initialize settings

@@ -124,6 +124,16 @@ Waypoint Waypoint::fromJson(const QJsonObject &json)
     return wp;
 }
 
+bool Waypoint::isMapperHome() const
+{
+    return m_waypointType == QStringLiteral("MAPPER_HOME");
+}
+
+void Waypoint::setAsMapperHome(bool enable)
+{
+    m_waypointType = enable ? QStringLiteral("MAPPER_HOME") : QStringLiteral("NAV_WAYPOINT");
+}
+
 QString Waypoint::toString() const
 {
     return QString("Waypoint(%1: lat=%2, lon=%3, alt=%4m)")

@@ -38,6 +38,7 @@ private slots:
     void onPathSaved(const QString &name, const QVector<QVector3D> &points);
     void onPathDeleted(const QString &pathId);
     void onPathLoadRequested(const QVector<QVector3D> &points);
+    void onPathJsonLoadRequested(const QString &absoluteJsonPath);
     void onRecordingSaved(const QString &filePath, const QByteArray &data);
     void onRecordingDeleted(const QString &recordingId);
     void onRecordingPlayRequested(const QString &filePath);

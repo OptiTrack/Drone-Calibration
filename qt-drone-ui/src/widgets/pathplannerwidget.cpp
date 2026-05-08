@@ -32,6 +32,7 @@
 #include <QToolButton>
 #include <QMenu>
 #include <QAction>
+#include <QTimer>
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -53,10 +54,12 @@ static QString plannerPathsDirectory()
 #endif
 }
 
-// Logical waypoint coordinates use:
-//   X = forward axis (maps to world +Z),
-//   Y = right axis   (maps to world +X),
-//   Z = altitude     (maps to world +Y, vertical).
+// Waypoint / planner "logical" frame — same numbers as saved JSON and the RGB origin gizmo:
+//   X = forward (red axis, maps to OpenGL world +Z),
+//   Y = lateral (green axis, maps to world +X). With the default 3D camera this green axis
+//       usually reads as "toward screen-left" while forward is "into" the grid and blue is up.
+//   Z = up / altitude (blue axis, maps to world +Y).
+// (Body-frame docs often call +Y "starboard/right"; here we name axes by what the gizmo shows.)
 static QVector3D logicalToWorld(const QVector3D &logicalPos)
 {
     return QVector3D(logicalPos.y(), logicalPos.z(), logicalPos.x());
@@ -315,7 +318,7 @@ public:
     }
 };
 
-// Heading in world XZ from logical yaw (degrees). 0° = world +Z (logical +X / forward).
+// Heading in world XZ from logical yaw (degrees). 0° = world +Z (logical +X / forward / red).
 static QVector3D logicalYawHeadingWorld(float yawDeg)
 {
     const float rad = qDegreesToRadians(yawDeg);
@@ -362,7 +365,7 @@ static const char *fragmentShaderSource =
 
 // PathPlannerOpenGLWidget Implementation
 PathPlannerOpenGLWidget::PathPlannerOpenGLWidget(QWidget *parent)
-    : QOpenGLWidget(parent), m_shaderProgram(nullptr), m_cameraPosition(0, 5, 10), m_cameraTarget(0, 0, 0), m_cameraUp(0, 1, 0), m_cameraDistance(15.0f), m_cameraYaw(0.0f), m_cameraPitch(30.0f), m_viewMode(View3DMode), m_orthoZoom(10.0f), m_defaultAltitude(2.0f), m_defaultAcceptanceRadius(0.5f), m_defaultHoldTime(0.0f), m_defaultYawAngle(0.0f), m_selectedWaypoint(-1), m_hoveredWaypoint(-1), m_hoveredSegment(-1), m_mousePressed(false), m_isDragging(false), m_draggingTransform(false), m_activeHandle(TransformHandle::None), m_hasHoverPreview(false), m_pendingCreatePlacement(false), m_createPressOnExistingWaypoint(false), m_applyingHistory(false), m_dragGizmoOriginWorld(), m_dragYawPlaneAngleStartRad(0.0f), m_dragStartYawDeg(0.0f), m_animationTime(0.0f)
+    : QOpenGLWidget(parent), m_shaderProgram(nullptr), m_cameraPosition(0, 5, 10), m_cameraTarget(0, 0, 0), m_cameraUp(0, 1, 0), m_cameraDistance(15.0f), m_cameraYaw(0.0f), m_cameraPitch(30.0f), m_viewMode(View3DMode), m_orthoZoom(10.0f), m_defaultAltitude(2.0f), m_defaultAcceptanceRadius(0.5f), m_defaultHoldTime(0.0f), m_defaultYawAngle(0.0f), m_dronePositionLogical(0, 0, 0), m_droneYawDeg(0.0f), m_hasDronePose(false), m_selectedWaypoint(-1), m_hoveredWaypoint(-1), m_hoveredSegment(-1), m_mousePressed(false), m_isDragging(false), m_draggingTransform(false), m_activeHandle(TransformHandle::None), m_hasHoverPreview(false), m_pendingCreatePlacement(false), m_createPressOnExistingWaypoint(false), m_applyingHistory(false), m_dragGizmoOriginWorld(), m_dragYawPlaneAngleStartRad(0.0f), m_dragStartYawDeg(0.0f), m_animationTime(0.0f)
 {
     setMinimumSize(600, 400);
     setFocusPolicy(Qt::StrongFocus);
@@ -436,6 +439,8 @@ void PathPlannerOpenGLWidget::paintGL()
 
     drawGrid();
     drawAxes();
+    drawMapperRenderData();
+    drawDroneAxes();
     drawPath();
     drawWaypoints();
     drawGizmo();
@@ -623,21 +628,22 @@ void PathPlannerOpenGLWidget::drawWaypointLabels(QPainter &painter)
             screenPos.y() < -50 || screenPos.y() > height() + 50)
             continue;
 
+        const bool homeWp = wp.isMapperHome();
         QVector3D rgb;
         if (wp.sequence() == m_selectedWaypoint)
-            rgb = QVector3D(0.56f, 0.76f, 1.0f);
+            rgb = homeWp ? QVector3D(1.0f, 0.88f, 0.45f) : QVector3D(0.56f, 0.76f, 1.0f);
         else if (m_selectedWaypointIds.contains(wp.sequence()))
-            rgb = QVector3D(0.2f, 0.72f, 0.95f);
+            rgb = homeWp ? QVector3D(1.0f, 0.78f, 0.35f) : QVector3D(0.2f, 0.72f, 0.95f);
         else if (wp.sequence() == m_hoveredWaypoint)
-            rgb = QVector3D(0.38f, 0.65f, 1.0f);
+            rgb = homeWp ? QVector3D(1.0f, 0.72f, 0.28f) : QVector3D(0.38f, 0.65f, 1.0f);
         else
-            rgb = QVector3D(0.12f, 0.42f, 0.92f);
+            rgb = homeWp ? QVector3D(0.95f, 0.62f, 0.15f) : QVector3D(0.12f, 0.42f, 0.92f);
 
         WaypointHudEntry e;
         e.screenCenter = screenPos;
         e.zCenterNdc = zC;
         e.fillColor = QColor::fromRgbF(rgb.x(), rgb.y(), rgb.z());
-        e.indexText = QString::number(wp.sequence());
+        e.indexText = homeWp ? QStringLiteral("H") : QString::number(wp.sequence());
         e.badgeRadiusPx = screenSpaceSphereRadiusPx(worldPos, kHudSphereR);
         hudEntries.append(e);
     }
@@ -918,15 +924,15 @@ void PathPlannerOpenGLWidget::drawAxes()
     float axisLength = 1.0f;
     float axisRadius = 0.05f;
     
-    // Logical X axis (red): world +Z direction
+    // Logical X (forward, red): world +Z
     generateCylinderVertices(QVector3D(0, 0, 0), QVector3D(0, 0, axisLength), axisRadius,
                              QVector3D(1.0f, 0.0f, 0.0f), axesVertices, axesColors);
     
-    // Logical Y axis (green): world +X direction
+    // Logical Y (lateral, green): world +X — default view reads like screen-left vs forward/up
     generateCylinderVertices(QVector3D(0, 0, 0), QVector3D(axisLength, 0, 0), axisRadius,
                              QVector3D(0.0f, 1.0f, 0.0f), axesVertices, axesColors);
     
-    // Logical Z axis (blue): world +Y direction (vertical)
+    // Logical Z (up, blue): world +Y (vertical)
     generateCylinderVertices(QVector3D(0, 0, 0), QVector3D(0, axisLength, 0), axisRadius,
                              QVector3D(0.0f, 0.0f, 1.0f), axesVertices, axesColors);
 
@@ -947,6 +953,124 @@ void PathPlannerOpenGLWidget::drawAxes()
     glEnableVertexAttribArray(1);
 
     glDrawArrays(GL_TRIANGLES, 0, axesVertices.size() / 3);
+
+    colorBuffer.release();
+    m_vertexBuffer.release();
+    m_vao.release();
+}
+
+void PathPlannerOpenGLWidget::drawDroneAxes()
+{
+    if (!m_hasDronePose)
+        return;
+
+    const QVector3D origin = logicalToWorld(m_dronePositionLogical);
+    const float yawRad = qDegreesToRadians(m_droneYawDeg);
+    const QVector3D forwardWorld(std::sin(yawRad), 0.0f, std::cos(yawRad));
+    const QVector3D rightWorld(std::cos(yawRad), 0.0f, -std::sin(yawRad));
+    const QVector3D upWorld(0.0f, 1.0f, 0.0f);
+    constexpr float kAxisLength = 0.65f;
+
+    QVector<float> vertices;
+    QVector<float> colors;
+    appendLine(origin, origin + forwardWorld * kAxisLength, QVector3D(1.0f, 0.1f, 0.1f), vertices, colors);
+    appendLine(origin, origin + rightWorld * kAxisLength, QVector3D(0.1f, 1.0f, 0.1f), vertices, colors);
+    appendLine(origin, origin + upWorld * kAxisLength, QVector3D(0.2f, 0.45f, 1.0f), vertices, colors);
+    appendSphere(origin, 0.12f, QVector3D(0.95f, 0.95f, 0.95f), vertices, colors);
+
+    m_vao.bind();
+    m_vertexBuffer.bind();
+    m_vertexBuffer.allocate(vertices.data(), vertices.size() * sizeof(float));
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
+    glEnableVertexAttribArray(0);
+
+    QOpenGLBuffer colorBuffer;
+    colorBuffer.create();
+    colorBuffer.bind();
+    colorBuffer.allocate(colors.data(), colors.size() * sizeof(float));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
+    glEnableVertexAttribArray(1);
+
+    glLineWidth(4.0f);
+    glDrawArrays(GL_LINES, 0, 6);
+    glLineWidth(1.0f);
+    glDrawArrays(GL_TRIANGLES, 6, (vertices.size() / 3) - 6);
+
+    colorBuffer.release();
+    m_vertexBuffer.release();
+    m_vao.release();
+}
+
+void PathPlannerOpenGLWidget::drawMapperRenderData()
+{
+    if (m_mapperRenderPositionsLogical.isEmpty() && m_mapperMeshPositionsLogical.isEmpty())
+        return;
+
+    QVector<float> vertices;
+    QVector<float> colors;
+    GLenum drawMode = GL_POINTS;
+
+    if (!m_mapperMeshPositionsLogical.isEmpty() && !m_mapperMeshTriangleIndices.isEmpty()) {
+        vertices.reserve(m_mapperMeshTriangleIndices.size() * 3);
+        colors.reserve(m_mapperMeshTriangleIndices.size() * 3);
+        drawMode = GL_TRIANGLES;
+
+        for (quint32 index : m_mapperMeshTriangleIndices) {
+            if (index >= static_cast<quint32>(m_mapperMeshPositionsLogical.size()))
+                continue;
+            const int i = static_cast<int>(index);
+            const QVector3D world = logicalToWorld(m_mapperMeshPositionsLogical.at(i));
+            const QColor color = (i < m_mapperMeshColors.size() && m_mapperMeshColors.at(i).isValid())
+                                     ? m_mapperMeshColors.at(i)
+                                     : QColor(110, 160, 210);
+
+            vertices << world.x() << world.y() << world.z();
+            colors << static_cast<float>(color.redF())
+                   << static_cast<float>(color.greenF())
+                   << static_cast<float>(color.blueF());
+        }
+    } else {
+        const QVector<QVector3D> &positions = m_mapperMeshPositionsLogical.isEmpty()
+                                                  ? m_mapperRenderPositionsLogical
+                                                  : m_mapperMeshPositionsLogical;
+        const QVector<QColor> &sourceColors = m_mapperMeshPositionsLogical.isEmpty()
+                                                  ? m_mapperRenderColors
+                                                  : m_mapperMeshColors;
+        vertices.reserve(positions.size() * 3);
+        colors.reserve(positions.size() * 3);
+
+        for (int i = 0; i < positions.size(); ++i) {
+            const QVector3D world = logicalToWorld(positions.at(i));
+            const QColor color = (i < sourceColors.size() && sourceColors.at(i).isValid())
+                                     ? sourceColors.at(i)
+                                     : QColor(110, 160, 210);
+
+            vertices << world.x() << world.y() << world.z();
+            colors << static_cast<float>(color.redF())
+                   << static_cast<float>(color.greenF())
+                   << static_cast<float>(color.blueF());
+        }
+    }
+
+    if (vertices.isEmpty())
+        return;
+
+    m_vao.bind();
+    m_vertexBuffer.bind();
+    m_vertexBuffer.allocate(vertices.data(), vertices.size() * sizeof(float));
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
+    glEnableVertexAttribArray(0);
+
+    QOpenGLBuffer colorBuffer;
+    colorBuffer.create();
+    colorBuffer.bind();
+    colorBuffer.allocate(colors.data(), colors.size() * sizeof(float));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
+    glEnableVertexAttribArray(1);
+
+    glPointSize(drawMode == GL_POINTS ? 3.0f : 1.0f);
+    glDrawArrays(drawMode, 0, vertices.size() / 3);
+    glPointSize(1.0f);
 
     colorBuffer.release();
     m_vertexBuffer.release();
@@ -1112,23 +1236,24 @@ void PathPlannerOpenGLWidget::drawWaypoints()
     {
         const Waypoint &wp = m_waypoints[i];
         const QVector3D center = waypointToWorld(wp);
+        const bool homeWp = wp.isMapperHome();
         QVector3D color;
 
         if (wp.sequence() == m_selectedWaypoint)
         {
-            color = QVector3D(0.56f, 0.76f, 1.0f);
+            color = homeWp ? QVector3D(1.0f, 0.88f, 0.45f) : QVector3D(0.56f, 0.76f, 1.0f);
         }
         else if (m_selectedWaypointIds.contains(wp.sequence()))
         {
-            color = QVector3D(0.2f, 0.72f, 0.95f);
+            color = homeWp ? QVector3D(1.0f, 0.78f, 0.35f) : QVector3D(0.2f, 0.72f, 0.95f);
         }
         else if (wp.sequence() == m_hoveredWaypoint)
         {
-            color = QVector3D(0.38f, 0.65f, 1.0f);
+            color = homeWp ? QVector3D(1.0f, 0.72f, 0.28f) : QVector3D(0.38f, 0.65f, 1.0f);
         }
         else
         {
-            color = QVector3D(0.12f, 0.42f, 0.92f);
+            color = homeWp ? QVector3D(0.95f, 0.62f, 0.15f) : QVector3D(0.12f, 0.42f, 0.92f);
         }
 
         float lenS = 1.0f, baseS = 1.0f, ringF = 0.86f;
@@ -1243,11 +1368,13 @@ bool PathPlannerOpenGLWidget::worldDeltasOnPlaneFromScreenDelta(const QVector3D 
     return true;
 }
 
-// Gizmo handles (world space at waypoint): logical X -> world +Z (red), logical Y -> world +X (green),
-// logical Z -> world +Y (blue, altitude). Orange = logical XY, purple = XZ, cyan = YZ. Gold arrow + ring = yaw (heading in horizontal plane, degrees).
+// Gizmo handles (world space at waypoint): logical X -> world +Z (red/forward), Y -> world +X (green/lateral),
+// Z -> world +Y (blue/up). Orange = logical XY, purple = XZ, cyan = YZ. Gold = yaw in horizontal plane (deg).
 void PathPlannerOpenGLWidget::drawGizmo()
 {
     if (m_selectedWaypoint < 0 || !effectiveTransform())
+        return;
+    if (selectedWaypointIsMapperHome())
         return;
 
     const QVector3D center = gizmoCenterWorld();
@@ -1415,7 +1542,7 @@ void PathPlannerOpenGLWidget::mousePressEvent(QMouseEvent *event)
         const Qt::KeyboardModifiers mods = event->modifiers();
 
         // Gizmo handles take priority over create-placement and waypoint picking.
-        if (effectiveTransform() && m_selectedWaypoint >= 0)
+        if (effectiveTransform() && m_selectedWaypoint >= 0 && !selectedWaypointIsMapperHome())
         {
             const TransformHandle handle = findTransformHandleAt(event->pos());
             if (handle != TransformHandle::None)
@@ -1488,11 +1615,8 @@ void PathPlannerOpenGLWidget::mousePressEvent(QMouseEvent *event)
                 const std::vector<Waypoint> before = m_waypoints;
                 Waypoint wp(worldToLogical(insertWorld));
                 m_waypoints.insert(m_waypoints.begin() + segmentIndex + 1, wp);
-                for (int i = 0; i < static_cast<int>(m_waypoints.size()); ++i)
-                {
-                    m_waypoints[i].setSequence(i + 1);
-                }
-                m_selectedWaypoint = segmentIndex + 2;
+                normalizeMapperHomeAndRenumberSequences();
+                m_selectedWaypoint = m_waypoints[static_cast<size_t>(segmentIndex) + 1].sequence();
                 m_selectedWaypointIds.clear();
                 m_selectedWaypointIds.insert(m_selectedWaypoint);
                 commitEdit(before, m_waypoints);
@@ -1967,6 +2091,15 @@ float PathPlannerOpenGLWidget::selectedWaypointYawDeg() const
     return 0.0f;
 }
 
+bool PathPlannerOpenGLWidget::selectedWaypointIsMapperHome() const
+{
+    for (const Waypoint &wp : m_waypoints) {
+        if (wp.sequence() == m_selectedWaypoint)
+            return wp.isMapperHome();
+    }
+    return false;
+}
+
 bool PathPlannerOpenGLWidget::updateWaypointYawAngle(int id, float yawDeg)
 {
     yawDeg = wrapYawDegrees180(yawDeg);
@@ -1974,6 +2107,8 @@ bool PathPlannerOpenGLWidget::updateWaypointYawAngle(int id, float yawDeg)
     {
         if (waypoint.sequence() == id)
         {
+            if (waypoint.isMapperHome())
+                return false;
             if (qAbs(waypoint.yawAngle() - yawDeg) < 0.02f)
                 return false;
             waypoint.setYawAngle(yawDeg);
@@ -1992,6 +2127,8 @@ bool PathPlannerOpenGLWidget::updateWaypointLogicalPosition(int id, const QVecto
     {
         if (waypoint.sequence() == id)
         {
+            if (waypoint.isMapperHome())
+                return false;
             QVector3D clamped = newLogicalPosition;
             clamped.setZ(qBound(kMinAltitudeM, clamped.z(), kMaxAltitudeM));
             if ((QVector3D(waypoint.x(), waypoint.y(), waypoint.z()) - clamped).lengthSquared() < 1e-8f)
@@ -2004,15 +2141,47 @@ bool PathPlannerOpenGLWidget::updateWaypointLogicalPosition(int id, const QVecto
     return false;
 }
 
+void PathPlannerOpenGLWidget::normalizeMapperHomeAndRenumberSequences()
+{
+    int homeIndex = -1;
+    for (int i = 0; i < static_cast<int>(m_waypoints.size()); ++i) {
+        if (!m_waypoints[i].isMapperHome())
+            continue;
+        if (homeIndex < 0) {
+            homeIndex = i;
+        } else {
+            m_waypoints[i].setAsMapperHome(false);
+        }
+    }
+    if (homeIndex > 0) {
+        Waypoint h = m_waypoints[homeIndex];
+        m_waypoints.erase(m_waypoints.begin() + homeIndex);
+        m_waypoints.insert(m_waypoints.begin(), h);
+    }
+    int nextSeq = 1;
+    for (Waypoint &wp : m_waypoints) {
+        if (wp.isMapperHome())
+            wp.setSequence(0);
+        else
+            wp.setSequence(nextSeq++);
+    }
+}
+
 void PathPlannerOpenGLWidget::setWaypoints(const std::vector<Waypoint> &waypoints)
 {
     m_waypoints = waypoints;
-    for (int i = 0; i < static_cast<int>(m_waypoints.size()); ++i)
-    {
-        m_waypoints[i].setSequence(i + 1);
+    normalizeMapperHomeAndRenumberSequences();
+    if (m_selectedWaypoint >= 0) {
+        bool found = false;
+        for (const Waypoint &wp : m_waypoints) {
+            if (wp.sequence() == m_selectedWaypoint) {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            m_selectedWaypoint = -1;
     }
-    if (m_selectedWaypoint > static_cast<int>(m_waypoints.size()))
-        m_selectedWaypoint = -1;
     update();
 }
 
@@ -2020,11 +2189,12 @@ void PathPlannerOpenGLWidget::addWaypoint(const QVector3D &point)
 {
     const std::vector<Waypoint> before = m_waypoints;
 
-    // Generate new sequence number (1-based, sequential)
     int newSequence = 1;
-    if (!m_waypoints.empty())
-    {
-        newSequence = m_waypoints.back().sequence() + 1;
+    if (!m_waypoints.empty()) {
+        int maxSeq = 0;
+        for (const Waypoint &w : m_waypoints)
+            maxSeq = qMax(maxSeq, w.sequence());
+        newSequence = maxSeq + 1;
     }
 
     Waypoint wp(point);
@@ -2049,6 +2219,8 @@ void PathPlannerOpenGLWidget::updateWaypoint(int id, const Waypoint &wp)
     {
         if (waypoint.sequence() == id)
         {
+            if (waypoint.isMapperHome())
+                return;
             waypoint = wp;
             waypoint.setSequence(id); // Preserve sequence number
             commitEdit(before, m_waypoints);
@@ -2069,10 +2241,7 @@ void PathPlannerOpenGLWidget::removeWaypoint(int id)
     if (it != m_waypoints.end())
     {
         m_waypoints.erase(it, m_waypoints.end());
-        for (int i = 0; i < static_cast<int>(m_waypoints.size()); ++i)
-        {
-            m_waypoints[i].setSequence(i + 1);
-        }
+        normalizeMapperHomeAndRenumberSequences();
 
         if (m_selectedWaypoint == id)
         {
@@ -2103,6 +2272,41 @@ void PathPlannerOpenGLWidget::setSelectedWaypoint(int id)
     if (id >= 0)
         m_selectedWaypointIds.insert(id);
     emit selectionChanged(m_selectedWaypointIds);
+    update();
+}
+
+void PathPlannerOpenGLWidget::setDronePoseLogical(const QVector3D &positionLogical, float yawDeg)
+{
+    m_dronePositionLogical = positionLogical;
+    m_droneYawDeg = yawDeg;
+    m_hasDronePose = true;
+    update();
+}
+
+void PathPlannerOpenGLWidget::setMapperRenderData(const QVector<QVector3D> &positionsLogical, const QVector<QColor> &colors)
+{
+    m_mapperRenderPositionsLogical = positionsLogical;
+    m_mapperRenderColors = colors;
+    update();
+}
+
+void PathPlannerOpenGLWidget::setMapperMeshData(const QVector<QVector3D> &positionsLogical, const QVector<QColor> &colors, const QVector<quint32> &triangleIndices)
+{
+    const int previousVertexCount = m_mapperMeshPositionsLogical.size();
+
+    m_mapperMeshPositionsLogical = positionsLogical;
+    m_mapperMeshColors = colors;
+
+    if (!triangleIndices.isEmpty()) {
+        m_mapperMeshTriangleIndices = triangleIndices;
+    } else if (positionsLogical.isEmpty()) {
+        m_mapperMeshTriangleIndices.clear();
+    } else if (positionsLogical.size() == previousVertexCount && !m_mapperMeshTriangleIndices.isEmpty()) {
+        // Mapper sometimes streams vertex refreshes without resending indices; keep drawing triangles.
+    } else {
+        m_mapperMeshTriangleIndices.clear();
+    }
+
     update();
 }
 
@@ -2178,8 +2382,18 @@ bool PathPlannerOpenGLWidget::undo()
     m_applyingHistory = true;
     m_waypoints = cmd.before;
     m_applyingHistory = false;
-    if (m_selectedWaypoint > static_cast<int>(m_waypoints.size()))
-        m_selectedWaypoint = -1;
+    normalizeMapperHomeAndRenumberSequences();
+    if (m_selectedWaypoint >= 0) {
+        bool found = false;
+        for (const Waypoint &wp : m_waypoints) {
+            if (wp.sequence() == m_selectedWaypoint) {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            m_selectedWaypoint = -1;
+    }
     emit waypointsEdited();
     updateHistorySignals();
     update();
@@ -2195,8 +2409,18 @@ bool PathPlannerOpenGLWidget::redo()
     m_applyingHistory = true;
     m_waypoints = cmd.after;
     m_applyingHistory = false;
-    if (m_selectedWaypoint > static_cast<int>(m_waypoints.size()))
-        m_selectedWaypoint = -1;
+    normalizeMapperHomeAndRenumberSequences();
+    if (m_selectedWaypoint >= 0) {
+        bool found = false;
+        for (const Waypoint &wp : m_waypoints) {
+            if (wp.sequence() == m_selectedWaypoint) {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            m_selectedWaypoint = -1;
+    }
     emit waypointsEdited();
     updateHistorySignals();
     update();
@@ -2211,6 +2435,8 @@ bool PathPlannerOpenGLWidget::duplicateSelectedWaypoint()
     {
         if (wp.sequence() == m_selectedWaypoint)
         {
+            if (wp.isMapperHome())
+                return false;
             QVector3D p(wp.x(), wp.y(), wp.z());
             p.setX(p.x() + 0.4f);
             p.setY(p.y() + 0.4f);
@@ -2249,7 +2475,7 @@ void PathPlannerOpenGLWidget::resetCamera()
 
 // PathPlannerWidget Implementation
 PathPlannerWidget::PathPlannerWidget(QWidget *parent)
-    : QWidget(parent), m_mainLayout(nullptr), m_contentLayout(nullptr), m_topBarWidget(nullptr), m_controlsLayout(nullptr), m_topBarPreUploadToolbar(nullptr), m_topBarEditingCluster(nullptr), m_topBarMissionCluster(nullptr), m_topBarReturnToEditButton(nullptr), m_topBarLandButton(nullptr), m_topBarRtlButton(nullptr), m_topBarEstopButton(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_viewGroup(nullptr), m_waypointTable(nullptr), m_waypointCountLabel(nullptr), m_waypointDefaultsButton(nullptr), m_defaultAcceptanceRadiusSpinBox(nullptr), m_defaultHoldSpinBox(nullptr), m_defaultYawSpinBox(nullptr), m_pathMenuButton(nullptr), m_uploadMissionButton(nullptr), m_missionPlayButton(nullptr), m_missionPauseContinueButton(nullptr), m_createModeButton(nullptr), m_transformModeButton(nullptr), m_playPathPreviewButton(nullptr), m_stopPathPreviewButton(nullptr), m_pathNameEdit(nullptr), m_missionStatusLabel(nullptr), m_resetCameraButton(nullptr), m_viewModeButton(nullptr), m_defaultAltitudeSpinBox(nullptr), m_undoEditButton(nullptr), m_redoEditButton(nullptr), m_pathPreviewAnimationTimer(nullptr), m_pathPreviewWaypointIndex(0), m_pathPreviewProgress(0.0f), m_isPlayingPathPreview(false), m_selectedWaypoint(-1), m_droneController(nullptr), m_hasUploadedSnapshot(false), m_waypointsDirtySinceUpload(false), m_editingLocked(false), m_updatingWaypointTable(false), m_reorderingWaypointRows(false)
+    : QWidget(parent), m_mainLayout(nullptr), m_contentLayout(nullptr), m_topBarWidget(nullptr), m_controlsLayout(nullptr), m_topBarPreUploadToolbar(nullptr), m_topBarEditingCluster(nullptr), m_topBarMissionCluster(nullptr), m_topBarReturnToEditButton(nullptr), m_topBarLandButton(nullptr), m_topBarRtlButton(nullptr), m_topBarForceDisarmButton(nullptr), m_topBarFlightTermButton(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_viewGroup(nullptr), m_waypointTable(nullptr), m_waypointCountLabel(nullptr), m_waypointDefaultsButton(nullptr), m_defaultAcceptanceRadiusSpinBox(nullptr), m_defaultHoldSpinBox(nullptr), m_defaultYawSpinBox(nullptr), m_pathMenuButton(nullptr), m_uploadMissionButton(nullptr), m_missionPlayButton(nullptr), m_missionPauseContinueButton(nullptr), m_createModeButton(nullptr), m_transformModeButton(nullptr), m_playPathPreviewButton(nullptr), m_stopPathPreviewButton(nullptr), m_pathNameEdit(nullptr), m_missionStatusLabel(nullptr), m_resetCameraButton(nullptr), m_viewModeButton(nullptr), m_defaultAltitudeSpinBox(nullptr), m_undoEditButton(nullptr), m_redoEditButton(nullptr), m_pathPreviewAnimationTimer(nullptr), m_pathPreviewWaypointIndex(0), m_pathPreviewProgress(0.0f), m_isPlayingPathPreview(false), m_selectedWaypoint(-1), m_droneController(nullptr), m_hasUploadedSnapshot(false), m_waypointsDirtySinceUpload(false), m_editingLocked(false), m_updatingWaypointTable(false), m_reorderingWaypointRows(false)
 {
     setupUI();
 
@@ -2425,18 +2651,31 @@ void PathPlannerWidget::setupTopBar()
     m_topBarRtlButton = makeMissionToolbarButton(QString(QChar(0x2302)), QStringLiteral("#c4b5fd"),
                                                  QStringLiteral("#ede9fe"), 15, 650);
 
-    m_topBarEstopButton = new QPushButton(QStringLiteral("!"), m_topBarWidget);
-    m_topBarEstopButton->setFixedSize(26, 24);
-    m_topBarEstopButton->setFlat(true);
-    m_topBarEstopButton->setCheckable(false);
-    m_topBarEstopButton->setAutoDefault(false);
-    m_topBarEstopButton->setDefault(false);
-    m_topBarEstopButton->setFocusPolicy(Qt::NoFocus);
-    m_topBarEstopButton->setStyleSheet(
+    m_topBarForceDisarmButton = new QPushButton(QStringLiteral("!"), m_topBarWidget);
+    m_topBarForceDisarmButton->setFixedSize(26, 24);
+    m_topBarForceDisarmButton->setFlat(true);
+    m_topBarForceDisarmButton->setCheckable(false);
+    m_topBarForceDisarmButton->setAutoDefault(false);
+    m_topBarForceDisarmButton->setDefault(false);
+    m_topBarForceDisarmButton->setFocusPolicy(Qt::NoFocus);
+    m_topBarForceDisarmButton->setStyleSheet(
         "QPushButton { color: #fecaca; background-color: rgba(127,29,29,0.5); border: 1px solid #dc2626; border-radius: 3px; "
         "font-size: 13px; font-weight: 700; padding: 0px; } "
         "QPushButton:hover { color: #ffffff; background-color: rgba(220,38,38,0.72); border-color: #f87171; } "
         "QPushButton:pressed { background-color: rgba(153,27,27,0.9); } "
+        "QPushButton:disabled { color: #5c6570; background-color: rgba(40,40,40,0.35); border-color: #4b5563; }");
+    m_topBarFlightTermButton = new QPushButton(QStringLiteral("T"), m_topBarWidget);
+    m_topBarFlightTermButton->setFixedSize(26, 24);
+    m_topBarFlightTermButton->setFlat(true);
+    m_topBarFlightTermButton->setCheckable(false);
+    m_topBarFlightTermButton->setAutoDefault(false);
+    m_topBarFlightTermButton->setDefault(false);
+    m_topBarFlightTermButton->setFocusPolicy(Qt::NoFocus);
+    m_topBarFlightTermButton->setStyleSheet(
+        "QPushButton { color: #fecaca; background-color: rgba(69,10,10,0.65); border: 1px solid #7f1d1d; border-radius: 3px; "
+        "font-size: 11px; font-weight: 800; padding: 0px; } "
+        "QPushButton:hover { color: #ffffff; background-color: rgba(127,29,29,0.85); border-color: #dc2626; } "
+        "QPushButton:pressed { background-color: rgba(69,10,10,0.95); } "
         "QPushButton:disabled { color: #5c6570; background-color: rgba(40,40,40,0.35); border-color: #4b5563; }");
     m_createModeButton->setCheckable(true);
     m_transformModeButton->setCheckable(true);
@@ -2454,7 +2693,8 @@ void PathPlannerWidget::setupTopBar()
     m_missionPauseContinueButton->setToolTip("Pause Mission (hover in place)");
     m_topBarLandButton->setToolTip("Land");
     m_topBarRtlButton->setToolTip("Return to Launch");
-    m_topBarEstopButton->setToolTip("Emergency stop");
+    m_topBarForceDisarmButton->setToolTip(QStringLiteral("Force disarm (MAVLink kill motors)"));
+    m_topBarFlightTermButton->setToolTip(QStringLiteral("Flight termination (PX4; strongest software stop if enabled)"));
     m_uploadMissionButton->setEnabled(false);
     m_missionPlayButton->setEnabled(false);
     m_missionPauseContinueButton->setEnabled(false);
@@ -2463,7 +2703,8 @@ void PathPlannerWidget::setupTopBar()
     m_stopPathPreviewButton->setEnabled(false);
     m_topBarLandButton->setEnabled(false);
     m_topBarRtlButton->setEnabled(false);
-    m_topBarEstopButton->setEnabled(false);
+    m_topBarForceDisarmButton->setEnabled(false);
+    m_topBarFlightTermButton->setEnabled(false);
 
     m_pathMenuButton = new QToolButton(m_topBarWidget);
     m_pathMenuButton->setText(QString::fromUtf8("\xE2\x89\xA1"));
@@ -2479,12 +2720,128 @@ void PathPlannerWidget::setupTopBar()
     QAction *newPathAction = pathMenu->addAction("New");
     QAction *loadPathAction = pathMenu->addAction("Load");
     QAction *savePathAction = pathMenu->addAction("Save");
+    pathMenu->addSeparator();
+    QAction *loadMapperMapAction = pathMenu->addAction("Load VOXL Map...");
+    QAction *uploadMapperMapAction = pathMenu->addAction("Upload Mesh Export File...");
+    QAction *saveMapperMapAction = pathMenu->addAction("Save VOXL Map...");
+    QAction *clearMapperMapAction = pathMenu->addAction("Clear VOXL Map");
+    QAction *planHomeAction = pathMenu->addAction("Plan VOXL Home (place H at drone pose)");
+    planHomeAction->setToolTip(QStringLiteral(
+        "Sends plan_home to voxl-mapper (home goal is fixed in mapper at (0,0,-1.5) per ModalAI docs — see voxl-mapper README). "
+        "Places read-only waypoint H at the current mapper pose in this UI only; it is not uploaded as a mission point."));
     connect(newPathAction, &QAction::triggered, this, [this]() {
         m_pathNameEdit->setText("New Path");
         onClearPath();
     });
     connect(loadPathAction, &QAction::triggered, this, &PathPlannerWidget::onLoadPath);
     connect(savePathAction, &QAction::triggered, this, &PathPlannerWidget::onSavePath);
+    connect(loadMapperMapAction, &QAction::triggered, this, [this]() {
+        if (!m_droneController || !m_droneController->isConnected()) {
+            QMessageBox::warning(this, "Load VOXL Map", "Connect to VOXL before loading a mapper map.");
+            return;
+        }
+        bool ok = false;
+        const QString path = QInputDialog::getText(this, "Load VOXL Map",
+                                                   "Map directory on the VOXL filesystem (blank uses /data/voxl_mapper):",
+                                                   QLineEdit::Normal,
+                                                   m_mapperMapPath,
+                                                   &ok);
+        if (!ok)
+            return;
+        m_mapperMapPath = path.trimmed();
+        clearMapperVisualization();
+        m_droneController->replaceMapperMap(m_mapperMapPath);
+    });
+    connect(uploadMapperMapAction, &QAction::triggered, this, [this]() {
+        if (!m_droneController || !m_droneController->isConnected()) {
+            QMessageBox::warning(this, "Upload Mesh Export", "Connect to VOXL before uploading a mesh export file.");
+            return;
+        }
+
+        const QString localPath = QFileDialog::getOpenFileName(this,
+                                                               "Upload Mesh Export File",
+                                                               QString(),
+                                                               "Mesh export files (*.ply *.obj *.gltf *.glb);;All files (*.*)");
+        if (localPath.isEmpty())
+            return;
+
+        const QFileInfo fileInfo(localPath);
+        const QString defaultRemotePath = QStringLiteral("/data/voxl_mapper/%1").arg(fileInfo.fileName());
+
+        bool ok = false;
+        const QString remotePath = QInputDialog::getText(this, "Upload Mesh Export",
+                                                         "Destination mesh file path on the VOXL filesystem:",
+                                                         QLineEdit::Normal,
+                                                         defaultRemotePath,
+                                                         &ok);
+        if (!ok || remotePath.trimmed().isEmpty())
+            return;
+
+        m_droneController->uploadMapperMap(localPath, remotePath.trimmed());
+    });
+    connect(saveMapperMapAction, &QAction::triggered, this, [this]() {
+        if (!m_droneController || !m_droneController->isConnected()) {
+            QMessageBox::warning(this, "Save VOXL Map", "Connect to VOXL before saving a mapper map.");
+            return;
+        }
+        bool ok = false;
+        const QString path = QInputDialog::getText(this, "Save VOXL Map",
+                                                   "Map directory on the VOXL filesystem (blank uses /data/voxl_mapper):",
+                                                   QLineEdit::Normal,
+                                                   m_mapperMapPath,
+                                                   &ok);
+        if (!ok)
+            return;
+        m_mapperMapPath = path.trimmed();
+        m_droneController->saveMapperMap(QStringLiteral("ply"), m_mapperMapPath);
+    });
+    connect(clearMapperMapAction, &QAction::triggered, this, [this]() {
+        if (!m_droneController || !m_droneController->isConnected()) {
+            QMessageBox::warning(this, "Clear VOXL Map", "Connect to VOXL before clearing the mapper map.");
+            return;
+        }
+        if (QMessageBox::question(this, "Clear VOXL Map", "Clear the current VOXL Mapper map?") == QMessageBox::Yes) {
+            m_droneController->clearMapperMap();
+            clearMapperVisualization();
+        }
+    });
+    connect(planHomeAction, &QAction::triggered, this, [this]() {
+        if (!m_droneController || !m_droneController->isConnected()) {
+            QMessageBox::warning(this, QStringLiteral("Plan VOXL Home"),
+                                 QStringLiteral("Connect to the drone first."));
+            return;
+        }
+        if (!m_openglWidget) {
+            return;
+        }
+        QVector3D p;
+        float yawDeg = 0.0f;
+        if (!m_droneController->mapperPoseAvailableForPlanner(p, yawDeg)) {
+            QMessageBox::warning(this, QStringLiteral("Plan VOXL Home"),
+                                 QStringLiteral("No mapper pose yet. Wait for the VOXL mapper stream, then try again."));
+            return;
+        }
+        m_droneController->planMapperHome();
+
+        Waypoint home(p);
+        home.setAsMapperHome(true);
+        home.setSequence(0);
+        home.setYawAngle(yawDeg);
+        home.setAcceptanceRadius(m_openglWidget->defaultAcceptanceRadius());
+        home.setHoldTime(0.0f);
+
+        std::vector<Waypoint> wps = m_openglWidget->waypoints();
+        if (!wps.empty() && wps.front().isMapperHome())
+            wps[0] = home;
+        else
+            wps.insert(wps.begin(), home);
+        m_openglWidget->setWaypoints(wps);
+        updateWaypointTable();
+        onWaypointSelected(0);
+        emitWaypointsChanged();
+        m_lastMissionStatusText = QStringLiteral("plan_home sent; H marks current pose (read-only, not in mission upload)");
+        updateMissionChrome();
+    });
     m_pathMenuButton->setMenu(pathMenu);
 
     m_pathNameEdit = new QLineEdit("New Path", m_topBarWidget);
@@ -2534,7 +2891,8 @@ void PathPlannerWidget::setupTopBar()
     makeThinSeparator(missionLay);
     missionLay->addWidget(m_topBarLandButton);
     missionLay->addWidget(m_topBarRtlButton);
-    missionLay->addWidget(m_topBarEstopButton);
+    missionLay->addWidget(m_topBarForceDisarmButton);
+    missionLay->addWidget(m_topBarFlightTermButton);
 
     topLayout->addWidget(m_topBarPreUploadToolbar);
     topLayout->addWidget(m_topBarMissionCluster);
@@ -2557,7 +2915,8 @@ void PathPlannerWidget::setupTopBar()
     connect(m_missionPauseContinueButton, &QPushButton::clicked, this, &PathPlannerWidget::onMissionPauseContinueClicked);
     connect(m_topBarLandButton, &QPushButton::clicked, this, &PathPlannerWidget::onLandMission);
     connect(m_topBarRtlButton, &QPushButton::clicked, this, &PathPlannerWidget::onReturnToLaunchMission);
-    connect(m_topBarEstopButton, &QPushButton::clicked, this, &PathPlannerWidget::onEmergencyStopMission);
+    connect(m_topBarForceDisarmButton, &QPushButton::clicked, this, &PathPlannerWidget::onForceDisarmMission);
+    connect(m_topBarFlightTermButton, &QPushButton::clicked, this, &PathPlannerWidget::onFlightTerminationMission);
 }
 
 void PathPlannerWidget::setupControls()
@@ -2836,6 +3195,8 @@ void PathPlannerWidget::onClearPath()
     if (!m_openglWidget)
         return;
 
+    m_mapperMapBundleDir.clear();
+
     if (m_isPlayingPathPreview)
         stopPathPreviewAnimation();
 
@@ -2845,6 +3206,25 @@ void PathPlannerWidget::onClearPath()
     if (m_waypointTable)
         updateWaypointTable();
 
+    emitWaypointsChanged();
+}
+
+void PathPlannerWidget::removeMapperHomeWaypointAndRefresh()
+{
+    if (!m_openglWidget)
+        return;
+    std::vector<Waypoint> wps = m_openglWidget->waypoints();
+    const size_t oldCount = wps.size();
+    wps.erase(std::remove_if(wps.begin(), wps.end(), [](const Waypoint &w) { return w.isMapperHome(); }), wps.end());
+    if (wps.size() == oldCount)
+        return;
+    const bool clearSelection = (m_selectedWaypoint == 0);
+    m_openglWidget->setWaypoints(wps);
+    if (clearSelection)
+        onWaypointSelected(-1);
+    else
+        m_openglWidget->setSelectedWaypoint(m_selectedWaypoint);
+    updateWaypointTable();
     emitWaypointsChanged();
 }
 
@@ -2887,30 +3267,77 @@ void PathPlannerWidget::onSavePath()
         return;
     }
 
-    if (saveToJson(fileName))
-    {
-        // Update the path name edit field
+    QVector<QVector3D> points;
+    for (const auto &wp : m_openglWidget->waypoints())
+        points.append(QVector3D(wp.x(), wp.y(), wp.z()));
+
+    const QString bundleFolderName = sanitizedName + QStringLiteral("_mapper_map");
+    const QString localBundleAbsPath = dir.absoluteFilePath(bundleFolderName);
+    const QString remotePkg = QStringLiteral("/data/voxl_mapper/missions/%1").arg(sanitizedName);
+
+    const bool canBundle = m_droneController && m_droneController->isConnected()
+                           && m_droneController->isMapperMeshConnected();
+
+    if (canBundle) {
+        m_mapperMapPath = remotePkg;
+        if (!saveToJson(fileName, bundleFolderName)) {
+            QMessageBox::warning(this, "Save Path", "Failed to save path.");
+            return;
+        }
+
+        m_mapperMapBundleDir.clear();
         m_pathNameEdit->setText(pathName);
         if (m_waypointGroup)
             m_waypointGroup->setTitle("Waypoints - " + pathName);
-
-        // Convert waypoints to QVector<QVector3D> for the signal
-        QVector<QVector3D> points;
-        for (const auto &wp : m_openglWidget->waypoints())
-        {
-            points.append(QVector3D(wp.x(), wp.y(), wp.z()));
-        }
-
-        // Emit signal so Flight History can update
         emit pathSaved(pathName, points);
 
-        QMessageBox::information(this, "Save Path", 
-                                QString("Path '%1' saved successfully to:\n%2").arg(pathName).arg(fileName));
+        m_backgroundBundleJsonPath = fileName;
+        m_backgroundBundleFolderName = bundleFolderName;
+
+        m_droneController->saveMapperMap(QStringLiteral("ply"), remotePkg);
+
+        if (m_missionStatusLabel) {
+            m_missionStatusLabel->setText(
+                QStringLiteral("<span style=\"color:#93c5fd;font-weight:600;\">Path saved — copying mapper map from "
+                               "VOXL (scp)…</span>"));
+            m_missionStatusLabel->setStyleSheet(QStringLiteral("QLabel { border: none; font-size: 11px; }"));
+        }
+
+        QTimer::singleShot(4000, this, [this, localBundleAbsPath, remotePkg]() {
+            if (!m_droneController)
+                return;
+            m_droneController->downloadMapperMapFromVehicle(localBundleAbsPath, remotePkg);
+        });
+
+        QMessageBox::information(
+            this,
+            "Save Path",
+            QString("Path saved to:\n%1\n\nThe waypoint file is ready in Saved Paths. "
+                    "The mapper map folder is copying from VOXL in the background; you will get another message when "
+                    "that finishes (or if it fails).")
+                .arg(fileName));
+        return;
     }
-    else
+
+    if (!saveToJson(fileName))
     {
         QMessageBox::warning(this, "Save Path", "Failed to save path.");
+        return;
     }
+
+    m_mapperMapBundleDir.clear();
+
+    m_pathNameEdit->setText(pathName);
+    if (m_waypointGroup)
+        m_waypointGroup->setTitle("Waypoints - " + pathName);
+    emit pathSaved(pathName, points);
+
+    const QString extra = QStringLiteral(
+        "\n\nMapper map was not bundled (connect to the drone with the mapper mesh socket open to save the map next "
+        "to this file automatically).");
+    QMessageBox::information(this, "Save Path",
+                             QString("Path '%1' saved successfully to:\n%2%3")
+                                 .arg(pathName, fileName, extra));
 }
 
 void PathPlannerWidget::onLoadPath()
@@ -2922,26 +3349,61 @@ void PathPlannerWidget::onLoadPath()
                                                     "JSON Files (*.json)");
 
     if (!fileName.isEmpty())
-    {
-        if (loadFromJson(fileName))
-        {
-            const QString loadedName = QFileInfo(fileName).baseName().replace('_', ' ');
-            m_pathNameEdit->setText(loadedName);
-            if (m_waypointGroup)
-                m_waypointGroup->setTitle("Waypoints - " + loadedName);
-            QMessageBox::information(this, "Load Path", "Path loaded successfully!");
-        }
-        else
-        {
-            QMessageBox::warning(this, "Load Path", "Failed to load path.");
+        loadPathFromFile(fileName, true);
+}
+
+void PathPlannerWidget::clearMapperVisualization()
+{
+    if (!m_openglWidget)
+        return;
+    m_openglWidget->setMapperRenderData({}, {});
+    m_openglWidget->setMapperMeshData({}, {}, {});
+}
+
+bool PathPlannerWidget::loadPathFromFile(const QString &fileName, bool showSuccessDialog)
+{
+    clearMapperVisualization();
+
+    if (!loadFromJson(fileName)) {
+        QMessageBox::warning(this, "Load Path", "Failed to load path.");
+        return false;
+    }
+
+    const QString loadedName = QFileInfo(fileName).baseName().replace('_', ' ');
+    m_pathNameEdit->setText(loadedName);
+    if (m_waypointGroup)
+        m_waypointGroup->setTitle("Waypoints - " + loadedName);
+
+    if (!m_mapperMapPath.isEmpty() && m_droneController && m_droneController->isConnected()) {
+        if (QMessageBox::question(this,
+                                  "Load Associated VOXL Map",
+                                  QString("This trajectory references a VOXL Mapper map:\n%1\n\n"
+                                          "Clear the current mapper map on VOXL and load this one? "
+                                          "(Recommended to avoid overlapping maps.)")
+                                      .arg(m_mapperMapPath),
+                                  QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
+            if (!m_mapperMapBundleDir.isEmpty() && QDir(m_mapperMapBundleDir).exists())
+                m_droneController->restoreMapperMapFromBundle(m_mapperMapBundleDir, m_mapperMapPath);
+            else
+                m_droneController->replaceMapperMap(m_mapperMapPath);
         }
     }
+
+    if (showSuccessDialog)
+        QMessageBox::information(this, "Load Path", "Path loaded successfully!");
+    return true;
 }
 
 void PathPlannerWidget::onWaypointSelected(int id)
 {
     m_selectedWaypoint = id;
     m_openglWidget->setSelectedWaypoint(id);
+
+    if (!m_waypointTable || id < 0) {
+        if (m_waypointTable)
+            m_waypointTable->clearSelection();
+        return;
+    }
 
     // Select the corresponding row in the table
     for (int row = 0; row < m_waypointTable->rowCount(); ++row)
@@ -2968,7 +3430,7 @@ void PathPlannerWidget::onWaypointCellChanged(int row, int column)
         return;
 
     int id = idItem->data(Qt::UserRole).toInt();
-    if (id <= 0)
+    if (id < 0)
         return;
 
     // Find the waypoint and update it
@@ -2977,6 +3439,8 @@ void PathPlannerWidget::onWaypointCellChanged(int row, int column)
     {
         if (wp.sequence() == id)
         {
+            if (wp.isMapperHome())
+                return;
             Waypoint updated = wp;
 
             // Update the changed field
@@ -3113,19 +3577,32 @@ void PathPlannerWidget::updateWaypointTable()
         {
             const Waypoint &wp = waypoints[i];
 
-            QTableWidgetItem *rowHeaderItem = new QTableWidgetItem(QString::number(i + 1));
+            QTableWidgetItem *rowHeaderItem = new QTableWidgetItem(wp.isMapperHome() ? QStringLiteral("H")
+                                                                                     : QString::number(static_cast<int>(i) + 1));
             rowHeaderItem->setFlags(rowHeaderItem->flags() & ~Qt::ItemIsEditable);
             m_waypointTable->setVerticalHeaderItem(i, rowHeaderItem);
 
+            const Qt::ItemFlags cellFlags = wp.isMapperHome()
+                ? (Qt::ItemIsSelectable | Qt::ItemIsEnabled)
+                : (Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsEditable);
             QTableWidgetItem *xItem = new QTableWidgetItem(QString::number(wp.x(), 'f', 2));
             xItem->setData(Qt::UserRole, wp.sequence());
+            xItem->setFlags(cellFlags);
             m_waypointTable->setItem(i, 0, xItem);
 
-            // Position and parameters (editable)
-            m_waypointTable->setItem(i, 1, new QTableWidgetItem(QString::number(wp.y(), 'f', 2)));
-            m_waypointTable->setItem(i, 2, new QTableWidgetItem(QString::number(wp.z(), 'f', 2)));
-            m_waypointTable->setItem(i, 3, new QTableWidgetItem(QString::number(wp.yawAngle(), 'f', 1)));
-            m_waypointTable->setItem(i, 4, new QTableWidgetItem(QString::number(wp.holdTime(), 'f', 1)));
+            // Position and parameters (editable except mapper home row)
+            auto *yItem = new QTableWidgetItem(QString::number(wp.y(), 'f', 2));
+            yItem->setFlags(cellFlags);
+            m_waypointTable->setItem(i, 1, yItem);
+            auto *zItem = new QTableWidgetItem(QString::number(wp.z(), 'f', 2));
+            zItem->setFlags(cellFlags);
+            m_waypointTable->setItem(i, 2, zItem);
+            auto *yawItem = new QTableWidgetItem(QString::number(wp.yawAngle(), 'f', 1));
+            yawItem->setFlags(cellFlags);
+            m_waypointTable->setItem(i, 3, yawItem);
+            auto *holdItem = new QTableWidgetItem(QString::number(wp.holdTime(), 'f', 1));
+            holdItem->setFlags(cellFlags);
+            m_waypointTable->setItem(i, 4, holdItem);
         }
     }
 
@@ -3182,6 +3659,10 @@ void PathPlannerWidget::stopPathPreviewAnimation()
 
 void PathPlannerWidget::loadPoints(const QVector<QVector3D> &points)
 {
+    clearMapperVisualization();
+    m_mapperMapPath.clear();
+    m_mapperMapBundleDir.clear();
+
     // Convert legacy QVector<QVector3D> to std::vector<Waypoint>
     std::vector<Waypoint> waypoints;
     for (int i = 0; i < points.size(); ++i)
@@ -3193,9 +3674,7 @@ void PathPlannerWidget::loadPoints(const QVector<QVector3D> &points)
     m_openglWidget->setWaypoints(waypoints);
     updateWaypointTable();
     if (!waypoints.empty())
-    {
-        onWaypointSelected(1);
-    }
+        onWaypointSelected(waypoints.front().sequence());
 }
 
 void PathPlannerWidget::clearPath()
@@ -3277,7 +3756,11 @@ QString PathPlannerWidget::waypointFingerprint(const std::vector<Waypoint> &wayp
     QByteArray payload;
     payload.reserve(static_cast<int>(waypoints.size()) * 64);
     for (const Waypoint &wp : waypoints) {
+        if (wp.isMapperHome())
+            continue;
         payload.append(QByteArray::number(wp.sequence()));
+        payload.append('|');
+        payload.append(wp.waypointType().toUtf8());
         payload.append('|');
         payload.append(QByteArray::number(wp.x(), 'f', 5));
         payload.append('|');
@@ -3354,6 +3837,14 @@ void PathPlannerWidget::setEditingLocked(bool locked)
     m_pathNameEdit->setEnabled(!locked);
     m_waypointTable->setEditTriggers(locked ? QAbstractItemView::NoEditTriggers
                                             : (QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed));
+}
+
+void PathPlannerWidget::clearStaleMapperErrorBanner()
+{
+    if (m_lastControllerError.contains(QStringLiteral("VOXL Mapper"), Qt::CaseInsensitive)) {
+        m_lastControllerError.clear();
+        updateMissionChrome();
+    }
 }
 
 void PathPlannerWidget::updateMissionChrome()
@@ -3497,12 +3988,14 @@ void PathPlannerWidget::updateMissionChrome()
         m_topBarLandButton->setEnabled(connected && missionFlightActive);
     if (m_topBarRtlButton)
         m_topBarRtlButton->setEnabled(connected && missionFlightActive);
-    if (m_topBarEstopButton)
-        m_topBarEstopButton->setEnabled(connected && missionFlightActive);
+    if (m_topBarForceDisarmButton)
+        m_topBarForceDisarmButton->setEnabled(connected && missionFlightActive);
+    if (m_topBarFlightTermButton)
+        m_topBarFlightTermButton->setEnabled(connected && missionFlightActive);
 
 }
 
-bool PathPlannerWidget::saveToJson(const QString &path)
+bool PathPlannerWidget::saveToJson(const QString &path, const QString &mapperMapBundleFolderName)
 {
     QJsonObject root;
     root["version"] = 1;
@@ -3512,12 +4005,17 @@ bool PathPlannerWidget::saveToJson(const QString &path)
     const QDateTime now = QDateTime::currentDateTime();
     root["created_at"] = now.toString(Qt::ISODate);
     root["modified_at"] = now.toString(Qt::ISODate);
+    if (!m_mapperMapPath.trimmed().isEmpty())
+        root["mapper_map_path"] = m_mapperMapPath.trimmed();
+    if (!mapperMapBundleFolderName.trimmed().isEmpty())
+        root["mapper_map_bundle"] = mapperMapBundleFolderName.trimmed();
 
     QJsonArray waypointsArray;
     const auto &waypoints = m_openglWidget->waypoints();
     for (const auto &wp : waypoints)
     {
-        waypointsArray.append(wp.toJson());
+        if (!wp.isMapperHome())
+            waypointsArray.append(wp.toJson());
     }
     root["waypoints"] = waypointsArray;
 
@@ -3559,13 +4057,23 @@ bool PathPlannerWidget::loadFromJson(const QString &path)
     }
 
     QJsonArray waypointsArray = root["waypoints"].toArray();
+    m_mapperMapPath = root["mapper_map_path"].toString();
+    m_mapperMapBundleDir.clear();
+    const QString bundleName = root["mapper_map_bundle"].toString();
+    if (!bundleName.isEmpty()) {
+        const QString abs = QFileInfo(path).absoluteDir().filePath(bundleName);
+        if (QDir(abs).exists())
+            m_mapperMapBundleDir = QDir::toNativeSeparators(abs);
+    }
     std::vector<Waypoint> waypoints;
 
     for (const QJsonValue &value : waypointsArray)
     {
         if (value.isObject())
         {
-            waypoints.push_back(Waypoint::fromJson(value.toObject()));
+            Waypoint w = Waypoint::fromJson(value.toObject());
+            if (!w.isMapperHome())
+                waypoints.push_back(w);
         }
     }
 
@@ -3574,9 +4082,7 @@ bool PathPlannerWidget::loadFromJson(const QString &path)
     emitWaypointsChanged();
 
     if (!waypoints.empty())
-    {
-        onWaypointSelected(waypoints[0].sequence());
-    }
+        onWaypointSelected(waypoints.front().sequence());
 
     return true;
 }
@@ -3588,9 +4094,37 @@ void PathPlannerWidget::setDroneController(DroneController *controller)
 
     if (m_droneController) {
         connect(m_droneController, &DroneController::connectionStatusChanged,
-                this, [this](bool) { updateMissionChrome(); });
+                this, [this](bool connected) {
+                    if (!connected)
+                        removeMapperHomeWaypointAndRefresh();
+                    if (connected)
+                        clearStaleMapperErrorBanner();
+                    updateMissionChrome();
+                });
         connect(m_droneController, &DroneController::statusUpdated,
-                this, [this](const DroneStatus &) { updateMissionChrome(); });
+                this, [this](const DroneStatus &) {
+                    updateMissionChrome();
+                });
+        connect(m_droneController, &DroneController::mapperPoseUpdated,
+                this, [this](const QVector3D &positionLogical, float yawDeg) {
+                    clearStaleMapperErrorBanner();
+                    if (m_openglWidget)
+                        m_openglWidget->setDronePoseLogical(positionLogical, yawDeg);
+                });
+        connect(m_droneController, &DroneController::mapperRenderUpdated,
+                this, [this](const QVector<QVector3D> &positionsLogical, const QVector<QColor> &colors) {
+                    if (!positionsLogical.isEmpty())
+                        clearStaleMapperErrorBanner();
+                    if (m_openglWidget)
+                        m_openglWidget->setMapperRenderData(positionsLogical, colors);
+                });
+        connect(m_droneController, &DroneController::mapperMeshUpdated,
+                this, [this](const QVector<QVector3D> &positionsLogical, const QVector<QColor> &colors, const QVector<quint32> &triangleIndices) {
+                    if (!positionsLogical.isEmpty() || !triangleIndices.isEmpty())
+                        clearStaleMapperErrorBanner();
+                    if (m_openglWidget)
+                        m_openglWidget->setMapperMeshData(positionsLogical, colors, triangleIndices);
+                });
         connect(m_droneController, &DroneController::missionStatusChanged,
                 this, [this](const QString &status) {
                     m_lastMissionStatusText = status;
@@ -3601,8 +4135,59 @@ void PathPlannerWidget::setDroneController(DroneController *controller)
                     m_lastControllerError = error;
                     updateMissionChrome();
                 });
+        connect(m_droneController, &DroneController::mapperBundleDownloadFinished,
+                this, &PathPlannerWidget::onMapperBundleDownloadFinished, Qt::UniqueConnection);
     }
     updateMissionChrome();
+}
+
+void PathPlannerWidget::onMapperBundleDownloadFinished(bool success, const QString &message)
+{
+    if (m_backgroundBundleJsonPath.isEmpty())
+        return;
+
+    const QString jsonPath = m_backgroundBundleJsonPath;
+    const QString bundleFolderName = m_backgroundBundleFolderName;
+    m_backgroundBundleJsonPath.clear();
+    m_backgroundBundleFolderName.clear();
+
+    if (m_missionStatusLabel) {
+        m_missionStatusLabel->clear();
+        updateMissionChrome();
+    }
+
+    const QString bundleForJson = success ? bundleFolderName : QString();
+    if (!saveToJson(jsonPath, bundleForJson)) {
+        QMessageBox::warning(this, "Mapper map copy",
+                             QStringLiteral("Could not update the saved JSON after copying the map."));
+        return;
+    }
+
+    m_mapperMapBundleDir.clear();
+    if (success) {
+        const QString abs = QFileInfo(jsonPath).absoluteDir().filePath(bundleFolderName);
+        if (QDir(abs).exists())
+            m_mapperMapBundleDir = QDir::toNativeSeparators(abs);
+    }
+
+    const QString displayName = FlightPath::displayNameFromFileBase(QFileInfo(jsonPath).baseName());
+
+    if (success) {
+        QMessageBox::information(
+            this,
+            "Mapper map copy",
+            QString("Mapper map for \"%1\" is on disk next to the JSON.\n\nJSON:\n%2\n\nLocal folder:\n%3\n\nVOXL load "
+                    "path:\n%4")
+                .arg(displayName, jsonPath, m_mapperMapBundleDir, m_mapperMapPath));
+    } else {
+        QMessageBox::warning(
+            this,
+            "Mapper map copy",
+            QString("Waypoint file was saved earlier, but copying the map from VOXL failed "
+                    "(scp/SSH, firewall, or the map had not finished writing on the drone).\n\n%1\n\nJSON:\n%2\n\n"
+                    "VOXL load path:\n%3")
+                .arg(message, jsonPath, m_mapperMapPath));
+    }
 }
 
 void PathPlannerWidget::onUploadMission()
@@ -3653,24 +4238,18 @@ void PathPlannerWidget::onUploadMission()
         m_missionStatusLabel->setToolTip(QString());
     }
     
-    // Convert waypoints to legacy format for DroneController
-    QVector<QVector3D> legacyWaypoints;
-    for (const Waypoint &wp : waypoints) {
-        legacyWaypoints.append(QVector3D(wp.x(), wp.y(), wp.z()));
-    }
-    
     if (m_droneController->isConnected())
-        m_droneController->uploadMission(legacyWaypoints);
+        m_droneController->uploadMapperMission(waypoints);
     else
-        m_droneController->stageMissionLocally(legacyWaypoints);
+        m_droneController->stageMapperMissionLocally(waypoints);
 
     if (m_droneController->getCurrentMission().uploaded) {
         m_hasUploadedSnapshot = true;
         m_waypointsDirtySinceUpload = false;
         m_uploadedWaypointFingerprint = waypointFingerprint(waypoints);
         m_lastMissionStatusText = m_droneController->isConnected()
-            ? "Mission uploaded successfully"
-            : "Mission staged locally (offline test)";
+            ? "Mapper mission staged on VOXL"
+            : "Mapper mission staged locally (offline test)";
         m_lastControllerError.clear();
         if (m_droneController->isConnected()) {
             QMessageBox::information(this, "Mission Upload",
@@ -3750,7 +4329,9 @@ void PathPlannerWidget::onRunMission()
     }
     
     QMessageBox::StandardButton reply = QMessageBox::question(this, "Run Mission", 
-        "Are you sure you want to start the mission?\n\nThe drone will take off and follow the uploaded waypoints.",
+        "Are you sure you want to start the mapper mission?\n\n"
+        "The drone must already be airborne in the correct offboard/trajectory mode. "
+        "The app will chain VOXL Mapper plan_to/follow_path commands.",
         QMessageBox::Yes | QMessageBox::No);
     
     if (reply == QMessageBox::Yes) {
@@ -3811,19 +4392,41 @@ void PathPlannerWidget::onReturnToLaunchMission()
     updateMissionChrome();
 }
 
-void PathPlannerWidget::onEmergencyStopMission()
+void PathPlannerWidget::onForceDisarmMission()
 {
     if (!m_droneController || !m_droneController->isConnected())
         return;
 
-    if (QMessageBox::critical(this, "Emergency Stop",
-                              "Emergency stop will immediately stop motors.\nUse only for imminent hazards.",
-                              QMessageBox::Yes | QMessageBox::Cancel) != QMessageBox::Yes)
+    if (QMessageBox::warning(this, QStringLiteral("Force disarm"),
+                             QStringLiteral("Send force-disarm? Motors stop immediately (software only)."),
+                             QMessageBox::Yes | QMessageBox::Cancel,
+                             QMessageBox::Cancel)
+        != QMessageBox::Yes)
         return;
 
-    m_droneController->emergencyStop();
+    m_droneController->forceDisarm();
     m_lastControllerError.clear();
-    m_lastMissionStatusText = "Emergency stop requested";
+    m_lastMissionStatusText = QStringLiteral("Force disarm requested");
+    updateMissionChrome();
+}
+
+void PathPlannerWidget::onFlightTerminationMission()
+{
+    if (!m_droneController || !m_droneController->isConnected())
+        return;
+
+    if (QMessageBox::critical(this, QStringLiteral("Flight termination"),
+                              QStringLiteral("Send PX4 flight termination?\n\n"
+                                             "Strongest software stop if enabled (see CBRK_FLIGHTTERM). "
+                                             "May require power-cycle. Not a hardware estop."),
+                              QMessageBox::Yes | QMessageBox::Cancel,
+                              QMessageBox::Cancel)
+        != QMessageBox::Yes)
+        return;
+
+    m_droneController->flightTermination();
+    m_lastControllerError.clear();
+    m_lastMissionStatusText = QStringLiteral("Flight termination sent");
     updateMissionChrome();
 }
 

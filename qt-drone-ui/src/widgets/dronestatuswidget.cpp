@@ -57,7 +57,8 @@ void DroneStatusWidget::setupConnections()
     connect(ui->takeoffButton, &QPushButton::clicked, this, &DroneStatusWidget::onTakeoffClicked);
     connect(ui->landButton, &QPushButton::clicked, this, &DroneStatusWidget::onLandClicked);
     connect(ui->rtlButton, &QPushButton::clicked, this, &DroneStatusWidget::onRTLClicked);
-    connect(ui->emergencyStopButton, &QPushButton::clicked, this, &DroneStatusWidget::onEmergencyStopClicked);
+    connect(ui->forceDisarmButton, &QPushButton::clicked, this, &DroneStatusWidget::onForceDisarmClicked);
+    connect(ui->flightTerminationButton, &QPushButton::clicked, this, &DroneStatusWidget::onFlightTerminationClicked);
     
     // Connect clear messages button
     connect(ui->clearMessagesButton, &QPushButton::clicked, this, &DroneStatusWidget::onClearMessages);
@@ -245,7 +246,8 @@ void DroneStatusWidget::updateControlsDisplay()
     ui->takeoffButton->setEnabled(connected && armed && m_currentStatus.gpsLock);
     ui->landButton->setEnabled(connected && armed);
     ui->rtlButton->setEnabled(connected && armed);
-    ui->emergencyStopButton->setEnabled(connected);
+    ui->forceDisarmButton->setEnabled(connected);
+    ui->flightTerminationButton->setEnabled(connected);
 }
 
 void DroneStatusWidget::addMessage(const QString &message, const QString &type)
@@ -335,14 +337,38 @@ void DroneStatusWidget::onRTLClicked()
     }
 }
 
-void DroneStatusWidget::onEmergencyStopClicked()
+void DroneStatusWidget::onForceDisarmClicked()
 {
-    int ret = QMessageBox::critical(this, "Emergency Stop", 
-                                   "🚨 EMERGENCY STOP 🚨\n\nThis will immediately stop all motors!\nThe drone will fall from the sky!\n\nOnly use in extreme emergencies!",
-                                   QMessageBox::Yes | QMessageBox::Cancel);
+    const int ret = QMessageBox::warning(
+        this,
+        QStringLiteral("Force disarm"),
+        QStringLiteral("Send MAVLink force-disarm?\n\n"
+                       "Motors stop immediately; the vehicle may fall. "
+                       "This is a software command to PX4 (not a power cut). "
+                       "You can usually re-arm after landing and checks."),
+        QMessageBox::Yes | QMessageBox::Cancel,
+        QMessageBox::Cancel);
     if (ret == QMessageBox::Yes) {
-        emit emergencyStopRequested();
-        addMessage("EMERGENCY STOP ACTIVATED", "error");
+        emit forceDisarmRequested();
+        addMessage(QStringLiteral("Force disarm command sent"), "warning");
+    }
+}
+
+void DroneStatusWidget::onFlightTerminationClicked()
+{
+    const int ret = QMessageBox::critical(
+        this,
+        QStringLiteral("Flight termination"),
+        QStringLiteral("Send PX4 flight termination (MAV_CMD_DO_FLIGHTTERMINATION)?\n\n"
+                       "This is the strongest software stop PX4 exposes: outputs go to configured "
+                       "failsafe values and the flight may be ended until power-cycle, depending on "
+                       "firmware and CBRK_FLIGHTTERM.\n\n"
+                       "Does not replace a hardware estop or battery disconnect."),
+        QMessageBox::Yes | QMessageBox::Cancel,
+        QMessageBox::Cancel);
+    if (ret == QMessageBox::Yes) {
+        emit flightTerminationRequested();
+        addMessage(QStringLiteral("Flight termination command sent"), "error");
     }
 }
 

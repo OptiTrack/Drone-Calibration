@@ -476,6 +476,8 @@ void MainWindow::connectSignals()
             this, &MainWindow::onPathDeleted);
     connect(m_recordedPathsWidget, &RecordedPathsWidget::pathLoadRequested,
             this, &MainWindow::onPathLoadRequested);
+    connect(m_recordedPathsWidget, &RecordedPathsWidget::pathJsonLoadRequested,
+            this, &MainWindow::onPathJsonLoadRequested);
     
     // Camera feed signals
     connect(m_cameraFeedWidget, &CameraFeedWidget::recordingSaved,
@@ -514,8 +516,10 @@ void MainWindow::connectSignals()
             m_droneController, &DroneController::land);
     connect(m_droneStatusWidget, &DroneStatusWidget::returnToLaunchRequested,
             m_droneController, &DroneController::returnToLaunch);
-    connect(m_droneStatusWidget, &DroneStatusWidget::emergencyStopRequested,
-            m_droneController, &DroneController::emergencyStop);
+    connect(m_droneStatusWidget, &DroneStatusWidget::forceDisarmRequested,
+            m_droneController, &DroneController::forceDisarm);
+    connect(m_droneStatusWidget, &DroneStatusWidget::flightTerminationRequested,
+            m_droneController, &DroneController::flightTermination);
 }
 
 void MainWindow::onNavigationItemClicked(int index)
@@ -551,6 +555,18 @@ void MainWindow::onPathLoadRequested(const QVector<QVector3D> &points)
     m_draftPoints = points;
     m_pathPlannerWidget->loadPoints(points);
     m_contentStack->setCurrentIndex(2); // Switch to path planner
+    m_navigationList->setCurrentRow(2);
+    m_activeView = "planner";
+}
+
+void MainWindow::onPathJsonLoadRequested(const QString &absoluteJsonPath)
+{
+    if (m_pathPlannerWidget->loadPathFromFile(absoluteJsonPath, false))
+        statusBar()->showMessage(QStringLiteral("Path loaded from %1").arg(absoluteJsonPath), 4000);
+    else
+        statusBar()->showMessage(QStringLiteral("Failed to load %1").arg(absoluteJsonPath), 5000);
+
+    m_contentStack->setCurrentIndex(2);
     m_navigationList->setCurrentRow(2);
     m_activeView = "planner";
 }

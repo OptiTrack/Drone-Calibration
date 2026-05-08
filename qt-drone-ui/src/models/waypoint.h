@@ -33,6 +33,10 @@ public:
     float yawAngle() const { return m_yawAngle; }
     bool passThrough() const { return m_passThrough; }
     QDateTime createdAt() const { return m_createdAt; }
+
+    /// VOXL mapper / planner home marker (serialized as type "MAPPER_HOME"); sequence id 0 in the mission UI.
+    bool isMapperHome() const;
+    void setAsMapperHome(bool enable = true);
     
     // Setters
     void setPosition(const QVector3D &position) { m_position = position; }
