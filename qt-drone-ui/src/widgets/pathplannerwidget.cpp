@@ -57,10 +57,9 @@ static QString plannerPathsDirectory()
 
 // Waypoint / planner "logical" frame — same numbers as saved JSON and the RGB origin gizmo:
 //   X = forward (red axis, maps to OpenGL world +Z),
-//   Y = lateral (green axis, maps to world +X). With the default 3D camera this green axis
-//       usually reads as "toward screen-left" while forward is "into" the grid and blue is up.
+//   Y = lateral-left (green axis, maps to world +X). VOXL Mapper commands use lateral-right,
+//       so the controller flips Y when sending plan_to and when displaying mapper poses.
 //   Z = up / altitude (blue axis, maps to world +Y).
-// (Body-frame docs often call +Y "starboard/right"; here we name axes by what the gizmo shows.)
 static QVector3D logicalToWorld(const QVector3D &logicalPos)
 {
     return QVector3D(logicalPos.y(), logicalPos.z(), logicalPos.x());

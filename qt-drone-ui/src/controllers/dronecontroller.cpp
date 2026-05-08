@@ -10,6 +10,7 @@
 #include <QtMath>
 #include <QDir>
 #include <algorithm>
+#include <limits>
 
 DroneController::DroneController(QObject *parent)
     : QObject(parent)
@@ -31,6 +32,7 @@ DroneController::DroneController(QObject *parent)
     , m_haveMapperPose(false)
     , m_mapperPlanReceivedForCurrentTarget(false)
     , m_mapperFollowIssuedForCurrentTarget(false)
+    , m_mapperPlanMismatchWarnedForCurrentTarget(false)
     , m_resumeMissionItem(0)
     , m_pendingMapperMapCommand(PendingMapperMapCommand::None)
     , m_mapperPortalWatchdog(nullptr)
@@ -527,6 +529,7 @@ void DroneController::uploadMapperMission(const std::vector<Waypoint> &waypoints
 
     emit missionStatusChanged(QString("Mapper mission staged: %1 waypoint(s)").arg(m_mapperMission.size()));
     emit messageReceived("Mapper mission uses VOXL FRD commands: plan_to -> follow_path -> hold -> next.");
+    logMapperMissionSummary(QStringLiteral("Uploaded mapper mission"));
 }
 
 void DroneController::stageMissionLocally(const QVector<QVector3D> &waypoints)
@@ -570,6 +573,7 @@ void DroneController::stageMapperMissionLocally(const std::vector<Waypoint> &way
     m_missionPaused = false;
     emit missionStatusChanged("Mapper mission staged locally (offline test)");
     emit messageReceived(QString("Offline test: staged %1 mapper waypoint(s)").arg(m_mapperMission.size()));
+    logMapperMissionSummary(QStringLiteral("Offline mapper mission"));
 }
 
 void DroneController::startMission()
@@ -593,6 +597,10 @@ void DroneController::startMission()
         return;
     }
 
+    emit messageReceived(QStringLiteral(
+                             "Mapper start requested: %1 waypoint(s), mapper pose %2, plan/mesh sockets connected.")
+                             .arg(m_mapperMission.size())
+                             .arg(m_haveMapperPose ? QStringLiteral("available") : QStringLiteral("not received yet")));
     m_missionActive = true;
     m_missionPaused = false;
     m_currentMissionItem = 0;
@@ -622,6 +630,9 @@ void DroneController::pauseMission()
     m_mapperMissionState = MapperMissionState::Paused;
     m_missionPaused = true;
     emit missionStatusChanged("Mapper mission paused");
+    emit messageReceived(QStringLiteral("Mapper mission paused at waypoint %1/%2.")
+                             .arg(m_currentMissionItem + 1)
+                             .arg(m_mapperMission.size()));
 }
 
 void DroneController::resumeMission()
@@ -649,6 +660,9 @@ void DroneController::resumeMission()
         m_mapperMissionTimer->start();
     commandCurrentMapperWaypoint();
     emit missionStatusChanged("Mapper mission resumed");
+    emit messageReceived(QStringLiteral("Mapper mission resumed from waypoint %1/%2.")
+                             .arg(m_currentMissionItem + 1)
+                             .arg(m_mapperMission.size()));
 }
 
 void DroneController::abortMission()
@@ -671,6 +685,7 @@ void DroneController::clearMission()
     m_missionPaused = false;
     m_mapperPlanReceivedForCurrentTarget = false;
     m_mapperFollowIssuedForCurrentTarget = false;
+    m_mapperPlanMismatchWarnedForCurrentTarget = false;
     
     if (m_connected) {
         if (m_mapperClient && m_mapperClient->isConnected())
@@ -1120,9 +1135,33 @@ void DroneController::onMapperRenderReceived(const QString &name, int format, co
                                  .arg(points.size())
                                  .arg(name.trimmed().isEmpty() ? QStringLiteral("mesh/plan") : name.trimmed()));
         if (m_missionActive && !m_missionPaused && m_mapperMissionState == MapperMissionState::Planning) {
+            if (m_currentMissionItem < 0 || m_currentMissionItem >= m_mapperMission.size())
+                return;
+            const MapperMissionWaypoint &target = m_mapperMission.at(m_currentMissionItem);
+            float closestPointToTargetM = std::numeric_limits<float>::max();
+            for (const MapperPathPoint &point : points)
+                closestPointToTargetM = qMin(closestPointToTargetM, (point.positionFrd - target.frdPosition).length());
+
+            const float planGoalToleranceM = qMax(1.0f, target.acceptanceRadiusM + 0.5f);
+            if (closestPointToTargetM > planGoalToleranceM) {
+                if (!m_mapperPlanMismatchWarnedForCurrentTarget || m_mapperDebugTimer.elapsed() > 1000) {
+                    emit warningIssued(QStringLiteral(
+                                           "Mapper plan render does not match waypoint %1/%2 yet: closest plan point is %3 m from target (need <= %4 m). Waiting before follow_path.")
+                                           .arg(m_currentMissionItem + 1)
+                                           .arg(m_mapperMission.size())
+                                           .arg(closestPointToTargetM, 0, 'f', 2)
+                                           .arg(planGoalToleranceM, 0, 'f', 2));
+                    m_mapperPlanMismatchWarnedForCurrentTarget = true;
+                    m_mapperDebugTimer.restart();
+                }
+                return;
+            }
+
             m_mapperPlanReceivedForCurrentTarget = true;
-            issueMapperFollowForCurrentWaypoint(QStringLiteral("non-empty mapper plan render (%1 point(s))")
-                                                    .arg(points.size()));
+            issueMapperFollowForCurrentWaypoint(QStringLiteral("%1 point mapper plan from %2, closest point %3 m from target")
+                                                    .arg(points.size())
+                                                    .arg(name.trimmed().isEmpty() ? QStringLiteral("unnamed plan") : name.trimmed())
+                                                    .arg(closestPointToTargetM, 0, 'f', 2));
         }
     } else if (m_missionActive && m_mapperMissionState == MapperMissionState::Planning) {
         emit warningIssued(QStringLiteral("VOXL Mapper returned an empty plan render while planning waypoint %1/%2.")
@@ -1165,9 +1204,6 @@ void DroneController::onMapperTick()
     const MapperMissionWaypoint &target = m_mapperMission[m_currentMissionItem];
 
     if (m_mapperMissionState == MapperMissionState::Planning) {
-        if (!m_mapperFollowIssuedForCurrentTarget && m_mapperStateTimer.elapsed() > 250) {
-            issueMapperFollowForCurrentWaypoint(QStringLiteral("250 ms fallback before plan render arrived"));
-        }
         if (!m_mapperPlanReceivedForCurrentTarget && m_mapperDebugTimer.elapsed() > 1000) {
             emit messageReceived(QStringLiteral(
                                      "Mapper debug: waiting for plan render for waypoint %1/%2; target FRD (%3, %4, %5).")
@@ -1177,6 +1213,14 @@ void DroneController::onMapperTick()
                                      .arg(target.frdPosition.y(), 0, 'f', 2)
                                      .arg(target.frdPosition.z(), 0, 'f', 2));
             m_mapperDebugTimer.restart();
+        }
+        if (!m_mapperPlanReceivedForCurrentTarget && m_mapperStateTimer.elapsed() > 5000) {
+            emit warningIssued(QStringLiteral(
+                                   "Mapper waypoint %1/%2 has no matching plan after %3 s. Not sending follow_path until a plan reaches the target.")
+                                   .arg(m_currentMissionItem + 1)
+                                   .arg(m_mapperMission.size())
+                                   .arg(m_mapperStateTimer.elapsed() / 1000.0, 0, 'f', 1));
+            m_mapperStateTimer.restart();
         }
         return;
     }
@@ -1208,12 +1252,22 @@ void DroneController::onMapperTick()
             m_mapperDebugTimer.restart();
         }
         if (distance <= target.acceptanceRadiusM && speed < 0.35f) {
+            emit messageReceived(QStringLiteral(
+                                     "Mapper waypoint %1/%2 acceptance reached: distance %3 m <= %4 m, speed %5 m/s.")
+                                     .arg(m_currentMissionItem + 1)
+                                     .arg(m_mapperMission.size())
+                                     .arg(distance, 0, 'f', 2)
+                                     .arg(target.acceptanceRadiusM, 0, 'f', 2)
+                                     .arg(speed, 0, 'f', 2));
             if (target.holdTimeSec > 0.0f) {
                 m_mapperMissionState = MapperMissionState::Holding;
                 m_mapperHoldTimer.restart();
                 emit missionStatusChanged(QString("Holding waypoint %1 for %2 s")
                                               .arg(m_currentMissionItem + 1)
                                               .arg(target.holdTimeSec, 0, 'f', 1));
+                emit messageReceived(QStringLiteral("Mapper waypoint %1 hold started for %2 s.")
+                                         .arg(m_currentMissionItem + 1)
+                                         .arg(target.holdTimeSec, 0, 'f', 1));
             } else {
                 advanceMapperMission();
             }
@@ -1226,6 +1280,8 @@ void DroneController::onMapperTick()
 
     if (m_mapperMissionState == MapperMissionState::Holding) {
         if (m_mapperHoldTimer.elapsed() >= static_cast<qint64>(target.holdTimeSec * 1000.0f)) {
+            emit messageReceived(QStringLiteral("Mapper waypoint %1 hold complete.")
+                                     .arg(m_currentMissionItem + 1));
             advanceMapperMission();
         }
     }
@@ -1233,11 +1289,16 @@ void DroneController::onMapperTick()
 
 void DroneController::advanceMapperMission()
 {
+    const int completedWaypoint = m_currentMissionItem + 1;
     ++m_currentMissionItem;
     if (m_currentMissionItem >= m_mapperMission.size()) {
         finishMapperMission(QStringLiteral("Mapper mission complete"));
         return;
     }
+    emit messageReceived(QStringLiteral("Mapper advancing from waypoint %1 to %2/%3.")
+                             .arg(completedWaypoint)
+                             .arg(m_currentMissionItem + 1)
+                             .arg(m_mapperMission.size()));
     commandCurrentMapperWaypoint();
 }
 
@@ -1251,6 +1312,7 @@ void DroneController::commandCurrentMapperWaypoint()
     const MapperMissionWaypoint &target = m_mapperMission[m_currentMissionItem];
     m_mapperPlanReceivedForCurrentTarget = false;
     m_mapperFollowIssuedForCurrentTarget = false;
+    m_mapperPlanMismatchWarnedForCurrentTarget = false;
     m_mapperClient->planToFrd(target.frdPosition);
     m_mapperMissionState = MapperMissionState::Planning;
     m_mapperStateTimer.restart();
@@ -1307,6 +1369,42 @@ void DroneController::issueMapperFollowForCurrentWaypoint(const QString &reason)
                              .arg(reason));
 }
 
+void DroneController::logMapperMissionSummary(const QString &context)
+{
+    if (m_mapperMission.isEmpty()) {
+        emit messageReceived(QStringLiteral("%1: no mapper waypoints staged.").arg(context));
+        return;
+    }
+
+    constexpr int kMaxLoggedWaypoints = 12;
+    const int missionSize = static_cast<int>(m_mapperMission.size());
+    emit messageReceived(QStringLiteral("%1: %2 waypoint(s). Planner logical frame is X forward, Y left, Z up; VOXL Mapper command frame is X forward, Y right, Z down.")
+                             .arg(context)
+                             .arg(missionSize));
+    const int countToLog = qMin(kMaxLoggedWaypoints, missionSize);
+    for (int i = 0; i < countToLog; ++i) {
+        const MapperMissionWaypoint &wp = m_mapperMission.at(i);
+        emit messageReceived(QStringLiteral(
+                                 "  wp %1/%2 seq %3: logical (%4, %5, %6), FRD (%7, %8, %9), yaw %10 deg, acceptance %11 m, hold %12 s.")
+                                 .arg(i + 1)
+                                 .arg(missionSize)
+                                 .arg(wp.sequence)
+                                 .arg(wp.logicalPosition.x(), 0, 'f', 2)
+                                 .arg(wp.logicalPosition.y(), 0, 'f', 2)
+                                 .arg(wp.logicalPosition.z(), 0, 'f', 2)
+                                 .arg(wp.frdPosition.x(), 0, 'f', 2)
+                                 .arg(wp.frdPosition.y(), 0, 'f', 2)
+                                 .arg(wp.frdPosition.z(), 0, 'f', 2)
+                                 .arg(wp.yawDeg, 0, 'f', 1)
+                                 .arg(wp.acceptanceRadiusM, 0, 'f', 2)
+                                 .arg(wp.holdTimeSec, 0, 'f', 1));
+    }
+    if (missionSize > kMaxLoggedWaypoints) {
+        emit messageReceived(QStringLiteral("  ... %1 additional waypoint(s) not listed.")
+                                 .arg(missionSize - kMaxLoggedWaypoints));
+    }
+}
+
 void DroneController::finishMapperMission(const QString &message)
 {
     if (m_mapperMissionTimer)
@@ -1319,6 +1417,7 @@ void DroneController::finishMapperMission(const QString &message)
     m_resumeMissionItem = 0;
     m_mapperPlanReceivedForCurrentTarget = false;
     m_mapperFollowIssuedForCurrentTarget = false;
+    m_mapperPlanMismatchWarnedForCurrentTarget = false;
     emit missionStatusChanged(message);
     emit messageReceived(message);
 }

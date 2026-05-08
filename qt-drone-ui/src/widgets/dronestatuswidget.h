@@ -15,6 +15,7 @@
 #include <QListWidget>
 #include <QComboBox>
 #include <QSpinBox>
+#include <QCheckBox>
 
 struct DroneStatus {
     bool connected;
@@ -51,6 +52,7 @@ public:
 
     void updateDroneStatus(const DroneStatus &status);
     void setConnectionStatus(bool connected);
+    bool addSystemMessage(const QString &message, const QString &type = "info");
 
 signals:
     void armDisarmRequested(bool arm);
@@ -80,6 +82,7 @@ private:
     QString formatCoordinate(float value, const QString &unit);
     
     Ui::DroneStatusWidget *ui;
+    QCheckBox *m_hideMapperMeshMessagesCheckBox;
     
     // Data and timers
     DroneStatus m_currentStatus;

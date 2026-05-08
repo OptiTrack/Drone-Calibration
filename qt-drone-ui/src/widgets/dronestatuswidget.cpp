@@ -7,6 +7,7 @@
 DroneStatusWidget::DroneStatusWidget(QWidget *parent)
     : QWidget(parent)
     , ui(new Ui::DroneStatusWidget)
+    , m_hideMapperMeshMessagesCheckBox(nullptr)
     , m_statusUpdateTimer(nullptr)
 {
     ui->setupUi(this);
@@ -63,6 +64,11 @@ void DroneStatusWidget::setupConnections()
     
     // Connect clear messages button
     connect(ui->clearMessagesButton, &QPushButton::clicked, this, &DroneStatusWidget::onClearMessages);
+
+    m_hideMapperMeshMessagesCheckBox = new QCheckBox("Hide VOXL mesh update messages", this);
+    m_hideMapperMeshMessagesCheckBox->setChecked(true);
+    m_hideMapperMeshMessagesCheckBox->setStyleSheet("QCheckBox { color: #d1d5db; padding: 2px; }");
+    ui->messagesLayout->insertWidget(0, m_hideMapperMeshMessagesCheckBox);
 }
 
 void DroneStatusWidget::updateDroneStatus(const DroneStatus &status)
@@ -101,6 +107,18 @@ void DroneStatusWidget::setConnectionStatus(bool connected)
     }
 
     updateDroneStatus(m_currentStatus);
+}
+
+bool DroneStatusWidget::addSystemMessage(const QString &message, const QString &type)
+{
+    if (m_hideMapperMeshMessagesCheckBox && m_hideMapperMeshMessagesCheckBox->isChecked()) {
+        if (message.startsWith(QStringLiteral("VOXL Mapper mesh update")) ||
+            message.startsWith(QStringLiteral("VOXL Mapper mesh cleared"))) {
+            return false;
+        }
+    }
+    addMessage(message, type);
+    return true;
 }
 
 void DroneStatusWidget::updateBatteryDisplay()
@@ -229,7 +247,7 @@ void DroneStatusWidget::updatePositionDisplay()
         ui->rollLabel->setText("--");
         ui->pitchLabel->setText("--");
         ui->yawLabel->setText("--");
-        ui->positionGroup->setTitle("Position & Attitude");
+        ui->positionGroup->setTitle("Drone Pose");
         return;
     }
 

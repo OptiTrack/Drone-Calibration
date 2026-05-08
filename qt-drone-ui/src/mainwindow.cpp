@@ -509,9 +509,20 @@ void MainWindow::connectSignals()
     connect(m_droneController, &DroneController::statusUpdated,
             m_droneStatusWidget, &DroneStatusWidget::updateDroneStatus);
     connect(m_droneController, &DroneController::messageReceived,
-            this, [this](const QString &message) { statusBar()->showMessage(message, 5000); });
+            this, [this](const QString &message) {
+                if (m_droneStatusWidget->addSystemMessage(message, "info"))
+                    statusBar()->showMessage(message, 5000);
+            });
+    connect(m_droneController, &DroneController::warningIssued,
+            this, [this](const QString &warning) {
+                if (m_droneStatusWidget->addSystemMessage(warning, "warning"))
+                    statusBar()->showMessage(warning, 7000);
+            });
     connect(m_droneController, &DroneController::errorOccurred,
-            this, [this](const QString &error) { statusBar()->showMessage(error, 7000); });
+            this, [this](const QString &error) {
+                if (m_droneStatusWidget->addSystemMessage(error, "error"))
+                    statusBar()->showMessage(error, 7000);
+            });
 
     connect(m_droneStatusWidget, &DroneStatusWidget::armDisarmRequested,
             m_droneController, &DroneController::armDrone);

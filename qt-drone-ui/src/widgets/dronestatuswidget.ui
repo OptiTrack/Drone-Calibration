@@ -193,7 +193,7 @@ QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; 
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px 0 5px; }</string>
          </property>
          <property name="title">
-          <string>Position &amp; Attitude</string>
+          <string>Drone Pose</string>
          </property>
          <layout class="QGridLayout" name="positionLayout">
           <item row="0" column="0">

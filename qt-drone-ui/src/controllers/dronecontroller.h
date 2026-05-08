@@ -32,7 +32,7 @@ struct FlightPlan {
 struct MapperMissionWaypoint {
     int sequence = 0;
     QVector3D logicalPosition; // Same as planner: X forward, Y left/lateral (green), Z up (blue).
-    QVector3D frdPosition;     // VOXL Mapper FRD: X forward, Y right, Z down.
+    QVector3D frdPosition;     // VOXL Mapper command frame: X forward, Y right, Z down.
     float holdTimeSec = 0.0f;
     float acceptanceRadiusM = 0.5f;
     float yawDeg = 0.0f;
@@ -145,6 +145,7 @@ private:
     void advanceMapperMission();
     void commandCurrentMapperWaypoint();
     void issueMapperFollowForCurrentWaypoint(const QString &reason);
+    void logMapperMissionSummary(const QString &context);
     void finishMapperMission(const QString &message);
     void updateConnectionStatus(bool connected);
     /// Stops VOXL Mapper follow_path and local sequencer so PX4 can own modes (Land, RTL, etc.).
@@ -192,6 +193,7 @@ private:
     bool m_haveMapperPose;
     bool m_mapperPlanReceivedForCurrentTarget;
     bool m_mapperFollowIssuedForCurrentTarget;
+    bool m_mapperPlanMismatchWarnedForCurrentTarget;
     int m_resumeMissionItem;
     enum class PendingMapperMapCommand {
         None,
