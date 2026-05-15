@@ -67,6 +67,8 @@ set(HEADERS
     src/network/voxlconnection.h
     src/network/voxlmapperclient.h
     src/utils/settings.h
+    src/utils/flightlogger.h
+    src/utils/volumemanager.h
 )
 
 # Source files
@@ -86,6 +88,8 @@ set(SOURCES
     src/network/voxlconnection.cpp
     src/network/voxlmapperclient.cpp
     src/utils/settings.cpp
+    src/utils/flightlogger.cpp
+    src/utils/volumemanager.cpp
 )
 
 # UI files

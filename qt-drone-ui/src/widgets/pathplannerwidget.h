@@ -263,6 +263,10 @@ public:
     // Drone controller
     void setDroneController(DroneController *controller);
 
+    /// Override the directory used for saving/loading path JSON files.
+    /// Pass an empty string to fall back to the built-in plannerPathsDirectory().
+    void setPlannerPathsDirectory(const QString &dir);
+
     // Waypoint management
     void addWaypoint(const QVector3D &pos);
     void updateWaypoint(int id, const Waypoint &wp);
@@ -388,6 +392,7 @@ private:
     QString m_mapperMapBundleDir;
     QString m_backgroundBundleJsonPath;
     QString m_backgroundBundleFolderName;
+    QString m_plannerPathsDir; ///< Volume override; empty = use plannerPathsDirectory()
 
     QTimer *m_pathPreviewAnimationTimer;
     int m_pathPreviewWaypointIndex;

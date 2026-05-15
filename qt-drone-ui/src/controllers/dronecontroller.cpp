@@ -36,6 +36,7 @@ DroneController::DroneController(QObject *parent)
     , m_resumeMissionItem(0)
     , m_pendingMapperMapCommand(PendingMapperMapCommand::None)
     , m_mapperPortalWatchdog(nullptr)
+    , m_thermalPollTimer(nullptr)
     , m_manualControlActive(false)
     , m_manualControlTimer(nullptr)
 {
@@ -88,6 +89,16 @@ void DroneController::initializeConnection()
             this, &DroneController::mapperBundleDownloadFinished);
     connect(m_voxlConnection, &VOXLConnection::mapperBundleUploadFinished,
             this, &DroneController::onMapperBundleUploadForRestoreFinished);
+    connect(m_voxlConnection, &VOXLConnection::sshCommandFinished,
+            this, [this](bool success, const QString &output) {
+                if (success)
+                    emit messageReceived(
+                        output.isEmpty() ? QStringLiteral("SSH command succeeded")
+                                         : QStringLiteral("SSH: %1").arg(output));
+                else
+                    emit warningIssued(
+                        QStringLiteral("SSH command failed: %1").arg(output));
+            });
     connect(m_mapperClient, &VOXLMapperClient::poseReceived,
             this, &DroneController::onMapperPoseReceived);
     connect(m_mapperClient, &VOXLMapperClient::pathRenderReceived,
@@ -99,7 +110,13 @@ void DroneController::initializeConnection()
     connect(m_mapperClient, &VOXLMapperClient::errorOccurred,
             this, [this](const QString &error) { emit errorOccurred(QString("VOXL Mapper: %1").arg(error)); });
     connect(m_mapperClient, &VOXLMapperClient::statusChanged,
-            this, &DroneController::messageReceived);
+            this, [this](const QString &status) {
+                emit messageReceived(status);
+                // When the pose socket drops, clear the pose flag immediately so the
+                // mission state machine stops computing distances from stale data.
+                if (status.contains(QLatin1String("pose socket disconnected"), Qt::CaseInsensitive))
+                    m_haveMapperPose = false;
+            });
     
     // Set up timers
     m_heartbeatTimer = new QTimer(this);
@@ -116,6 +133,11 @@ void DroneController::initializeConnection()
     // Manual control timer
     m_manualControlTimer = new QTimer(this);
     m_manualControlTimer->setInterval(50); // 20 Hz manual control
+
+    // Thermal/CPU poll: every 10 seconds via SSH (only fires when connected)
+    m_thermalPollTimer = new QTimer(this);
+    m_thermalPollTimer->setInterval(10000);
+    connect(m_thermalPollTimer, &QTimer::timeout, this, &DroneController::onThermalPollTimer);
 }
 
 bool DroneController::connectToDrone(const QString &host, int port)
@@ -162,7 +184,7 @@ void DroneController::disconnectFromDrone()
     if (m_voxlConnection) {
         m_voxlConnection->disconnect();
     }
-    if (m_mapperClient && m_mapperClient->isConnected()) {
+    if (m_mapperClient && m_mapperClient->isPlanConnected()) {
         m_mapperClient->stopFollowing();
         m_mapperClient->disconnectFromMapper();
     }
@@ -185,7 +207,7 @@ bool DroneController::mapperPoseAvailableForPlanner(QVector3D &logicalOut, float
 
 void DroneController::releaseMapperTrajectoryToVehicle()
 {
-    if (m_mapperClient && m_mapperClient->isConnected())
+    if (m_mapperClient && m_mapperClient->isPlanConnected())
         m_mapperClient->stopFollowing();
     if (m_mapperMissionTimer && m_mapperMissionTimer->isActive())
         m_mapperMissionTimer->stop();
@@ -203,9 +225,11 @@ void DroneController::updateConnectionStatus(bool connected)
         if (connected) {
             m_heartbeatTimer->start();
             m_statusUpdateTimer->start();
+            m_thermalPollTimer->start();
         } else {
             m_heartbeatTimer->stop();
             m_statusUpdateTimer->stop();
+            m_thermalPollTimer->stop();
             if (m_manualControlTimer->isActive()) {
                 m_manualControlTimer->stop();
             }
@@ -224,6 +248,9 @@ void DroneController::updateConnectionStatus(bool connected)
             m_currentStatus.attitude = QVector3D(0, 0, 0);
             m_currentStatus.lastHeartbeat.clear();
             m_currentStatus.systemStatus = "DISCONNECTED";
+            m_currentStatus.px4LoadPercent = -1.0f;
+            m_currentStatus.voxlTempC = -1.0f;
+            m_currentStatus.voxlTopService.clear();
             m_missionActive = false;
             m_missionPaused = false;
             m_mapperMissionState = MapperMissionState::Idle;
@@ -359,8 +386,39 @@ void DroneController::onVOXLDataReceived(const QJsonObject &data)
         if (statusData.contains("batteryVoltage")) {
             m_currentStatus.batteryVoltage = static_cast<float>(statusData["batteryVoltage"].toDouble());
         }
+        if (statusData.contains("px4LoadPercent")) {
+            m_currentStatus.px4LoadPercent = static_cast<float>(statusData["px4LoadPercent"].toDouble());
+        }
         if (statusData.contains("flightMode")) {
-            m_currentStatus.flightMode = statusData["flightMode"].toString();
+            const QString newMode = statusData["flightMode"].toString();
+            const QString prevMode = m_prevFlightMode;
+            m_currentStatus.flightMode = newMode;
+
+            // Safety check: if an autonomous mapper mission is running and PX4
+            // unexpectedly switches to a manual-family mode (indicating a VIO
+            // failure or a firmware failsafe), stop the trajectory sequencer and
+            // command a gentle land so the drone does not drift uncontrolled.
+            if (!newMode.isEmpty() && newMode != prevMode) {
+                const QString newModeLower = newMode.toLower();
+                const bool isManualFamily = (newModeLower == QLatin1String("manual")
+                                             || newModeLower == QLatin1String("stabilized")
+                                             || newModeLower == QLatin1String("acro")
+                                             || newModeLower == QLatin1String("rattitude"));
+                if (isManualFamily && (m_missionActive || m_mapperMissionState != MapperMissionState::Idle)) {
+                    emit warningIssued(QStringLiteral(
+                        "SAFETY: Flight mode changed from \"%1\" to \"%2\" during active mission. "
+                        "Stopping trajectory and commanding land.")
+                            .arg(prevMode.isEmpty() ? QStringLiteral("(unknown)") : prevMode)
+                            .arg(newMode));
+                    releaseMapperTrajectoryToVehicle();
+                    // Only send the land command if we still have a connection.
+                    if (m_connected)
+                        sendCommand(QStringLiteral("land"));
+                    emit missionStatusChanged(QStringLiteral(
+                        "Mission aborted \u2014 unexpected mode switch to %1. Land command sent.").arg(newMode));
+                }
+            }
+            m_prevFlightMode = newMode;
         }
         if (statusData.contains("armed")) {
             m_currentStatus.armed = statusData["armed"].toBool();
@@ -496,8 +554,10 @@ void DroneController::uploadMapperMission(const std::vector<Waypoint> &waypoints
         emit errorOccurred("Cannot upload mapper mission: Not connected to drone");
         return;
     }
-    if (!m_mapperClient || !m_mapperClient->isConnected()) {
-        emit errorOccurred("Cannot upload mapper mission: VOXL Mapper portal sockets are not connected yet");
+    // Only the /plan socket is required for mission execution.
+    // The /mesh socket is only needed for map ops (clear/load/save).
+    if (!m_mapperClient || !m_mapperClient->isPlanConnected()) {
+        emit errorOccurred("Cannot upload mapper mission: VOXL Mapper plan socket is not connected");
         return;
     }
 
@@ -592,13 +652,13 @@ void DroneController::startMission()
         emit errorOccurred("Cannot start mapper mission: no mapper waypoints staged");
         return;
     }
-    if (!m_mapperClient || !m_mapperClient->isConnected()) {
-        emit errorOccurred("Cannot start mapper mission: VOXL Mapper is not connected");
+    if (!m_mapperClient || !m_mapperClient->isPlanConnected()) {
+        emit errorOccurred("Cannot start mapper mission: VOXL Mapper plan socket is not connected");
         return;
     }
 
     emit messageReceived(QStringLiteral(
-                             "Mapper start requested: %1 waypoint(s), mapper pose %2, plan/mesh sockets connected.")
+                             "Mapper start requested: %1 waypoint(s), mapper pose %2, plan socket connected.")
                              .arg(m_mapperMission.size())
                              .arg(m_haveMapperPose ? QStringLiteral("available") : QStringLiteral("not received yet")));
     m_missionActive = true;
@@ -624,7 +684,7 @@ void DroneController::pauseMission()
         return;
     }
     
-    if (m_mapperClient && m_mapperClient->isConnected())
+    if (m_mapperClient && m_mapperClient->isPlanConnected())
         m_mapperClient->stopFollowing();
     m_resumeMissionItem = m_currentMissionItem;
     m_mapperMissionState = MapperMissionState::Paused;
@@ -645,8 +705,8 @@ void DroneController::resumeMission()
         emit errorOccurred("Cannot resume mapper mission: no mapper waypoints staged");
         return;
     }
-    if (!m_mapperClient || !m_mapperClient->isConnected()) {
-        emit errorOccurred("Cannot resume mapper mission: VOXL Mapper is not connected");
+    if (!m_mapperClient || !m_mapperClient->isPlanConnected()) {
+        emit errorOccurred("Cannot resume mapper mission: VOXL Mapper plan socket is not connected");
         return;
     }
 
@@ -688,7 +748,7 @@ void DroneController::clearMission()
     m_mapperPlanMismatchWarnedForCurrentTarget = false;
     
     if (m_connected) {
-        if (m_mapperClient && m_mapperClient->isConnected())
+        if (m_mapperClient && m_mapperClient->isPlanConnected())
             m_mapperClient->stopFollowing();
     }
     
@@ -709,6 +769,45 @@ void DroneController::clearMapperMap()
     }
     m_mapperClient->clearMap();
     emit messageReceived("VOXL Mapper clear map command sent");
+
+    // voxl-mapper resets its portal state after clear_map which can leave our
+    // mesh socket in a dead-but-appears-connected state.  Cycle the socket
+    // after 1.5 s so subsequent commands (load_map, clear_map) always use a
+    // fresh connection.
+    const QString host = m_droneHost;
+    QTimer::singleShot(1500, this, [this, host]() {
+        if (m_mapperClient) {
+            emit messageReceived("Reconnecting mapper mesh socket after clear...");
+            m_mapperClient->reconnectMesh();
+        }
+    });
+}
+
+void DroneController::restartMapperService()
+{
+    if (!m_voxlConnection || m_droneHost.trimmed().isEmpty()) {
+        emit errorOccurred("Cannot restart mapper service: not connected to drone");
+        return;
+    }
+
+    emit messageReceived("Sending SSH restart command to voxl-mapper service...");
+
+    // Disconnect the mapper WebSocket immediately — the service is about to
+    // go down and our sockets would become stale anyway.
+    if (m_mapperClient)
+        m_mapperClient->disconnectFromMapper();
+
+    m_voxlConnection->sshRunCommand(QStringLiteral("voxl-restart voxl-mapper"));
+
+    // Reconnect the mapper WebSocket after 4 s (enough time for the service
+    // to come back up and voxl-portal to begin accepting connections again).
+    const QString host = m_droneHost;
+    QTimer::singleShot(4000, this, [this, host]() {
+        if (m_mapperClient && m_connected) {
+            emit messageReceived("Reconnecting to VOXL Mapper after service restart...");
+            m_mapperClient->connectToMapper(host, 80);
+        }
+    });
 }
 
 void DroneController::loadMapperMap(const QString &remotePath)
@@ -863,8 +962,21 @@ void DroneController::uploadMapperMap(const QString &localFilePath, const QStrin
 
 void DroneController::onMapperMeshConnectedChanged(bool connected)
 {
-    if (connected)
+    if (connected) {
         stopMapperPortalWatchdog();
+    } else if (m_connected && m_mapperClient && m_mapperClient->isPlanConnected()) {
+        // Mesh socket dropped while plan+pose are still up (this is the common
+        // case when voxl-portal's /mesh endpoint resets after a clear_map or a
+        // brief service hiccup).  Reconnect silently after 3 s so map streaming
+        // resumes without requiring user intervention and without affecting the
+        // in-progress mission on the plan socket.
+        emit messageReceived(QStringLiteral(
+            "VOXL Mapper mesh socket dropped — reconnecting in 3 s (mission unaffected)"));
+        QTimer::singleShot(3000, this, [this]() {
+            if (m_connected && m_mapperClient && !m_mapperClient->isMeshConnected())
+                m_mapperClient->reconnectMesh();
+        });
+    }
 
     if (!connected || m_pendingMapperMapCommand == PendingMapperMapCommand::None)
         return;
@@ -932,6 +1044,96 @@ void DroneController::onMapperBundleUploadForRestoreFinished(bool success, const
     m_mapperClient->loadMap(remote);
     emit messageReceived(QStringLiteral("VOXL Mapper load_map after bundle upload: %1").arg(remote));
     emit messageReceived(QStringLiteral("Live mesh stream continues from the mapper service."));
+}
+
+void DroneController::onThermalPollTimer()
+{
+    if (!m_connected || !m_voxlConnection)
+        return;
+
+    // One SSH call: thermal zones + voxl-inspect-services (top 3 by CPU).
+    // Output lines:
+    //   THERMAL:<type>:<raw_millidegC>
+    //   SVC:<pct>:<name>         (sorted descending, max 3)
+    //
+    // Using voxl-inspect-services instead of `ps` because ps on VOXL2
+    // BusyBox does not support --no-headers / --sort flags.
+    // awk condition: Running field must be exactly 'Running' (not 'Not Running'),
+    // and the CPU field must contain a digit.
+    const QString cmd =
+        QStringLiteral(
+            "for z in /sys/class/thermal/thermal_zone*; do "
+            "  t=$(cat $z/type 2>/dev/null); "
+            "  v=$(cat $z/temp 2>/dev/null); "
+            "  echo \"THERMAL:$t:$v\"; "
+            "done; "
+            "voxl-inspect-services 2>/dev/null | "
+            "awk -F'|' '($3~/^ *Running *$/)&&($4~/[0-9]){"
+            "gsub(/[ %]/,\"\",$4);gsub(/^ +| +$/,\"\",$1);"
+            "if($4+0>0)printf \"SVC:%.1f:%s\\n\",$4+0,$1}' | "
+            "sort -t: -k2 -rn | head -3");
+
+    QProcess *proc = new QProcess(this);
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [this, proc](int exitCode, QProcess::ExitStatus) {
+                // Accept exit code 0 or 1 (voxl-inspect-services can exit 1 on
+                // some firmware versions even when it produced valid output).
+                const QString out = QString::fromUtf8(proc->readAllStandardOutput());
+                float bestCpuTemp = m_currentStatus.voxlTempC; // keep last good value on empty
+                QStringList svcLines;
+
+                for (const QString &line : out.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+                    if (line.startsWith(QLatin1String("THERMAL:"))) {
+                        const QStringList parts = line.split(QLatin1Char(':'));
+                        if (parts.size() == 3) {
+                            const QString &type = parts[1];
+                            bool ok = false;
+                            const float tempC = parts[2].trimmed().toFloat(&ok) / 1000.0f;
+                            if (ok && type.contains(QLatin1String("cpu"), Qt::CaseInsensitive)) {
+                                if (tempC > bestCpuTemp)
+                                    bestCpuTemp = tempC;
+                            }
+                        }
+                    } else if (line.startsWith(QLatin1String("SVC:"))) {
+                        // Format: SVC:<pct>:<service-name>
+                        const int first  = line.indexOf(QLatin1Char(':'));
+                        const int second = line.indexOf(QLatin1Char(':'), first + 1);
+                        if (first != -1 && second != -1) {
+                            bool ok = false;
+                            const float pct = line.mid(first + 1, second - first - 1).toFloat(&ok);
+                            if (ok && pct > 0.0f) {
+                                QString name = line.mid(second + 1).trimmed();
+                                // Shorten: remove "voxl-" prefix and "-server" suffix
+                                if (name.startsWith(QLatin1String("voxl-")))
+                                    name.remove(0, 5);
+                                if (name.endsWith(QLatin1String("-server")))
+                                    name.chop(7);
+                                if (name.length() > 12)
+                                    name = name.left(11) + QLatin1Char('+');
+                                svcLines.append(QStringLiteral("%1:%2%")
+                                    .arg(name).arg(pct, 0, 'f', 0));
+                            }
+                        }
+                    }
+                }
+
+                m_currentStatus.voxlTempC     = bestCpuTemp;
+                m_currentStatus.voxlTopService = svcLines.join(QStringLiteral("  "));
+                emit statusUpdated(m_currentStatus);
+                proc->deleteLater();
+            });
+    connect(proc, &QProcess::errorOccurred, this, [proc](QProcess::ProcessError) {
+        proc->deleteLater();
+    });
+
+    const QStringList args = {
+        QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=no"),
+        QStringLiteral("-o"), QStringLiteral("UserKnownHostsFile=/dev/null"),
+        QStringLiteral("-o"), QStringLiteral("ConnectTimeout=5"),
+        QStringLiteral("root@") + m_droneHost,
+        cmd
+    };
+    proc->start(QStringLiteral("ssh"), args);
 }
 
 void DroneController::stopMapperPortalWatchdog()
@@ -1142,23 +1344,18 @@ void DroneController::onMapperRenderReceived(const QString &name, int format, co
             for (const MapperPathPoint &point : points)
                 closestPointToTargetM = qMin(closestPointToTargetM, (point.positionFrd - target.frdPosition).length());
 
-            const float planGoalToleranceM = qMax(1.0f, target.acceptanceRadiusM + 0.5f);
-            if (closestPointToTargetM > planGoalToleranceM) {
-                if (!m_mapperPlanMismatchWarnedForCurrentTarget || m_mapperDebugTimer.elapsed() > 1000) {
-                    emit warningIssued(QStringLiteral(
-                                           "Mapper plan render does not match waypoint %1/%2 yet: closest plan point is %3 m from target (need <= %4 m). Waiting before follow_path.")
-                                           .arg(m_currentMissionItem + 1)
-                                           .arg(m_mapperMission.size())
-                                           .arg(closestPointToTargetM, 0, 'f', 2)
-                                           .arg(planGoalToleranceM, 0, 'f', 2));
-                    m_mapperPlanMismatchWarnedForCurrentTarget = true;
-                    m_mapperDebugTimer.restart();
-                }
-                return;
-            }
+            // Inform about plan quality but never block follow_path on render distance.
+            // The mapper always plans as close as it can — blocking here causes the drone
+            // to hang on a waypoint whenever the mapper can't reach it exactly.
+            emit messageReceived(QStringLiteral(
+                "Mapper plan received for waypoint %1/%2: %3 pts, closest point %4 m from target.")
+                    .arg(m_currentMissionItem + 1)
+                    .arg(m_mapperMission.size())
+                    .arg(points.size())
+                    .arg(closestPointToTargetM, 0, 'f', 2));
 
             m_mapperPlanReceivedForCurrentTarget = true;
-            issueMapperFollowForCurrentWaypoint(QStringLiteral("%1 point mapper plan from %2, closest point %3 m from target")
+            issueMapperFollowForCurrentWaypoint(QStringLiteral("%1 pt plan from %2, closest %3 m to target")
                                                     .arg(points.size())
                                                     .arg(name.trimmed().isEmpty() ? QStringLiteral("unnamed plan") : name.trimmed())
                                                     .arg(closestPointToTargetM, 0, 'f', 2));
@@ -1214,13 +1411,25 @@ void DroneController::onMapperTick()
                                      .arg(target.frdPosition.z(), 0, 'f', 2));
             m_mapperDebugTimer.restart();
         }
-        if (!m_mapperPlanReceivedForCurrentTarget && m_mapperStateTimer.elapsed() > 5000) {
-            emit warningIssued(QStringLiteral(
-                                   "Mapper waypoint %1/%2 has no matching plan after %3 s. Not sending follow_path until a plan reaches the target.")
-                                   .arg(m_currentMissionItem + 1)
-                                   .arg(m_mapperMission.size())
-                                   .arg(m_mapperStateTimer.elapsed() / 1000.0, 0, 'f', 1));
-            m_mapperStateTimer.restart();
+        // After 3 s with no plan render, re-send plan_to in case the mapper dropped it.
+        // After 6 s still nothing, force follow_path anyway so the mission isn't blocked.
+        if (!m_mapperPlanReceivedForCurrentTarget) {
+            const qint64 elapsed = m_mapperStateTimer.elapsed();
+            if (elapsed > 6000) {
+                emit warningIssued(QStringLiteral(
+                    "Mapper waypoint %1/%2: no plan render after %3 s — forcing follow_path.")
+                        .arg(m_currentMissionItem + 1).arg(m_mapperMission.size())
+                        .arg(elapsed / 1000.0, 0, 'f', 1));
+                issueMapperFollowForCurrentWaypoint(
+                    QStringLiteral("forced follow_path after %1 ms with no render").arg(elapsed));
+            } else if (elapsed > 3000 && (elapsed / 3000) > ((elapsed - 200) / 3000)) {
+                // Re-send plan_to once at the 3 s mark to recover from a dropped command.
+                emit messageReceived(QStringLiteral(
+                    "Mapper waypoint %1/%2: retrying plan_to at %3 s.")
+                        .arg(m_currentMissionItem + 1).arg(m_mapperMission.size())
+                        .arg(elapsed / 1000.0, 0, 'f', 1));
+                m_mapperClient->planToFrd(target.frdPosition);
+            }
         }
         return;
     }
@@ -1251,7 +1460,7 @@ void DroneController::onMapperTick()
                                      .arg(target.frdPosition.z(), 0, 'f', 2));
             m_mapperDebugTimer.restart();
         }
-        if (distance <= target.acceptanceRadiusM && speed < 0.35f) {
+        if (distance <= target.acceptanceRadiusM && speed < 0.8f) {
             emit messageReceived(QStringLiteral(
                                      "Mapper waypoint %1/%2 acceptance reached: distance %3 m <= %4 m, speed %5 m/s.")
                                      .arg(m_currentMissionItem + 1)
@@ -1271,9 +1480,30 @@ void DroneController::onMapperTick()
             } else {
                 advanceMapperMission();
             }
-        } else if (m_mapperStateTimer.elapsed() > 120000) {
-            emit warningIssued(QString("Mapper waypoint %1 has been active for over 120 seconds.").arg(m_currentMissionItem + 1));
-            m_mapperStateTimer.restart();
+        } else {
+            // Periodic progress warning every 30 s.
+            if (m_mapperStateTimer.elapsed() > 30000) {
+                emit warningIssued(QStringLiteral(
+                    "Mapper waypoint %1/%2 still not reached after %3 s (distance %4 m, speed %5 m/s).")
+                        .arg(m_currentMissionItem + 1)
+                        .arg(m_mapperMission.size())
+                        .arg(m_waypointTotalTimer.elapsed() / 1000)
+                        .arg((m_mapperPositionFrd - target.frdPosition).length(), 0, 'f', 2)
+                        .arg(m_mapperVelocityFrd.length(), 0, 'f', 2));
+                m_mapperStateTimer.restart();
+            }
+            // Hard abort if the waypoint has not been reached within the safety timeout.
+            // This prevents the drone from hanging indefinitely on a single leg when
+            // VIO drifts or an obstacle blocks the path permanently.
+            constexpr qint64 kWaypointAbortTimeoutMs = 90000; // 90 s per waypoint
+            if (m_waypointTotalTimer.elapsed() > kWaypointAbortTimeoutMs) {
+                finishMapperMission(QStringLiteral(
+                    "Mission aborted: waypoint %1/%2 not reached within %3 s safety timeout.")
+                        .arg(m_currentMissionItem + 1)
+                        .arg(m_mapperMission.size())
+                        .arg(kWaypointAbortTimeoutMs / 1000));
+                return;
+            }
         }
         return;
     }
@@ -1295,6 +1525,10 @@ void DroneController::advanceMapperMission()
         finishMapperMission(QStringLiteral("Mapper mission complete"));
         return;
     }
+    // Do NOT send stop_following here — it puts the mapper into an idle/hover
+    // state that can prevent the next plan_to from being executed.  The new
+    // plan_to command naturally supersedes the current trajectory on the mapper
+    // side, so issuing stop_following between legs is unnecessary and harmful.
     emit messageReceived(QStringLiteral("Mapper advancing from waypoint %1 to %2/%3.")
                              .arg(completedWaypoint)
                              .arg(m_currentMissionItem + 1)
@@ -1304,7 +1538,7 @@ void DroneController::advanceMapperMission()
 
 void DroneController::commandCurrentMapperWaypoint()
 {
-    if (!m_mapperClient || !m_mapperClient->isConnected())
+    if (!m_mapperClient || !m_mapperClient->isPlanConnected())
         return;
     if (m_currentMissionItem < 0 || m_currentMissionItem >= m_mapperMission.size())
         return;
@@ -1317,6 +1551,7 @@ void DroneController::commandCurrentMapperWaypoint()
     m_mapperMissionState = MapperMissionState::Planning;
     m_mapperStateTimer.restart();
     m_mapperDebugTimer.restart();
+    m_waypointTotalTimer.restart();
     emit missionStatusChanged(QString("Planning mapper waypoint %1/%2: FRD (%3, %4, %5)")
                                   .arg(m_currentMissionItem + 1)
                                   .arg(m_mapperMission.size())
@@ -1350,7 +1585,7 @@ void DroneController::issueMapperFollowForCurrentWaypoint(const QString &reason)
 {
     if (m_mapperFollowIssuedForCurrentTarget)
         return;
-    if (!m_mapperClient || !m_mapperClient->isConnected())
+    if (!m_mapperClient || !m_mapperClient->isPlanConnected())
         return;
     if (m_currentMissionItem < 0 || m_currentMissionItem >= m_mapperMission.size())
         return;

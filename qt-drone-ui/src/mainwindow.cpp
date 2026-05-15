@@ -1,5 +1,4 @@
 #include "mainwindow.h"
-#include "widgets/dashboardwidget.h"
 #include "widgets/camerafeedwidget.h"
 #include "widgets/pathplannerwidget.h"
 #include "widgets/recordedpathswidget.h"
@@ -34,15 +33,19 @@ MainWindow::MainWindow(QWidget *parent)
     , m_connectionStatusText(nullptr)
     , m_contentStack(nullptr)
     , m_mainSplitter(nullptr)
-    , m_dashboardWidget(nullptr)
     , m_cameraFeedWidget(nullptr)
     , m_pathPlannerWidget(nullptr)
     , m_recordedPathsWidget(nullptr)
     , m_recordedVideosWidget(nullptr)
     , m_droneStatusWidget(nullptr)
     , m_droneController(nullptr)
+    , m_flightLogger(nullptr)
+    , m_volumeManager(nullptr)
+    , m_volumeCombo(nullptr)
+    , m_newVolumeButton(nullptr)
+    , m_logButton(nullptr)
     , m_drawerOpen(true)
-    , m_activeView("home")
+    , m_activeView("camera")
 {
     setWindowTitle("OptiTrack Drone Control - Modal AI Starling 2 Max");
     setMinimumSize(1200, 800);
@@ -50,7 +53,20 @@ MainWindow::MainWindow(QWidget *parent)
     
     // Initialize drone controller
     m_droneController = new DroneController(this);
-    
+
+    // Initialize volume manager (loads registry from disk)
+    m_volumeManager = new VolumeManager(this);
+
+    // Initialize flight telemetry logger
+    m_flightLogger = new FlightLogger(this);
+
+    // Push active volume dirs into logger on startup if one is already saved.
+    if (m_volumeManager->hasActiveVolume()) {
+        m_flightLogger->setVolumeFlightDirs(
+            m_volumeManager->activeFlightsTelemetryDir(),
+            m_volumeManager->activeTrajectoriesDir());
+    }
+
     setupUI();
     connectSignals();
     
@@ -280,7 +296,6 @@ void MainWindow::setupNavigationBar()
     };
     
     QList<NavItem> navItems = {
-        {"Home", "●", "Dashboard overview"},
         {"Live Camera", "◐", "Real-time camera feed"}, 
         {"Mission", "◢", "Plan and execute missions"},
         {"Saved Paths", "◫", "View saved flight paths"},
@@ -408,34 +423,69 @@ void MainWindow::setupMainContent()
     // Create content stack
     m_contentStack = new QStackedWidget;
     
-    // Index 0: Home - Dashboard
-    m_dashboardWidget = new DashboardWidget;
-    m_contentStack->addWidget(m_dashboardWidget);
-    
-    // Index 1: Live Camera
+    // Index 0: Live Camera
     m_cameraFeedWidget = new CameraFeedWidget;
     m_contentStack->addWidget(m_cameraFeedWidget);
     
-    // Index 2: Mission
+    // Index 1: Mission
     m_pathPlannerWidget = new PathPlannerWidget;
     m_pathPlannerWidget->setDroneController(m_droneController);  // Connect drone controller
     m_contentStack->addWidget(m_pathPlannerWidget);
     
-    // Index 3: Flight History (Recorded Paths)
+    // Index 2: Flight History (Recorded Paths)
     m_recordedPathsWidget = new RecordedPathsWidget;
     m_contentStack->addWidget(m_recordedPathsWidget);
     
-    // Index 4: Media Library (Recorded Videos)
+    // Index 3: Media Library (Recorded Videos)
     m_recordedVideosWidget = new RecordedVideosWidget;
     m_contentStack->addWidget(m_recordedVideosWidget);
     
-    // Index 5: System Status (Drone Status)
+    // Index 4: System Status (Drone Status)
     m_droneStatusWidget = new DroneStatusWidget;
     m_contentStack->addWidget(m_droneStatusWidget);
 }
 
 void MainWindow::setupStatusBar()
 {
+    // Volume selector — always visible so the user can identify and switch the
+    // active flight volume without entering a settings page.
+    m_volumeCombo = new QComboBox;
+    m_volumeCombo->setMinimumWidth(160);
+    m_volumeCombo->setMaximumWidth(220);
+    m_volumeCombo->setToolTip("Active volume — flight logs, trajectories and maps are saved here");
+    m_volumeCombo->setStyleSheet(
+        "QComboBox { background:#374151; color:#e5e7eb; border:1px solid #4b5563;"
+        "            padding:1px 4px; border-radius:3px; font-size:11px; }"
+        "QComboBox::drop-down { border:none; }"
+        "QComboBox QAbstractItemView { background:#374151; color:#e5e7eb; "
+        "    selection-background-color:#007acc; }");
+
+    m_newVolumeButton = new QPushButton(QStringLiteral("+ Volume"));
+    m_newVolumeButton->setToolTip("Create a new flight volume");
+    m_newVolumeButton->setFixedHeight(20);
+    m_newVolumeButton->setStyleSheet(
+        "QPushButton { background:#374151; color:#93c5fd; border:1px solid #4b5563;"
+        "              padding:0 6px; border-radius:3px; font-size:11px; }"
+        "QPushButton:hover { background:#4b5563; }");
+
+    rebuildVolumeCombo();
+
+    m_logButton = new QPushButton(QStringLiteral("\u25CF Log"));
+    m_logButton->setToolTip("Start or stop flight telemetry and trajectory logging");
+    m_logButton->setCheckable(true);
+    m_logButton->setChecked(false);
+    m_logButton->setFixedHeight(20);
+    m_logButton->setStyleSheet(
+        "QPushButton { background:#374151; color:#9ca3af; border:1px solid #4b5563;"
+        "              padding:0 6px; border-radius:3px; font-size:11px; }"
+        "QPushButton:checked { background:#065f46; color:#34d399; border-color:#34d399; }"
+        "QPushButton:hover { background:#4b5563; }");
+
+    statusBar()->addPermanentWidget(new QLabel(QStringLiteral("Volume:")));
+    statusBar()->addPermanentWidget(m_volumeCombo);
+    statusBar()->addPermanentWidget(m_newVolumeButton);
+    statusBar()->addPermanentWidget(m_logButton);
+
     statusBar()->showMessage("Ready - Disconnected from drone");
     statusBar()->setStyleSheet(
         "QStatusBar { "
@@ -455,18 +505,6 @@ void MainWindow::connectSignals()
             this, &MainWindow::onDrawerToggled);
     connect(m_reopenSidebarButton, &QPushButton::clicked,
             this, &MainWindow::onDrawerToggled);
-    
-    // Dashboard navigation signals
-    connect(m_dashboardWidget, &DashboardWidget::navigateToCamera,
-            this, [this]() { setActiveView("camera"); });
-    connect(m_dashboardWidget, &DashboardWidget::navigateToPlanner,
-            this, [this]() { setActiveView("planner"); });
-    connect(m_dashboardWidget, &DashboardWidget::navigateToHistory,
-            this, [this]() { setActiveView("paths"); });
-    connect(m_dashboardWidget, &DashboardWidget::navigateToMedia,
-            this, [this]() { setActiveView("videos"); });
-    connect(m_dashboardWidget, &DashboardWidget::navigateToStatus,
-            this, [this]() { setActiveView("status"); });
     
     // Path planner signals
     connect(m_pathPlannerWidget, &PathPlannerWidget::pathSaved,
@@ -503,11 +541,28 @@ void MainWindow::connectSignals()
                     connected ? "color: #10b981; font-size: 12px;" : "color: #ef4444; font-size: 12px;");
                 m_connectionStatusText->setText(connected ? "Drone Connected" : "Drone Disconnected");
                 m_droneStatusWidget->setConnectionStatus(connected);
-                if (connected && m_cameraFeedWidget)
-                    m_cameraFeedWidget->setVoxlHost(m_droneController->voxlHost());
+                if (connected) {
+                    if (m_cameraFeedWidget)
+                        m_cameraFeedWidget->setVoxlHost(m_droneController->voxlHost());
+                    // Logging is started manually by the user via m_logButton.
+                } else {
+                    // Stop logging automatically when the drone disconnects.
+                    if (m_flightLogger->isLogging()) {
+                        m_flightLogger->endSession();
+                        if (m_logButton) {
+                            m_logButton->setChecked(false);
+                            m_logButton->setText(QStringLiteral("\u25CF Log"));
+                        }
+                        if (m_droneStatusWidget)
+                            m_droneStatusWidget->addSystemMessage(
+                                QStringLiteral("Flight log stopped: drone disconnected."), "info");
+                    }
+                }
             });
     connect(m_droneController, &DroneController::statusUpdated,
             m_droneStatusWidget, &DroneStatusWidget::updateDroneStatus);
+    connect(m_droneController, &DroneController::statusUpdated,
+            m_flightLogger, &FlightLogger::logStatus);
     connect(m_droneController, &DroneController::messageReceived,
             this, [this](const QString &message) {
                 if (m_droneStatusWidget->addSystemMessage(message, "info"))
@@ -536,13 +591,56 @@ void MainWindow::connectSignals()
             m_droneController, &DroneController::forceDisarm);
     connect(m_droneStatusWidget, &DroneStatusWidget::flightTerminationRequested,
             m_droneController, &DroneController::flightTermination);
+
+    // --- Volume selector ---
+    connect(m_newVolumeButton, &QPushButton::clicked,
+            this, &MainWindow::onNewVolumeRequested);
+    connect(m_volumeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::onVolumeComboChanged);
+
+    connect(m_volumeManager, &VolumeManager::volumeListChanged,
+            this, &MainWindow::rebuildVolumeCombo);
+    connect(m_volumeManager, &VolumeManager::activeVolumeChanged,
+            this, &MainWindow::applyActiveVolume);
+    connect(m_volumeManager, &VolumeManager::activeVolumeCleared,
+            this, [this]() {
+                // Revert to default log dirs
+                m_flightLogger->setVolumeFlightDirs({}, {});
+                m_pathPlannerWidget->setPlannerPathsDirectory({});
+                statusBar()->showMessage(QStringLiteral("Volume cleared — saving to default logs/"), 4000);
+            });
+
+    // --- Trajectory: connect pose updates to the logger (2 Hz sampler) ---
+    connect(m_droneController, &DroneController::mapperPoseUpdated,
+            m_flightLogger, &FlightLogger::onPoseUpdated);
+
+    // --- Manual logging start/stop button ---
+    connect(m_logButton, &QPushButton::toggled,
+            this, [this](bool checked) {
+                if (checked) {
+                    m_flightLogger->startSession();
+                    m_logButton->setText(QStringLiteral("\u25A0 Logging"));
+                    if (m_droneStatusWidget)
+                        m_droneStatusWidget->addSystemMessage(
+                            QString("Flight log started: %1").arg(m_flightLogger->telemetryFilePath()), "info");
+                    statusBar()->showMessage(
+                        QString("Logging started: %1").arg(m_flightLogger->telemetryFilePath()), 5000);
+                } else {
+                    m_flightLogger->endSession();
+                    m_logButton->setText(QStringLiteral("\u25CF Log"));
+                    if (m_droneStatusWidget)
+                        m_droneStatusWidget->addSystemMessage(
+                            QStringLiteral("Flight log stopped."), "info");
+                    statusBar()->showMessage(QStringLiteral("Logging stopped."), 4000);
+                }
+            });
 }
 
 void MainWindow::onNavigationItemClicked(int index)
 {
     m_contentStack->setCurrentIndex(index);
     
-    QStringList viewNames = {"home", "camera", "planner", "paths", "videos", "status"};
+    QStringList viewNames = {"camera", "planner", "paths", "videos", "status"};
     if (index >= 0 && index < viewNames.size()) {
         m_activeView = viewNames[index];
     }
@@ -570,8 +668,8 @@ void MainWindow::onPathLoadRequested(const QVector<QVector3D> &points)
 {
     m_draftPoints = points;
     m_pathPlannerWidget->loadPoints(points);
-    m_contentStack->setCurrentIndex(2); // Switch to path planner
-    m_navigationList->setCurrentRow(2);
+    m_contentStack->setCurrentIndex(1);
+    m_navigationList->setCurrentRow(1);
     m_activeView = "planner";
 }
 
@@ -582,8 +680,8 @@ void MainWindow::onPathJsonLoadRequested(const QString &absoluteJsonPath)
     else
         statusBar()->showMessage(QStringLiteral("Failed to load %1").arg(absoluteJsonPath), 5000);
 
-    m_contentStack->setCurrentIndex(2);
-    m_navigationList->setCurrentRow(2);
+    m_contentStack->setCurrentIndex(1);
+    m_navigationList->setCurrentRow(1);
     m_activeView = "planner";
 }
 
@@ -610,10 +708,91 @@ void MainWindow::setActiveView(const QString &viewName)
 {
     m_activeView = viewName;
     
-    QStringList viewNames = {"home", "camera", "planner", "paths", "videos", "status"};
+    QStringList viewNames = {"camera", "planner", "paths", "videos", "status"};
     int index = viewNames.indexOf(viewName);
     if (index >= 0) {
         m_contentStack->setCurrentIndex(index);
         m_navigationList->setCurrentRow(index);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Volume selector helpers
+// ---------------------------------------------------------------------------
+
+void MainWindow::rebuildVolumeCombo()
+{
+    if (!m_volumeCombo)
+        return;
+
+    // Block combo signals while rebuilding to avoid spurious onVolumeComboChanged calls.
+    const QSignalBlocker blocker(m_volumeCombo);
+    m_volumeCombo->clear();
+    m_volumeCombo->addItem(QStringLiteral("— No Volume —"), QString{});
+
+    const QList<VolumeManager::VolumeInfo> vols = m_volumeManager->volumes();
+    for (const VolumeManager::VolumeInfo &v : vols)
+        m_volumeCombo->addItem(v.name, v.id);
+
+    // Restore selection to the currently active volume.
+    const QString activeId = m_volumeManager->activeVolumeId();
+    if (!activeId.isEmpty()) {
+        const int idx = m_volumeCombo->findData(activeId);
+        if (idx >= 0)
+            m_volumeCombo->setCurrentIndex(idx);
+    }
+}
+
+void MainWindow::onVolumeComboChanged(int index)
+{
+    if (!m_volumeCombo)
+        return;
+
+    const QString id = m_volumeCombo->itemData(index).toString();
+    if (id.isEmpty()) {
+        m_volumeManager->clearActiveVolume();
+    } else {
+        m_volumeManager->setActiveVolume(id);
+    }
+}
+
+void MainWindow::onNewVolumeRequested()
+{
+    bool ok = false;
+    const QString name = QInputDialog::getText(
+        this,
+        QStringLiteral("Create Volume"),
+        QStringLiteral("Volume name (e.g. \"Lab Room 1\"):"),
+        QLineEdit::Normal,
+        {},
+        &ok);
+
+    if (!ok || name.trimmed().isEmpty())
+        return;
+
+    const QString id = m_volumeManager->createVolume(name.trimmed(), {});
+    if (id.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("Failed to create volume"), 4000);
+        return;
+    }
+
+    // Auto-select the newly created volume.
+    m_volumeManager->setActiveVolume(id);
+    statusBar()->showMessage(QStringLiteral("Volume \"%1\" created and selected").arg(name.trimmed()), 4000);
+}
+
+void MainWindow::applyActiveVolume(const VolumeManager::VolumeInfo &volume)
+{
+    // Direct the logger and path planner to the volume's subdirectories.
+    m_flightLogger->setVolumeFlightDirs(
+        m_volumeManager->activeFlightsTelemetryDir(),
+        m_volumeManager->activeTrajectoriesDir());
+
+    m_pathPlannerWidget->setPlannerPathsDirectory(m_volumeManager->activePathsDir());
+
+    statusBar()->showMessage(
+        QStringLiteral("Volume \"%1\" active — logs/paths in %2")
+            .arg(volume.name, m_volumeManager->activeVolumeDir()),
+        5000);
+}
+

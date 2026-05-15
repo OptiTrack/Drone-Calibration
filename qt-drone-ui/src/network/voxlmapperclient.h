@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QColor>
 #include <QTcpSocket>
+#include <QTimer>
 #include <QVector3D>
 #include <QVector>
 
@@ -22,6 +23,12 @@ public:
 
     void connectToMapper(const QString &host, int port = 80);
     void disconnectFromMapper();
+    /// Cycle only the /mesh WebSocket without touching /plan or /pose.
+    /// Call after clear_map so we hold a fresh socket for future commands.
+    void reconnectMesh();
+    /// Cycle only the /pose WebSocket. Called automatically on disconnect;
+    /// can also be called manually to recover a dropped pose stream.
+    void reconnectPose();
     bool isConnected() const;
     bool isPlanConnected() const { return m_planReady; }
     bool isMeshConnected() const { return m_meshReady; }
@@ -71,6 +78,9 @@ private:
     bool m_meshReady;
     bool m_poseReady;
     bool m_connected;
+    QTimer *m_poseReconnectTimer;
+    bool m_hasLastPose;
+    QVector3D m_lastPoseFrd;
 };
 
 #endif // VOXLMAPPERCLIENT_H

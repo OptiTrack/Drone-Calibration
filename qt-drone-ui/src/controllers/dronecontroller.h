@@ -74,6 +74,9 @@ public:
     void abortMission();
     void clearMission();
     void clearMapperMap();
+    /// SSH-restart voxl-mapper on the drone, then reconnect the mapper WebSocket.
+    /// More reliable than clear_map when the mapper service is stuck or unresponsive.
+    void restartMapperService();
     void loadMapperMap(const QString &remotePath = QString());
     /// clear_map on VOXL, then load_map after a short delay (avoids stacking two maps in mapper + garbled mesh in the UI).
     void replaceMapperMap(const QString &remotePath = QString());
@@ -129,6 +132,7 @@ private slots:
     void onMapperTick();
     void onMapperPortalWatchdogTimeout();
     void onMapperBundleUploadForRestoreFinished(bool success, const QString &message);
+    void onThermalPollTimer();
 
 private:
     void initializeConnection();
@@ -188,6 +192,8 @@ private:
     QElapsedTimer m_mapperStateTimer;
     QElapsedTimer m_mapperHoldTimer;
     QElapsedTimer m_mapperDebugTimer;
+    /// Tracks total elapsed time from when a waypoint is commanded (not reset by debug/warning cycles).
+    QElapsedTimer m_waypointTotalTimer;
     QVector3D m_mapperPositionFrd;
     QVector3D m_mapperVelocityFrd;
     bool m_haveMapperPose;
@@ -209,10 +215,14 @@ private:
     QString m_pendingMapperBundleLocalDir;
     QString m_pendingBundleRestoreRemote;
     QTimer *m_mapperPortalWatchdog;
+    QTimer *m_thermalPollTimer;
     
     // Manual control state
     bool m_manualControlActive;
     QTimer *m_manualControlTimer;
+
+    /// Last known flight mode — used to detect unexpected autonomous-to-manual transitions.
+    QString m_prevFlightMode;
 };
 
 #endif // DRONECONTROLLER_H

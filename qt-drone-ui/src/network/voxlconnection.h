@@ -57,6 +57,9 @@ public:
     void runMission(const QString &missionFileName);
     void getMissionStatus();
     void cancelMission();
+    /// Run an arbitrary command on the drone via SSH.
+    /// Emits sshCommandFinished(success, stdout+stderr) when done.
+    void sshRunCommand(const QString &remoteCommand);
 
     // Configuration
     void setConnectionType(ConnectionType type) { m_connectionType = type; }
@@ -83,6 +86,7 @@ signals:
     void missionStatusReceived(const QJsonObject &status);
     void missionCompleted();
     void missionCancelled();
+    void sshCommandFinished(bool success, const QString &output);
 
 private slots:
     void onTcpConnected();

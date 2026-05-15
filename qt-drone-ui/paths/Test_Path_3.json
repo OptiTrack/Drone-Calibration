@@ -1,0 +1,88 @@
+{
+    "created_at": "2026-05-12T12:22:38",
+    "modified_at": "2026-05-12T12:22:38",
+    "name": "Test Path 3",
+    "version": 1,
+    "waypoints": [
+        {
+            "acceptance_radius": 0.5,
+            "hold_s": 2,
+            "lat": 0,
+            "local_position": {
+                "x": -2.1447677612304688,
+                "y": -2.5627589225769043,
+                "z": 2
+            },
+            "lon": 0,
+            "pass_through": false,
+            "rel_alt_m": 2,
+            "sequence": 1,
+            "type": "NAV_WAYPOINT",
+            "yaw_deg": 0
+        },
+        {
+            "acceptance_radius": 0.5,
+            "hold_s": 2,
+            "lat": 0,
+            "local_position": {
+                "x": -2.1822314262390137,
+                "y": 2.650484085083008,
+                "z": 2
+            },
+            "lon": 0,
+            "pass_through": false,
+            "rel_alt_m": 2,
+            "sequence": 2,
+            "type": "NAV_WAYPOINT",
+            "yaw_deg": 0
+        },
+        {
+            "acceptance_radius": 0.5,
+            "hold_s": 2,
+            "lat": 0,
+            "local_position": {
+                "x": 0.6880850791931152,
+                "y": -0.15548968315124512,
+                "z": 2
+            },
+            "lon": 0,
+            "pass_through": false,
+            "rel_alt_m": 2,
+            "sequence": 3,
+            "type": "NAV_WAYPOINT",
+            "yaw_deg": 0
+        },
+        {
+            "acceptance_radius": 0.5,
+            "hold_s": 2,
+            "lat": 0,
+            "local_position": {
+                "x": 3.8824613094329834,
+                "y": 2.638101816177368,
+                "z": 2
+            },
+            "lon": 0,
+            "pass_through": false,
+            "rel_alt_m": 2,
+            "sequence": 4,
+            "type": "NAV_WAYPOINT",
+            "yaw_deg": 0
+        },
+        {
+            "acceptance_radius": 0.5,
+            "hold_s": 2,
+            "lat": 0,
+            "local_position": {
+                "x": 3.778341054916382,
+                "y": -2.5698163509368896,
+                "z": 2
+            },
+            "lon": 0,
+            "pass_through": false,
+            "rel_alt_m": 2,
+            "sequence": 5,
+            "type": "NAV_WAYPOINT",
+            "yaw_deg": 0
+        }
+    ]
+}

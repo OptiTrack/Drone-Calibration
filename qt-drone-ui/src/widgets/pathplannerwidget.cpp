@@ -2801,6 +2801,10 @@ void PathPlannerWidget::setupTopBar()
     QAction *uploadMapperMapAction = pathMenu->addAction("Upload Mesh Export File...");
     QAction *saveMapperMapAction = pathMenu->addAction("Save VOXL Map...");
     QAction *clearMapperMapAction = pathMenu->addAction("Clear VOXL Map");
+    QAction *restartMapperAction  = pathMenu->addAction("Restart Mapper Service (SSH)");
+    restartMapperAction->setToolTip(
+        "SSH into the drone and run 'voxl-restart voxl-mapper'. "
+        "Use this when Clear Map has no effect or the mapper service is unresponsive.");
     QAction *planHomeAction = pathMenu->addAction("Plan VOXL Home (place H at drone pose)");
     planHomeAction->setToolTip(QStringLiteral(
         "Sends plan_home to voxl-mapper (home goal is fixed in mapper at (0,0,-1.5) per ModalAI docs — see voxl-mapper README). "
@@ -2878,6 +2882,20 @@ void PathPlannerWidget::setupTopBar()
         }
         if (QMessageBox::question(this, "Clear VOXL Map", "Clear the current VOXL Mapper map?") == QMessageBox::Yes) {
             m_droneController->clearMapperMap();
+            clearMapperVisualization();
+        }
+    });
+    connect(restartMapperAction, &QAction::triggered, this, [this]() {
+        if (!m_droneController || !m_droneController->isConnected()) {
+            QMessageBox::warning(this, "Restart Mapper Service",
+                                 "Connect to the drone first.");
+            return;
+        }
+        const auto btn = QMessageBox::question(this, "Restart Mapper Service",
+            "SSH into the drone and restart voxl-mapper?\n\n"
+            "The live map stream will be interrupted for ~4 seconds while the service restarts.");
+        if (btn == QMessageBox::Yes) {
+            m_droneController->restartMapperService();
             clearMapperVisualization();
         }
     });
@@ -3053,7 +3071,7 @@ void PathPlannerWidget::setupControls()
     m_defaultHoldSpinBox->setDecimals(1);
     m_defaultHoldSpinBox->setSingleStep(0.5);
     m_defaultHoldSpinBox->setSuffix(" s");
-    m_defaultHoldSpinBox->setValue(0.0);
+    m_defaultHoldSpinBox->setValue(2.0);
 
     m_defaultYawSpinBox = new QDoubleSpinBox(defaultsPanel);
     m_defaultYawSpinBox->setRange(-180.0, 180.0);
@@ -3330,7 +3348,7 @@ void PathPlannerWidget::onSavePath()
         pathName = pathName.trimmed();
     }
 
-    const QString pathsDir = plannerPathsDirectory();
+    const QString pathsDir = m_plannerPathsDir.isEmpty() ? plannerPathsDirectory() : m_plannerPathsDir;
     QDir dir(pathsDir);
 
     const QString sanitizedName = FlightPath::fileBaseFromDisplayName(pathName);
@@ -3418,7 +3436,7 @@ void PathPlannerWidget::onSavePath()
 
 void PathPlannerWidget::onLoadPath()
 {
-    const QString startDir = plannerPathsDirectory();
+    const QString startDir = m_plannerPathsDir.isEmpty() ? plannerPathsDirectory() : m_plannerPathsDir;
     QString fileName = QFileDialog::getOpenFileName(this,
                                                     "Load Path",
                                                     startDir,
@@ -4209,6 +4227,11 @@ bool PathPlannerWidget::loadFromJson(const QString &path)
     return true;
 }
 
+
+void PathPlannerWidget::setPlannerPathsDirectory(const QString &dir)
+{
+    m_plannerPathsDir = dir;
+}
 
 void PathPlannerWidget::setDroneController(DroneController *controller)
 {

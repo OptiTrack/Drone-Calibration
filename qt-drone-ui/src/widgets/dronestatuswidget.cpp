@@ -8,6 +8,7 @@ DroneStatusWidget::DroneStatusWidget(QWidget *parent)
     : QWidget(parent)
     , ui(new Ui::DroneStatusWidget)
     , m_hideMapperMeshMessagesCheckBox(nullptr)
+    , m_healthLabel(nullptr)
     , m_statusUpdateTimer(nullptr)
 {
     ui->setupUi(this);
@@ -30,7 +31,17 @@ DroneStatusWidget::DroneStatusWidget(QWidget *parent)
     m_currentStatus.systemStatus = "DISCONNECTED";
     
     setupConnections();
-    
+
+    // System health bar — shows PX4 CPU load and VOXL2 thermal at a glance.
+    m_healthLabel = new QLabel(QStringLiteral("CPU: --  |  VOXL Temp: --"), this);
+    m_healthLabel->setAlignment(Qt::AlignCenter);
+    m_healthLabel->setStyleSheet(
+        "QLabel { background: #1f2937; color: #9ca3af; "
+        "border: 1px solid #374151; border-radius: 4px; "
+        "padding: 4px 8px; font-size: 12px; font-family: monospace; }");
+    m_healthLabel->setFixedHeight(28);
+    ui->mainLayout->insertWidget(0, m_healthLabel);
+
     // Set up timers
     m_statusUpdateTimer = new QTimer(this);
     m_statusUpdateTimer->setInterval(1000); // Update every second
@@ -79,6 +90,48 @@ void DroneStatusWidget::updateDroneStatus(const DroneStatus &status)
     updateFlightDisplay();
     updatePositionDisplay();
     updateControlsDisplay();
+
+    // System health bar
+    if (m_healthLabel) {
+        if (!status.connected) {
+            m_healthLabel->setText(QStringLiteral("CPU: --  |  VOXL Temp: --"));
+            m_healthLabel->setStyleSheet(
+                "QLabel { background: #1f2937; color: #9ca3af; "
+                "border: 1px solid #374151; border-radius: 4px; "
+                "padding: 4px 8px; font-size: 12px; font-family: monospace; }");
+        } else {
+            // PX4 load
+            const QString cpuText = (status.px4LoadPercent >= 0.0f)
+                ? QStringLiteral("PX4 Loop: %1%").arg(status.px4LoadPercent, 0, 'f', 0)
+                : QStringLiteral("PX4 Loop: --");
+
+            // VOXL thermal
+            QString tempText = QStringLiteral("VOXL: --");
+            QString tempColor = QStringLiteral("#9ca3af");
+            if (status.voxlTempC >= 0.0f) {
+                tempText = QStringLiteral("VOXL: %1°C").arg(status.voxlTempC, 0, 'f', 0);
+                if (status.voxlTempC >= 85.0f)
+                    tempColor = QStringLiteral("#ef4444"); // red
+                else if (status.voxlTempC >= 70.0f)
+                    tempColor = QStringLiteral("#f59e0b"); // amber
+                else
+                    tempColor = QStringLiteral("#34d399"); // green
+            }
+
+            // Top service
+            const QString svcText = status.voxlTopService.isEmpty()
+                ? QString()
+                : QStringLiteral("  |  Top: %1").arg(status.voxlTopService);
+
+            m_healthLabel->setText(QStringLiteral("%1  |  <font color='%2'>%3</font>%4")
+                                       .arg(cpuText, tempColor, tempText, svcText));
+            m_healthLabel->setTextFormat(Qt::RichText);
+            m_healthLabel->setStyleSheet(
+                "QLabel { background: #111827; color: #d1d5db; "
+                "border: 1px solid #374151; border-radius: 4px; "
+                "padding: 4px 8px; font-size: 12px; font-family: monospace; }");
+        }
+    }
 }
 
 void DroneStatusWidget::setConnectionStatus(bool connected)
