@@ -54,7 +54,14 @@ VOXLMapperClient::VOXLMapperClient(QObject *parent)
     , m_meshReady(false)
     , m_poseReady(false)
     , m_connected(false)
+    , m_poseReconnectTimer(new QTimer(this))
+    , m_hasLastPose(false)
+    , m_lastPoseFrd()
 {
+    m_poseReconnectTimer->setSingleShot(true);
+    m_poseReconnectTimer->setInterval(2000);
+    connect(m_poseReconnectTimer, &QTimer::timeout, this, &VOXLMapperClient::reconnectPose);
+
     auto wireSocket = [this](QTcpSocket &socket, const QString &path, QByteArray &buffer, bool &ready, const QString &name) {
         QTcpSocket *socketPtr = &socket;
         QByteArray *bufferPtr = &buffer;
@@ -70,6 +77,8 @@ VOXLMapperClient::VOXLMapperClient(QObject *parent)
             emit statusChanged(QString("VOXL Mapper %1 socket disconnected").arg(name));
             if (name == QLatin1String("mesh"))
                 emit meshConnectedChanged(false);
+            if (name == QLatin1String("pose") && !m_host.isEmpty())
+                m_poseReconnectTimer->start(); // auto-reconnect pose after 2 s
             updateConnectedState();
         });
         connect(socketPtr, &QTcpSocket::readyRead, this, [this, socketPtr, bufferPtr, readyPtr, name]() {
@@ -99,6 +108,7 @@ void VOXLMapperClient::connectToMapper(const QString &host, int port)
 
 void VOXLMapperClient::disconnectFromMapper()
 {
+    m_poseReconnectTimer->stop(); // don't reconnect after an intentional disconnect
     m_planSocket.disconnectFromHost();
     m_meshSocket.disconnectFromHost();
     m_poseSocket.disconnectFromHost();
@@ -108,12 +118,38 @@ void VOXLMapperClient::disconnectFromMapper()
     m_planBuffer.clear();
     m_meshBuffer.clear();
     m_poseBuffer.clear();
+    m_hasLastPose = false;
     updateConnectedState();
 }
 
 bool VOXLMapperClient::isConnected() const
 {
     return m_planReady && m_meshReady;
+}
+
+void VOXLMapperClient::reconnectMesh()
+{
+    // Close the stale mesh socket and reopen it.  Plan and pose sockets are
+    // left untouched so active path-following is not interrupted.
+    m_meshSocket.disconnectFromHost();
+    m_meshReady = false;
+    m_meshBuffer.clear();
+    openSocket(m_meshSocket, QStringLiteral("/mesh"));
+}
+
+void VOXLMapperClient::reconnectPose()
+{
+    if (m_host.isEmpty())
+        return;
+    m_poseSocket.disconnectFromHost();
+    // The disconnected signal fires synchronously above and restarts the timer;
+    // stop it immediately so we don't kill the new socket 2 seconds from now.
+    m_poseReconnectTimer->stop();
+    m_poseReady = false;
+    m_poseBuffer.clear();
+    m_hasLastPose = false; // reset sanity filter baseline after reconnect
+    emit statusChanged(QStringLiteral("VOXL Mapper pose socket reconnecting..."));
+    openSocket(m_poseSocket, QStringLiteral("/pose"));
 }
 
 void VOXLMapperClient::planToFrd(const QVector3D &targetFrd)
@@ -185,9 +221,11 @@ void VOXLMapperClient::openSocket(QTcpSocket &socket, const QString &)
 
 void VOXLMapperClient::sendHandshake(QTcpSocket &socket, const QString &path)
 {
+    const QByteArray host = m_host.toLatin1() + ":" + QByteArray::number(m_port);
     const QByteArray request =
-        "GET " + path.toLatin1() + " HTTP/1.1\r\n" +
-        "Host: " + m_host.toLatin1() + ":" + QByteArray::number(m_port) + "\r\n" +
+        "GET " + path.toLatin1() + " HTTP/1.1\r\n"
+        "Host: " + host + "\r\n"
+        "Origin: http://" + host + "\r\n"
         "Upgrade: websocket\r\n"
         "Connection: Upgrade\r\n"
         "Sec-WebSocket-Version: 13\r\n"
@@ -301,6 +339,17 @@ void VOXLMapperClient::handleSocketData(QTcpSocket &socket, QByteArray &buffer, 
             socket.disconnectFromHost();
             return;
         }
+        if (opcode == 0x9) {
+            // WebSocket ping — respond with pong (RFC 6455 §5.5.3) echoing the payload.
+            // Required: servers that send pings will close the connection if no pong arrives.
+            QByteArray pongFrame;
+            pongFrame.append(static_cast<char>(0x8A)); // FIN=1, opcode=0xA (pong)
+            pongFrame.append(static_cast<char>(static_cast<int>(payloadLength) & 0x7F));
+            if (!payload.isEmpty())
+                pongFrame.append(payload);
+            socket.write(pongFrame);
+            continue;
+        }
         if (opcode != 0x2)
             continue;
 
@@ -371,6 +420,22 @@ void VOXLMapperClient::handlePoseMessage(const QByteArray &payload)
                              readFloatLe(payload, offset + 16),
                              readFloatLe(payload, offset + 20));
 
+    // Sanity check: reject packets with non-finite values or implausibly large
+    // positions (> 100 m from origin — VOXL VIO resets if it drifts that far).
+    if (!std::isfinite(position.x()) || !std::isfinite(position.y()) || !std::isfinite(position.z()))
+        return;
+    if (position.length() > 100.0f)
+        return;
+
+    // Reject Z spikes: if Z jumps more than 5 m between consecutive packets
+    // it is almost certainly a VIO glitch (visible as huge spikes in telemetry).
+    constexpr float kMaxZJumpM = 5.0f;
+    if (m_hasLastPose && std::abs(position.z() - m_lastPoseFrd.z()) > kMaxZJumpM)
+        return;
+
+    m_lastPoseFrd = position;
+    m_hasLastPose = true;
+
     const float r00 = readFloatLe(payload, offset + 24);
     const float r10 = readFloatLe(payload, offset + 36);
     const float yawRad = std::atan2(r10, r00);
@@ -378,6 +443,10 @@ void VOXLMapperClient::handlePoseMessage(const QByteArray &payload)
     const QVector3D velocity(readFloatLe(payload, offset + 60),
                              readFloatLe(payload, offset + 64),
                              readFloatLe(payload, offset + 68));
+
+    if (!std::isfinite(velocity.x()) || !std::isfinite(velocity.y()) || !std::isfinite(velocity.z()))
+        return;
+
     emit poseReceived(position, velocity, yawRad);
 }
 

@@ -84,6 +84,11 @@ public:
     void setDronePoseLogical(const QVector3D &positionLogical, float yawDeg);
     void setMapperRenderData(const QVector<QVector3D> &positionsLogical, const QVector<QColor> &colors);
     void setMapperMeshData(const QVector<QVector3D> &positionsLogical, const QVector<QColor> &colors, const QVector<quint32> &triangleIndices);
+    const QVector<QVector3D> &mapperRenderPositionsLogical() const { return m_mapperRenderPositionsLogical; }
+    const QVector<QColor> &mapperRenderColors() const { return m_mapperRenderColors; }
+    const QVector<QVector3D> &mapperMeshPositionsLogical() const { return m_mapperMeshPositionsLogical; }
+    const QVector<QColor> &mapperMeshColors() const { return m_mapperMeshColors; }
+    const QVector<quint32> &mapperMeshTriangleIndices() const { return m_mapperMeshTriangleIndices; }
 
 signals:
     void waypointSelected(int id);
@@ -258,6 +263,10 @@ public:
     // Drone controller
     void setDroneController(DroneController *controller);
 
+    /// Override the directory used for saving/loading path JSON files.
+    /// Pass an empty string to fall back to the built-in plannerPathsDirectory().
+    void setPlannerPathsDirectory(const QString &dir);
+
     // Waypoint management
     void addWaypoint(const QVector3D &pos);
     void updateWaypoint(int id, const Waypoint &wp);
@@ -383,6 +392,7 @@ private:
     QString m_mapperMapBundleDir;
     QString m_backgroundBundleJsonPath;
     QString m_backgroundBundleFolderName;
+    QString m_plannerPathsDir; ///< Volume override; empty = use plannerPathsDirectory()
 
     QTimer *m_pathPreviewAnimationTimer;
     int m_pathPreviewWaypointIndex;

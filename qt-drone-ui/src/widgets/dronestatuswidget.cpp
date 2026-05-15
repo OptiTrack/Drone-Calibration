@@ -7,6 +7,8 @@
 DroneStatusWidget::DroneStatusWidget(QWidget *parent)
     : QWidget(parent)
     , ui(new Ui::DroneStatusWidget)
+    , m_hideMapperMeshMessagesCheckBox(nullptr)
+    , m_healthLabel(nullptr)
     , m_statusUpdateTimer(nullptr)
 {
     ui->setupUi(this);
@@ -23,12 +25,23 @@ DroneStatusWidget::DroneStatusWidget(QWidget *parent)
     m_currentStatus.groundSpeed = 0.0f;
     m_currentStatus.verticalSpeed = 0.0f;
     m_currentStatus.position = QVector3D(0, 0, 0);
+    m_currentStatus.positionIsMapperLocal = false;
     m_currentStatus.velocity = QVector3D(0, 0, 0);
     m_currentStatus.attitude = QVector3D(0, 0, 0);
     m_currentStatus.systemStatus = "DISCONNECTED";
     
     setupConnections();
-    
+
+    // System health bar — shows PX4 CPU load and VOXL2 thermal at a glance.
+    m_healthLabel = new QLabel(QStringLiteral("CPU: --  |  VOXL Temp: --"), this);
+    m_healthLabel->setAlignment(Qt::AlignCenter);
+    m_healthLabel->setStyleSheet(
+        "QLabel { background: #1f2937; color: #9ca3af; "
+        "border: 1px solid #374151; border-radius: 4px; "
+        "padding: 4px 8px; font-size: 12px; font-family: monospace; }");
+    m_healthLabel->setFixedHeight(28);
+    ui->mainLayout->insertWidget(0, m_healthLabel);
+
     // Set up timers
     m_statusUpdateTimer = new QTimer(this);
     m_statusUpdateTimer->setInterval(1000); // Update every second
@@ -62,6 +75,11 @@ void DroneStatusWidget::setupConnections()
     
     // Connect clear messages button
     connect(ui->clearMessagesButton, &QPushButton::clicked, this, &DroneStatusWidget::onClearMessages);
+
+    m_hideMapperMeshMessagesCheckBox = new QCheckBox("Hide VOXL mesh update messages", this);
+    m_hideMapperMeshMessagesCheckBox->setChecked(true);
+    m_hideMapperMeshMessagesCheckBox->setStyleSheet("QCheckBox { color: #d1d5db; padding: 2px; }");
+    ui->messagesLayout->insertWidget(0, m_hideMapperMeshMessagesCheckBox);
 }
 
 void DroneStatusWidget::updateDroneStatus(const DroneStatus &status)
@@ -72,6 +90,48 @@ void DroneStatusWidget::updateDroneStatus(const DroneStatus &status)
     updateFlightDisplay();
     updatePositionDisplay();
     updateControlsDisplay();
+
+    // System health bar
+    if (m_healthLabel) {
+        if (!status.connected) {
+            m_healthLabel->setText(QStringLiteral("CPU: --  |  VOXL Temp: --"));
+            m_healthLabel->setStyleSheet(
+                "QLabel { background: #1f2937; color: #9ca3af; "
+                "border: 1px solid #374151; border-radius: 4px; "
+                "padding: 4px 8px; font-size: 12px; font-family: monospace; }");
+        } else {
+            // PX4 load
+            const QString cpuText = (status.px4LoadPercent >= 0.0f)
+                ? QStringLiteral("PX4 Loop: %1%").arg(status.px4LoadPercent, 0, 'f', 0)
+                : QStringLiteral("PX4 Loop: --");
+
+            // VOXL thermal
+            QString tempText = QStringLiteral("VOXL: --");
+            QString tempColor = QStringLiteral("#9ca3af");
+            if (status.voxlTempC >= 0.0f) {
+                tempText = QStringLiteral("VOXL: %1°C").arg(status.voxlTempC, 0, 'f', 0);
+                if (status.voxlTempC >= 85.0f)
+                    tempColor = QStringLiteral("#ef4444"); // red
+                else if (status.voxlTempC >= 70.0f)
+                    tempColor = QStringLiteral("#f59e0b"); // amber
+                else
+                    tempColor = QStringLiteral("#34d399"); // green
+            }
+
+            // Top service
+            const QString svcText = status.voxlTopService.isEmpty()
+                ? QString()
+                : QStringLiteral("  |  Top: %1").arg(status.voxlTopService);
+
+            m_healthLabel->setText(QStringLiteral("%1  |  <font color='%2'>%3</font>%4")
+                                       .arg(cpuText, tempColor, tempText, svcText));
+            m_healthLabel->setTextFormat(Qt::RichText);
+            m_healthLabel->setStyleSheet(
+                "QLabel { background: #111827; color: #d1d5db; "
+                "border: 1px solid #374151; border-radius: 4px; "
+                "padding: 4px 8px; font-size: 12px; font-family: monospace; }");
+        }
+    }
 }
 
 void DroneStatusWidget::setConnectionStatus(bool connected)
@@ -91,6 +151,7 @@ void DroneStatusWidget::setConnectionStatus(bool connected)
         m_currentStatus.groundSpeed = 0.0f;
         m_currentStatus.verticalSpeed = 0.0f;
         m_currentStatus.position = QVector3D(0, 0, 0);
+        m_currentStatus.positionIsMapperLocal = false;
         m_currentStatus.velocity = QVector3D(0, 0, 0);
         m_currentStatus.attitude = QVector3D(0, 0, 0);
         m_currentStatus.lastHeartbeat.clear();
@@ -99,6 +160,18 @@ void DroneStatusWidget::setConnectionStatus(bool connected)
     }
 
     updateDroneStatus(m_currentStatus);
+}
+
+bool DroneStatusWidget::addSystemMessage(const QString &message, const QString &type)
+{
+    if (m_hideMapperMeshMessagesCheckBox && m_hideMapperMeshMessagesCheckBox->isChecked()) {
+        if (message.startsWith(QStringLiteral("VOXL Mapper mesh update")) ||
+            message.startsWith(QStringLiteral("VOXL Mapper mesh cleared"))) {
+            return false;
+        }
+    }
+    addMessage(message, type);
+    return true;
 }
 
 void DroneStatusWidget::updateBatteryDisplay()
@@ -200,6 +273,26 @@ void DroneStatusWidget::updateFlightDisplay()
 
 void DroneStatusWidget::updatePositionDisplay()
 {
+    if (m_currentStatus.connected) {
+        const QString degree = QString::fromUtf8("\xC2\xB0");
+        if (m_currentStatus.positionIsMapperLocal) {
+            ui->positionGroup->setTitle("VOXL Mapper Local Position & Attitude");
+            ui->latitudeLabel->setText(QString("X: %1 m").arg(m_currentStatus.position.x(), 0, 'f', 3));
+            ui->longitudeLabel->setText(QString("Y: %1 m").arg(m_currentStatus.position.y(), 0, 'f', 3));
+            ui->altitudeAbsLabel->setText(QString("Z: %1 m").arg(m_currentStatus.position.z(), 0, 'f', 3));
+        } else {
+            ui->positionGroup->setTitle("GPS Position & Attitude");
+            ui->latitudeLabel->setText(QString("Latitude: %1%2").arg(m_currentStatus.position.x(), 0, 'f', 6).arg(degree));
+            ui->longitudeLabel->setText(QString("Longitude: %1%2").arg(m_currentStatus.position.y(), 0, 'f', 6).arg(degree));
+            ui->altitudeAbsLabel->setText(QString("Alt: %1 m").arg(m_currentStatus.position.z(), 0, 'f', 1));
+        }
+
+        ui->rollLabel->setText(QString("Roll: %1%2").arg(m_currentStatus.attitude.x(), 0, 'f', 3).arg(degree));
+        ui->pitchLabel->setText(QString("Pitch: %1%2").arg(m_currentStatus.attitude.y(), 0, 'f', 3).arg(degree));
+        ui->yawLabel->setText(QString("Yaw: %1%2").arg(m_currentStatus.attitude.z(), 0, 'f', 3).arg(degree));
+        return;
+    }
+
     if (!m_currentStatus.connected) {
         ui->latitudeLabel->setText("--");
         ui->longitudeLabel->setText("--");
@@ -207,6 +300,7 @@ void DroneStatusWidget::updatePositionDisplay()
         ui->rollLabel->setText("--");
         ui->pitchLabel->setText("--");
         ui->yawLabel->setText("--");
+        ui->positionGroup->setTitle("Drone Pose");
         return;
     }
 

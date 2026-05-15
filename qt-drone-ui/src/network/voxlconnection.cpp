@@ -453,6 +453,11 @@ void VOXLConnection::processMavlinkMessage(quint32 messageId,
             return;
         }
 
+        // load: uint16 at offset 12 — PX4 mainloop load, 0-1000 per-mille (divide by 10 for %)
+        const quint16 loadPermille = readLe<quint16>(payload, 12);
+        if (loadPermille <= 1000) {
+            status["px4LoadPercent"] = loadPermille / 10.0f;
+        }
         const quint16 millivolts = readLe<quint16>(payload, 14);
         const qint8 remaining = static_cast<qint8>(readLe<quint8>(payload, 30));
         if (millivolts != UINT16_MAX && millivolts > 0) {
@@ -883,6 +888,44 @@ void VOXLConnection::cancelMission()
         }
         reply->deleteLater();
     });
+}
+
+// ============================================================================
+// SSH command execution
+// ============================================================================
+
+void VOXLConnection::sshRunCommand(const QString &remoteCommand)
+{
+    if (m_voxlHost.isEmpty()) {
+        emit sshCommandFinished(false, QStringLiteral("VOXL host not set."));
+        return;
+    }
+
+    // Fire a fire-and-forget QProcess; it is parented to this object so it
+    // will be cleaned up automatically, but we also connect finished() so we
+    // can emit the result signal.
+    QProcess *proc = new QProcess(this);
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [this, proc](int exitCode, QProcess::ExitStatus) {
+                const QString output = QString::fromUtf8(proc->readAllStandardOutput())
+                                       + QString::fromUtf8(proc->readAllStandardError());
+                emit sshCommandFinished(exitCode == 0, output.trimmed());
+                proc->deleteLater();
+            });
+    connect(proc, &QProcess::errorOccurred, this, [this, proc](QProcess::ProcessError) {
+        emit sshCommandFinished(false, proc->errorString());
+        proc->deleteLater();
+    });
+
+    const QStringList args = {
+        QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=no"),
+        QStringLiteral("-o"), QStringLiteral("UserKnownHostsFile=/dev/null"),
+        QStringLiteral("-o"), QStringLiteral("ConnectTimeout=5"),
+        QStringLiteral("root@") + m_voxlHost,
+        remoteCommand
+    };
+    qDebug() << "SSH:" << args.join(QStringLiteral(" "));
+    proc->start(QStringLiteral("ssh"), args);
 }
 
 // ============================================================================

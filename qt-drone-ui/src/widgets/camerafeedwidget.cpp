@@ -11,6 +11,11 @@
 #include <QNetworkRequest>
 #include <QPainter>
 #include <QPen>
+#include <QUrl>
+
+namespace {
+constexpr qsizetype MaxPortalStreamBufferBytes = 4 * 1024 * 1024;
+}
 
 CameraFeedWidget::CameraFeedWidget(QWidget *parent)
     : QWidget(parent)
@@ -28,6 +33,8 @@ CameraFeedWidget::CameraFeedWidget(QWidget *parent)
     , m_settingsGroup(nullptr)
     , m_settingsLayout(nullptr)
     , m_qualityCombo(nullptr)
+    , m_streamCombo(nullptr)
+    , m_customStreamEdit(nullptr)
     , m_formatCombo(nullptr)
     , m_framerateSlider(nullptr)
     , m_framerateLabel(nullptr)
@@ -37,6 +44,7 @@ CameraFeedWidget::CameraFeedWidget(QWidget *parent)
     , m_recordingTimeLabel(nullptr)
     , m_connectionProgress(nullptr)
     , m_camera(nullptr)
+    , m_streamPlayer(nullptr)
     , m_mediaRecorder(nullptr)
     , m_captureSession(nullptr)
     , m_networkManager(nullptr)
@@ -49,8 +57,9 @@ CameraFeedWidget::CameraFeedWidget(QWidget *parent)
     , m_feedSource("demo") // Start with demo by default
     , m_recordingDuration(0)
     , m_recordingStartTime(0)
+    , m_updatingStreamUrl(false)
     , m_voxlHost(QStringLiteral("192.168.8.1"))
-    , m_voxlPort(8080)
+    , m_voxlPort(8900)
 {
     // Initialize settings
     m_settings.quality = "high";
@@ -69,6 +78,10 @@ CameraFeedWidget::~CameraFeedWidget()
 {
     if (m_camera) {
         m_camera->stop();
+    }
+    if (m_streamPlayer) {
+        if (m_streamPlayer)
+            m_streamPlayer->stop();
     }
     if (m_currentReply) {
         m_currentReply->abort();
@@ -104,7 +117,7 @@ void CameraFeedWidget::setupUI()
     
     // Feed source button
     m_sourceButton = new QPushButton("📡 Demo Feed");
-    m_sourceButton->setToolTip("Toggle between Demo, Live Camera, and VOXL feed");
+    m_sourceButton->setToolTip("Toggle between Demo and VOXL RTSP feed");
     m_sourceButton->setStyleSheet(
         "QPushButton { "
         "   background-color: #374151; "
@@ -131,19 +144,36 @@ void CameraFeedWidget::setupUI()
         "QPushButton:checked { background-color: #3b82f6; }"
     );
     
+    m_streamCombo = new QComboBox;
+    m_streamCombo->setToolTip("VOXL camera source");
+    m_streamCombo->addItem("hires_front_small_color", QStringLiteral("http://%1/video_raw/hires_front_small_color"));
+    m_streamCombo->addItem("hires_down_small_color", QStringLiteral("http://%1/video_raw/hires_down_small_color"));
+    m_streamCombo->addItem("Active RTSP stream", QStringLiteral("rtsp://%1:8900/live"));
+    m_streamCombo->addItem("Custom RTSP URL", QStringLiteral("custom"));
+    m_streamCombo->setStyleSheet(
+        "QComboBox { background-color: #1f2937; color: white; border: 1px solid #4b5563; padding: 6px; } "
+        "QComboBox::drop-down { border: none; } "
+        "QComboBox::down-arrow { image: none; }");
+
+    m_customStreamEdit = new QLineEdit(QStringLiteral("rtsp://%1:%2/live").arg(m_voxlHost).arg(m_voxlPort));
+    m_customStreamEdit->setToolTip("RTSP URL for the selected VOXL stream");
+    m_customStreamEdit->setMinimumWidth(280);
+    m_customStreamEdit->setStyleSheet(
+        "QLineEdit { background-color: #111827; color: white; border: 1px solid #4b5563; padding: 6px; }");
+    updateCustomStreamUrl();
+
     // Connection status
     m_statusLabel = new QLabel("Status: Demo Mode");
     m_statusLabel->setStyleSheet("QLabel { color: #9ca3af; }");
     
     m_topControlsLayout->addWidget(m_sourceButton);
-    m_topControlsLayout->addWidget(m_settingsButton);
+    m_topControlsLayout->addWidget(m_streamCombo);
+    m_topControlsLayout->addWidget(m_customStreamEdit);
     m_topControlsLayout->addStretch();
     m_topControlsLayout->addWidget(m_statusLabel);
     
     m_mainLayout->addLayout(m_topControlsLayout);
     
-    // Create settings panel
-    setupSettingsPanel();
     
     // Create bottom controls layout
     m_bottomControlsLayout = new QHBoxLayout;
@@ -266,6 +296,9 @@ void CameraFeedWidget::setupCamera()
     // Create recording timer
     m_recordingTimer = new QTimer(this);
     m_recordingTimer->setInterval(1000); // Update every second
+
+    m_streamPlayer = new QMediaPlayer(this);
+    m_streamPlayer->setVideoOutput(m_videoWidget);
 }
 
 void CameraFeedWidget::setupNetworking()
@@ -278,12 +311,46 @@ void CameraFeedWidget::connectSignals()
     connect(m_recordButton, &QPushButton::clicked, this, &CameraFeedWidget::onToggleRecording);
     connect(m_sourceButton, &QPushButton::clicked, this, &CameraFeedWidget::onToggleFeedSource);
     connect(m_fullscreenButton, &QPushButton::clicked, this, &CameraFeedWidget::onToggleFullscreen);
-    connect(m_settingsButton, &QPushButton::toggled, m_settingsGroup, &QGroupBox::setVisible);
+    if (m_settingsButton && m_settingsGroup)
+        connect(m_settingsButton, &QPushButton::toggled, m_settingsGroup, &QGroupBox::setVisible);
+    connect(m_streamCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &CameraFeedWidget::onStreamSelected);
+    connect(m_customStreamEdit, &QLineEdit::editingFinished,
+            this, &CameraFeedWidget::onCustomStreamUrlChanged);
+    connect(m_streamPlayer, &QMediaPlayer::errorOccurred,
+            this, [this](QMediaPlayer::Error, const QString &errorString) {
+                if (m_feedSource != QStringLiteral("voxl"))
+                    return;
+                if (m_connectionProgress)
+                    m_connectionProgress->hide();
+                m_statusLabel->setText(QStringLiteral("Status: Stream error - %1").arg(errorString));
+                m_videoWidget->hide();
+                m_demoImageLabel->show();
+            });
+    connect(m_streamPlayer, &QMediaPlayer::mediaStatusChanged,
+            this, [this](QMediaPlayer::MediaStatus status) {
+                if (m_feedSource != QStringLiteral("voxl"))
+                    return;
+                if (status == QMediaPlayer::BufferedMedia || status == QMediaPlayer::LoadedMedia) {
+                    if (m_connectionProgress)
+                        m_connectionProgress->hide();
+                    m_statusLabel->setText(QStringLiteral("Status: VOXL RTSP Active - %1").arg(selectedStreamUrl()));
+                } else if (status == QMediaPlayer::LoadingMedia) {
+                    m_statusLabel->setText(QStringLiteral("Status: Loading VOXL RTSP..."));
+                } else if (status == QMediaPlayer::InvalidMedia) {
+                    if (m_connectionProgress)
+                        m_connectionProgress->hide();
+                }
+            });
     
-    connect(m_qualityCombo, &QComboBox::currentTextChanged, this, &CameraFeedWidget::onQualityChanged);
-    connect(m_formatCombo, &QComboBox::currentTextChanged, this, &CameraFeedWidget::onFormatChanged);
-    connect(m_framerateSlider, &QSlider::valueChanged, this, &CameraFeedWidget::onFramerateChanged);
-    connect(m_zoomSlider, &QSlider::valueChanged, this, &CameraFeedWidget::onZoomChanged);
+    if (m_qualityCombo)
+        connect(m_qualityCombo, &QComboBox::currentTextChanged, this, &CameraFeedWidget::onQualityChanged);
+    if (m_formatCombo)
+        connect(m_formatCombo, &QComboBox::currentTextChanged, this, &CameraFeedWidget::onFormatChanged);
+    if (m_framerateSlider)
+        connect(m_framerateSlider, &QSlider::valueChanged, this, &CameraFeedWidget::onFramerateChanged);
+    if (m_zoomSlider)
+        connect(m_zoomSlider, &QSlider::valueChanged, this, &CameraFeedWidget::onZoomChanged);
     
     connect(m_recordingTimer, &QTimer::timeout, this, &CameraFeedWidget::onRecordingTimer);
 }
@@ -291,6 +358,51 @@ void CameraFeedWidget::connectSignals()
 void CameraFeedWidget::initializeFeed()
 {
     loadDemoImage();
+}
+
+QString CameraFeedWidget::selectedStreamUrl() const
+{
+    if (!m_streamCombo || !m_customStreamEdit)
+        return QStringLiteral("rtsp://%1:%2/live").arg(m_voxlHost).arg(m_voxlPort);
+
+    const QString value = m_streamCombo->currentData().toString();
+    if (value == QStringLiteral("custom"))
+        return m_customStreamEdit->text().trimmed();
+
+    return value.arg(m_voxlHost);
+}
+
+void CameraFeedWidget::updateCustomStreamUrl()
+{
+    if (!m_streamCombo || !m_customStreamEdit)
+        return;
+
+    const QString value = m_streamCombo->currentData().toString();
+    const bool isCustom = (value == QStringLiteral("custom"));
+    m_customStreamEdit->setReadOnly(!isCustom);
+    m_customStreamEdit->setVisible(true);
+
+    if (!isCustom) {
+        m_updatingStreamUrl = true;
+        m_customStreamEdit->setText(value.arg(m_voxlHost));
+        m_updatingStreamUrl = false;
+    }
+}
+
+void CameraFeedWidget::stopActiveFeeds()
+{
+    if (m_camera)
+        m_camera->stop();
+    if (m_streamPlayer)
+        m_streamPlayer->stop();
+    if (m_currentReply) {
+        m_currentReply->abort();
+        m_currentReply->deleteLater();
+        m_currentReply = nullptr;
+    }
+    m_portalStreamBuffer.clear();
+    if (m_connectionProgress)
+        m_connectionProgress->hide();
 }
 
 void CameraFeedWidget::loadDemoImage()
@@ -303,7 +415,7 @@ void CameraFeedWidget::loadDemoImage()
     painter.setPen(QPen(Qt::white, 2));
     painter.setFont(QFont("Arial", 24));
     painter.drawText(demoPixmap.rect(), Qt::AlignCenter, 
-                    "DRONE CAMERA FEED\n\nDemo Mode\n\nClick 'Feed Source' to switch\nto Live Camera or VOXL");
+                    "DRONE CAMERA FEED\n\nDemo Mode\n\nClick 'Feed Source' to switch\nto VOXL RTSP");
     
     // Add some crosshairs for drone-like appearance
     painter.setPen(QPen(Qt::green, 2));
@@ -370,7 +482,25 @@ void CameraFeedWidget::onToggleRecording()
 
 void CameraFeedWidget::onToggleFeedSource()
 {
+    stopActiveFeeds();
+    if (m_feedSource == QStringLiteral("demo")) {
+        m_feedSource = QStringLiteral("voxl");
+        m_sourceButton->setText("VOXL Feed");
+        m_statusLabel->setText("Status: Connecting to VOXL RTSP...");
+        connectToVOXL();
+    } else {
+        m_feedSource = QStringLiteral("demo");
+        m_sourceButton->setText("Demo Feed");
+        m_videoWidget->hide();
+        m_demoImageLabel->show();
+        loadDemoImage();
+    }
+    return;
+}
+
+#if 0
     if (m_feedSource == "demo") {
+        stopActiveFeeds();
         m_feedSource = "live";
         m_sourceButton->setText("📹 Live Camera");
         m_statusLabel->setText("Status: Connecting to camera...");
@@ -399,23 +529,17 @@ void CameraFeedWidget::onToggleFeedSource()
         }
         
     } else if (m_feedSource == "live") {
+        stopActiveFeeds();
         m_feedSource = "voxl";
         m_sourceButton->setText("🚁 VOXL Feed");
         m_statusLabel->setText("Status: Connecting to VOXL...");
         
-        if (m_camera) {
-            m_camera->stop();
-        }
-        
         connectToVOXL();
         
     } else {
+        stopActiveFeeds();
         m_feedSource = "demo";
         m_sourceButton->setText("📡 Demo Feed");
-        
-        if (m_camera) {
-            m_camera->stop();
-        }
         
         m_videoWidget->hide();
         m_demoImageLabel->show();
@@ -423,22 +547,122 @@ void CameraFeedWidget::onToggleFeedSource()
     }
 }
 
+#endif
+
 void CameraFeedWidget::connectToVOXL()
 {
-    // Create connection progress indicator
+    const QString streamUrl = selectedStreamUrl();
+    if (streamUrl.isEmpty() || !QUrl(streamUrl).isValid()) {
+        m_statusLabel->setText("Status: Invalid RTSP URL");
+        return;
+    }
+
+    if (streamUrl.startsWith(QStringLiteral("http://"), Qt::CaseInsensitive) ||
+        streamUrl.startsWith(QStringLiteral("https://"), Qt::CaseInsensitive)) {
+        connectToPortalCamera(QUrl(streamUrl));
+        return;
+    }
+
     if (!m_connectionProgress) {
         m_connectionProgress = new QProgressBar;
         m_connectionProgress->setRange(0, 0); // Indeterminate progress
         m_bottomControlsLayout->insertWidget(2, m_connectionProgress);
     }
     m_connectionProgress->show();
-    
-    // Try to connect to VOXL camera stream
-    QString url = QString("http://%1:%2/camera/stream").arg(m_voxlHost).arg(m_voxlPort);
+
+    if (!m_streamPlayer)
+        return;
+
+    m_demoImageLabel->hide();
+    m_videoWidget->show();
+    m_statusLabel->setText(QStringLiteral("Status: Opening %1").arg(streamUrl));
+    m_streamPlayer->setSource(QUrl(streamUrl));
+    m_streamPlayer->play();
+}
+
+void CameraFeedWidget::connectToPortalCamera(const QUrl &url)
+{
+    if (!url.isValid()) {
+        m_statusLabel->setText("Status: Invalid VOXL camera URL");
+        return;
+    }
+
+    if (m_streamPlayer)
+        m_streamPlayer->stop();
+    if (m_currentReply) {
+        m_currentReply->abort();
+        m_currentReply->deleteLater();
+        m_currentReply = nullptr;
+    }
+    m_portalStreamBuffer.clear();
+
+    if (!m_connectionProgress) {
+        m_connectionProgress = new QProgressBar;
+        m_connectionProgress->setRange(0, 0);
+        m_bottomControlsLayout->insertWidget(2, m_connectionProgress);
+    }
+    m_connectionProgress->show();
+
+    m_videoWidget->hide();
+    m_demoImageLabel->show();
+    m_demoImageLabel->setText(QStringLiteral("Opening VOXL camera stream...\n%1").arg(url.toString()));
+    m_statusLabel->setText(QStringLiteral("Status: Opening %1").arg(url.toString()));
+
     QNetworkRequest request(url);
-    
+    request.setRawHeader("Accept", "image/jpeg,multipart/x-mixed-replace,*/*");
     m_currentReply = m_networkManager->get(request);
-    connect(m_currentReply, &QNetworkReply::finished, this, &CameraFeedWidget::onNetworkReplyFinished);
+    connect(m_currentReply, &QNetworkReply::readyRead, this, [this]() {
+        if (!m_currentReply)
+            return;
+        m_portalStreamBuffer.append(m_currentReply->readAll());
+        processPortalCameraBytes();
+    });
+    connect(m_currentReply, &QNetworkReply::finished, this, [this]() {
+        if (!m_currentReply)
+            return;
+        m_portalStreamBuffer.append(m_currentReply->readAll());
+        processPortalCameraBytes();
+        if (m_currentReply->error() != QNetworkReply::NoError) {
+            m_statusLabel->setText(QStringLiteral("Status: Camera stream failed - %1").arg(m_currentReply->errorString()));
+            if (m_connectionProgress)
+                m_connectionProgress->hide();
+        }
+        m_currentReply->deleteLater();
+        m_currentReply = nullptr;
+    });
+}
+
+void CameraFeedWidget::processPortalCameraBytes()
+{
+    if (m_portalStreamBuffer.size() > MaxPortalStreamBufferBytes)
+        m_portalStreamBuffer.remove(0, m_portalStreamBuffer.size() - MaxPortalStreamBufferBytes);
+
+    const QByteArray startMarker = QByteArray::fromHex("ffd8");
+    const QByteArray endMarker = QByteArray::fromHex("ffd9");
+
+    int start = m_portalStreamBuffer.indexOf(startMarker);
+    while (start >= 0) {
+        const int end = m_portalStreamBuffer.indexOf(endMarker, start + startMarker.size());
+        if (end < 0) {
+            if (start > 0)
+                m_portalStreamBuffer.remove(0, start);
+            return;
+        }
+
+        const int frameEnd = end + endMarker.size();
+        const QByteArray frame = m_portalStreamBuffer.mid(start, frameEnd - start);
+        m_portalStreamBuffer.remove(0, frameEnd);
+
+        QPixmap pixmap;
+        if (pixmap.loadFromData(frame, "JPG")) {
+            if (m_connectionProgress)
+                m_connectionProgress->hide();
+            m_demoImageLabel->setPixmap(pixmap.scaled(m_demoImageLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            m_statusLabel->setText(QStringLiteral("Status: VOXL camera active - %1").arg(selectedStreamUrl()));
+        }
+
+        start = m_portalStreamBuffer.indexOf(startMarker);
+    }
 }
 
 void CameraFeedWidget::onNetworkReplyFinished()
@@ -461,6 +685,23 @@ void CameraFeedWidget::onNetworkReplyFinished()
     
     m_currentReply->deleteLater();
     m_currentReply = nullptr;
+}
+
+void CameraFeedWidget::onStreamSelected(int)
+{
+    updateCustomStreamUrl();
+    if (m_feedSource == QStringLiteral("voxl"))
+        connectToVOXL();
+}
+
+void CameraFeedWidget::onCustomStreamUrlChanged()
+{
+    if (m_updatingStreamUrl)
+        return;
+    if (m_streamCombo && m_streamCombo->currentData().toString() != QStringLiteral("custom"))
+        return;
+    if (m_feedSource == QStringLiteral("voxl"))
+        connectToVOXL();
 }
 
 void CameraFeedWidget::onToggleFullscreen()
@@ -521,7 +762,7 @@ void CameraFeedWidget::saveRecording()
 void CameraFeedWidget::setCompactMode(bool compact)
 {
     m_compactMode = compact;
-    if (compact) {
+    if (compact && m_settingsGroup && m_settingsButton) {
         m_settingsGroup->hide();
         m_settingsButton->setChecked(false);
     }
@@ -532,6 +773,19 @@ void CameraFeedWidget::setShowControls(bool show)
     m_showControls = show;
     m_topControlsLayout->parentWidget()->setVisible(show);
     m_bottomControlsLayout->parentWidget()->setVisible(show);
+}
+
+void CameraFeedWidget::setVoxlHost(const QString &host)
+{
+    const QString cleanHost = host.trimmed();
+    if (cleanHost.isEmpty() || cleanHost == m_voxlHost)
+        return;
+
+    m_voxlHost = cleanHost;
+    updateCustomStreamUrl();
+
+    if (m_feedSource == QStringLiteral("voxl"))
+        connectToVOXL();
 }
 
 void CameraFeedWidget::onCameraError()

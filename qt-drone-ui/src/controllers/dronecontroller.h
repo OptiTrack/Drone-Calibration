@@ -32,7 +32,7 @@ struct FlightPlan {
 struct MapperMissionWaypoint {
     int sequence = 0;
     QVector3D logicalPosition; // Same as planner: X forward, Y left/lateral (green), Z up (blue).
-    QVector3D frdPosition;     // VOXL Mapper FRD: X forward, Y right, Z down.
+    QVector3D frdPosition;     // VOXL Mapper command frame: X forward, Y right, Z down.
     float holdTimeSec = 0.0f;
     float acceptanceRadiusM = 0.5f;
     float yawDeg = 0.0f;
@@ -74,6 +74,9 @@ public:
     void abortMission();
     void clearMission();
     void clearMapperMap();
+    /// SSH-restart voxl-mapper on the drone, then reconnect the mapper WebSocket.
+    /// More reliable than clear_map when the mapper service is stuck or unresponsive.
+    void restartMapperService();
     void loadMapperMap(const QString &remotePath = QString());
     /// clear_map on VOXL, then load_map after a short delay (avoids stacking two maps in mapper + garbled mesh in the UI).
     void replaceMapperMap(const QString &remotePath = QString());
@@ -129,6 +132,7 @@ private slots:
     void onMapperTick();
     void onMapperPortalWatchdogTimeout();
     void onMapperBundleUploadForRestoreFinished(bool success, const QString &message);
+    void onThermalPollTimer();
 
 private:
     void initializeConnection();
@@ -144,6 +148,8 @@ private:
     static QVector3D mapperFrdToLogical(const QVector3D &positionFrd);
     void advanceMapperMission();
     void commandCurrentMapperWaypoint();
+    void issueMapperFollowForCurrentWaypoint(const QString &reason);
+    void logMapperMissionSummary(const QString &context);
     void finishMapperMission(const QString &message);
     void updateConnectionStatus(bool connected);
     /// Stops VOXL Mapper follow_path and local sequencer so PX4 can own modes (Land, RTL, etc.).
@@ -185,9 +191,15 @@ private:
     QTimer *m_mapperMissionTimer;
     QElapsedTimer m_mapperStateTimer;
     QElapsedTimer m_mapperHoldTimer;
+    QElapsedTimer m_mapperDebugTimer;
+    /// Tracks total elapsed time from when a waypoint is commanded (not reset by debug/warning cycles).
+    QElapsedTimer m_waypointTotalTimer;
     QVector3D m_mapperPositionFrd;
     QVector3D m_mapperVelocityFrd;
     bool m_haveMapperPose;
+    bool m_mapperPlanReceivedForCurrentTarget;
+    bool m_mapperFollowIssuedForCurrentTarget;
+    bool m_mapperPlanMismatchWarnedForCurrentTarget;
     int m_resumeMissionItem;
     enum class PendingMapperMapCommand {
         None,
@@ -203,10 +215,14 @@ private:
     QString m_pendingMapperBundleLocalDir;
     QString m_pendingBundleRestoreRemote;
     QTimer *m_mapperPortalWatchdog;
+    QTimer *m_thermalPollTimer;
     
     // Manual control state
     bool m_manualControlActive;
     QTimer *m_manualControlTimer;
+
+    /// Last known flight mode — used to detect unexpected autonomous-to-manual transitions.
+    QString m_prevFlightMode;
 };
 
 #endif // DRONECONTROLLER_H

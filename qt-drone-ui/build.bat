@@ -8,7 +8,7 @@ REM Always run from repo root regardless of caller location
 pushd "%~dp0"
 
 REM Set Qt environment
-set "PATH=C:\Qt\6.10.2\mingw_64\bin;C:\Qt\Tools\mingw1310_64\bin;C:\Qt\Tools\CMake_64\bin;C:\Qt\Tools\Ninja;%PATH%"
+set "PATH=C:\Qt\6.10.0\mingw_64\bin;C:\Qt\Tools\mingw1310_64\bin;C:\Qt\Tools\CMake_64\bin;C:\Qt\Tools\Ninja;%PATH%"
 set "CC=C:\Qt\Tools\mingw1310_64\bin\gcc.exe"
 set "CXX=C:\Qt\Tools\mingw1310_64\bin\g++.exe"
 set "GENERATOR=Ninja"

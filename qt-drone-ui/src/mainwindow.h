@@ -10,9 +10,11 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QFrame>
+#include <QComboBox>
+#include "utils/flightlogger.h"
+#include "utils/volumemanager.h"
 
 // Forward declarations
-class DashboardWidget;
 class CameraFeedWidget;
 class PathPlannerWidget;
 class RecordedPathsWidget;
@@ -42,6 +44,8 @@ private slots:
     void onRecordingSaved(const QString &filePath, const QByteArray &data);
     void onRecordingDeleted(const QString &recordingId);
     void onRecordingPlayRequested(const QString &filePath);
+    void onVolumeComboChanged(int index);
+    void onNewVolumeRequested();
 
 private:
     void setupUI();
@@ -51,6 +55,8 @@ private:
     void setupPlannerMenus();
     void connectSignals();
     void setActiveView(const QString &viewName);
+    void rebuildVolumeCombo();
+    void applyActiveVolume(const VolumeManager::VolumeInfo &volume);
     
     Ui::MainWindow *ui;
     
@@ -68,7 +74,6 @@ private:
     QSplitter *m_mainSplitter;
     
     // Widget pages
-    DashboardWidget *m_dashboardWidget;
     CameraFeedWidget *m_cameraFeedWidget;
     PathPlannerWidget *m_pathPlannerWidget;
     RecordedPathsWidget *m_recordedPathsWidget;
@@ -77,7 +82,14 @@ private:
     
     // Controllers
     DroneController *m_droneController;
-    
+    FlightLogger    *m_flightLogger;
+    VolumeManager   *m_volumeManager;
+
+    // Volume selector (in status bar)
+    QComboBox   *m_volumeCombo;
+    QPushButton *m_newVolumeButton;
+    QPushButton *m_logButton;      // Manual start/stop logging
+
     // State
     bool m_drawerOpen;
     QString m_activeView;

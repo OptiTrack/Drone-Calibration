@@ -10,6 +10,8 @@
 #include <QComboBox>
 #include <QTimer>
 #include <QCamera>
+#include <QLineEdit>
+#include <QMediaPlayer>
 #include <QMediaRecorder>
 #include <QVideoWidget>
 #include <QMediaCaptureSession>
@@ -32,6 +34,7 @@ public:
 
     void setCompactMode(bool compact);
     void setShowControls(bool show);
+    void setVoxlHost(const QString &host);
 
 signals:
     void recordingSaved(const QString &filePath, const QByteArray &data);
@@ -44,6 +47,8 @@ private slots:
     void onQualityChanged(const QString &quality);
     void onFormatChanged(const QString &format);
     void onFramerateChanged(int framerate);
+    void onStreamSelected(int index);
+    void onCustomStreamUrlChanged();
     void onRecordingTimer();
     void onNetworkReplyFinished();
     void onCameraError();
@@ -54,11 +59,16 @@ private:
     void setupNetworking();
     void connectSignals();
     void initializeFeed();
+    void stopActiveFeeds();
     void updateRecordingDisplay();
     void saveRecording();
     void loadDemoImage();
     void connectToVOXL();
+    void connectToPortalCamera(const QUrl &url);
+    void processPortalCameraBytes();
     void setupSettingsPanel();
+    QString selectedStreamUrl() const;
+    void updateCustomStreamUrl();
     
     Ui::CameraFeedWidget *ui;
     
@@ -81,6 +91,8 @@ private:
     QGroupBox *m_settingsGroup;
     QVBoxLayout *m_settingsLayout;
     QComboBox *m_qualityCombo;
+    QComboBox *m_streamCombo;
+    QLineEdit *m_customStreamEdit;
     QComboBox *m_formatCombo;
     QSlider *m_framerateSlider;
     QLabel *m_framerateLabel;
@@ -94,12 +106,14 @@ private:
     
     // Camera and recording
     QCamera *m_camera;
+    QMediaPlayer *m_streamPlayer;
     QMediaRecorder *m_mediaRecorder;
     QMediaCaptureSession *m_captureSession;
     
     // Networking for VOXL connection
     QNetworkAccessManager *m_networkManager;
     QNetworkReply *m_currentReply;
+    QByteArray m_portalStreamBuffer;
     
     // Timers
     QTimer *m_recordingTimer;
@@ -113,6 +127,7 @@ private:
     int m_recordingDuration;
     qint64 m_recordingStartTime;
     QString m_currentRecordingPath;
+    bool m_updatingStreamUrl;
     
     // Settings
     struct CameraSettings {

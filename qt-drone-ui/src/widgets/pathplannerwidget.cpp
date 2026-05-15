@@ -36,6 +36,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 
 static QString plannerPathsDirectory()
 {
@@ -56,10 +57,9 @@ static QString plannerPathsDirectory()
 
 // Waypoint / planner "logical" frame — same numbers as saved JSON and the RGB origin gizmo:
 //   X = forward (red axis, maps to OpenGL world +Z),
-//   Y = lateral (green axis, maps to world +X). With the default 3D camera this green axis
-//       usually reads as "toward screen-left" while forward is "into" the grid and blue is up.
+//   Y = lateral-left (green axis, maps to world +X). VOXL Mapper commands use lateral-right,
+//       so the controller flips Y when sending plan_to and when displaying mapper poses.
 //   Z = up / altitude (blue axis, maps to world +Y).
-// (Body-frame docs often call +Y "starboard/right"; here we name axes by what the gizmo shows.)
 static QVector3D logicalToWorld(const QVector3D &logicalPos)
 {
     return QVector3D(logicalPos.y(), logicalPos.z(), logicalPos.x());
@@ -73,6 +73,82 @@ static QVector3D worldToLogical(const QVector3D &worldPos)
 static QVector3D waypointToWorld(const Waypoint &wp)
 {
     return logicalToWorld(QVector3D(wp.x(), wp.y(), wp.z()));
+}
+
+static QJsonArray vector3DListToJson(const QVector<QVector3D> &positions)
+{
+    QJsonArray array;
+    for (const QVector3D &p : positions) {
+        QJsonArray item;
+        item.append(static_cast<double>(p.x()));
+        item.append(static_cast<double>(p.y()));
+        item.append(static_cast<double>(p.z()));
+        array.append(item);
+    }
+    return array;
+}
+
+static QVector<QVector3D> vector3DListFromJson(const QJsonArray &array)
+{
+    QVector<QVector3D> positions;
+    positions.reserve(array.size());
+    for (const QJsonValue &value : array) {
+        const QJsonArray item = value.toArray();
+        if (item.size() < 3)
+            continue;
+        positions.append(QVector3D(static_cast<float>(item.at(0).toDouble()),
+                                   static_cast<float>(item.at(1).toDouble()),
+                                   static_cast<float>(item.at(2).toDouble())));
+    }
+    return positions;
+}
+
+static QJsonArray colorListToJson(const QVector<QColor> &colors)
+{
+    QJsonArray array;
+    for (const QColor &color : colors) {
+        QJsonArray item;
+        item.append(color.red());
+        item.append(color.green());
+        item.append(color.blue());
+        array.append(item);
+    }
+    return array;
+}
+
+static QVector<QColor> colorListFromJson(const QJsonArray &array)
+{
+    QVector<QColor> colors;
+    colors.reserve(array.size());
+    for (const QJsonValue &value : array) {
+        const QJsonArray item = value.toArray();
+        if (item.size() < 3)
+            continue;
+        colors.append(QColor(qBound(0, item.at(0).toInt(), 255),
+                             qBound(0, item.at(1).toInt(), 255),
+                             qBound(0, item.at(2).toInt(), 255)));
+    }
+    return colors;
+}
+
+static QJsonArray indexListToJson(const QVector<quint32> &indices)
+{
+    QJsonArray array;
+    for (quint32 index : indices)
+        array.append(static_cast<double>(index));
+    return array;
+}
+
+static QVector<quint32> indexListFromJson(const QJsonArray &array)
+{
+    QVector<quint32> indices;
+    indices.reserve(array.size());
+    for (const QJsonValue &value : array) {
+        const double n = value.toDouble(-1.0);
+        if (n >= 0.0 && n <= static_cast<double>(std::numeric_limits<quint32>::max()))
+            indices.append(static_cast<quint32>(n));
+    }
+    return indices;
 }
 
 class WaypointTableWidget : public QTableWidget
@@ -2725,6 +2801,10 @@ void PathPlannerWidget::setupTopBar()
     QAction *uploadMapperMapAction = pathMenu->addAction("Upload Mesh Export File...");
     QAction *saveMapperMapAction = pathMenu->addAction("Save VOXL Map...");
     QAction *clearMapperMapAction = pathMenu->addAction("Clear VOXL Map");
+    QAction *restartMapperAction  = pathMenu->addAction("Restart Mapper Service (SSH)");
+    restartMapperAction->setToolTip(
+        "SSH into the drone and run 'voxl-restart voxl-mapper'. "
+        "Use this when Clear Map has no effect or the mapper service is unresponsive.");
     QAction *planHomeAction = pathMenu->addAction("Plan VOXL Home (place H at drone pose)");
     planHomeAction->setToolTip(QStringLiteral(
         "Sends plan_home to voxl-mapper (home goal is fixed in mapper at (0,0,-1.5) per ModalAI docs — see voxl-mapper README). "
@@ -2750,7 +2830,7 @@ void PathPlannerWidget::setupTopBar()
             return;
         m_mapperMapPath = path.trimmed();
         clearMapperVisualization();
-        m_droneController->replaceMapperMap(m_mapperMapPath);
+        m_droneController->loadMapperMap(m_mapperMapPath);
     });
     connect(uploadMapperMapAction, &QAction::triggered, this, [this]() {
         if (!m_droneController || !m_droneController->isConnected()) {
@@ -2802,6 +2882,20 @@ void PathPlannerWidget::setupTopBar()
         }
         if (QMessageBox::question(this, "Clear VOXL Map", "Clear the current VOXL Mapper map?") == QMessageBox::Yes) {
             m_droneController->clearMapperMap();
+            clearMapperVisualization();
+        }
+    });
+    connect(restartMapperAction, &QAction::triggered, this, [this]() {
+        if (!m_droneController || !m_droneController->isConnected()) {
+            QMessageBox::warning(this, "Restart Mapper Service",
+                                 "Connect to the drone first.");
+            return;
+        }
+        const auto btn = QMessageBox::question(this, "Restart Mapper Service",
+            "SSH into the drone and restart voxl-mapper?\n\n"
+            "The live map stream will be interrupted for ~4 seconds while the service restarts.");
+        if (btn == QMessageBox::Yes) {
+            m_droneController->restartMapperService();
             clearMapperVisualization();
         }
     });
@@ -2977,7 +3071,7 @@ void PathPlannerWidget::setupControls()
     m_defaultHoldSpinBox->setDecimals(1);
     m_defaultHoldSpinBox->setSingleStep(0.5);
     m_defaultHoldSpinBox->setSuffix(" s");
-    m_defaultHoldSpinBox->setValue(0.0);
+    m_defaultHoldSpinBox->setValue(2.0);
 
     m_defaultYawSpinBox = new QDoubleSpinBox(defaultsPanel);
     m_defaultYawSpinBox->setRange(-180.0, 180.0);
@@ -3254,7 +3348,7 @@ void PathPlannerWidget::onSavePath()
         pathName = pathName.trimmed();
     }
 
-    const QString pathsDir = plannerPathsDirectory();
+    const QString pathsDir = m_plannerPathsDir.isEmpty() ? plannerPathsDirectory() : m_plannerPathsDir;
     QDir dir(pathsDir);
 
     const QString sanitizedName = FlightPath::fileBaseFromDisplayName(pathName);
@@ -3342,7 +3436,7 @@ void PathPlannerWidget::onSavePath()
 
 void PathPlannerWidget::onLoadPath()
 {
-    const QString startDir = plannerPathsDirectory();
+    const QString startDir = m_plannerPathsDir.isEmpty() ? plannerPathsDirectory() : m_plannerPathsDir;
     QString fileName = QFileDialog::getOpenFileName(this,
                                                     "Load Path",
                                                     startDir,
@@ -4010,6 +4104,32 @@ bool PathPlannerWidget::saveToJson(const QString &path, const QString &mapperMap
     if (!mapperMapBundleFolderName.trimmed().isEmpty())
         root["mapper_map_bundle"] = mapperMapBundleFolderName.trimmed();
 
+    if (m_openglWidget) {
+        const bool hasRenderSnapshot = !m_openglWidget->mapperRenderPositionsLogical().isEmpty()
+                                       || !m_openglWidget->mapperMeshPositionsLogical().isEmpty();
+        if (hasRenderSnapshot) {
+            QJsonObject snapshot;
+            snapshot["format"] = QStringLiteral("planner-logical-v1");
+
+            if (!m_openglWidget->mapperRenderPositionsLogical().isEmpty()) {
+                QJsonObject pathRender;
+                pathRender["positions"] = vector3DListToJson(m_openglWidget->mapperRenderPositionsLogical());
+                pathRender["colors"] = colorListToJson(m_openglWidget->mapperRenderColors());
+                snapshot["path_render"] = pathRender;
+            }
+
+            if (!m_openglWidget->mapperMeshPositionsLogical().isEmpty()) {
+                QJsonObject mesh;
+                mesh["positions"] = vector3DListToJson(m_openglWidget->mapperMeshPositionsLogical());
+                mesh["colors"] = colorListToJson(m_openglWidget->mapperMeshColors());
+                mesh["triangle_indices"] = indexListToJson(m_openglWidget->mapperMeshTriangleIndices());
+                snapshot["mesh"] = mesh;
+            }
+
+            root["mapper_render_snapshot"] = snapshot;
+        }
+    }
+
     QJsonArray waypointsArray;
     const auto &waypoints = m_openglWidget->waypoints();
     for (const auto &wp : waypoints)
@@ -4078,6 +4198,26 @@ bool PathPlannerWidget::loadFromJson(const QString &path)
     }
 
     m_openglWidget->setWaypoints(waypoints);
+
+    QVector<QVector3D> renderPositions;
+    QVector<QColor> renderColors;
+    QVector<QVector3D> meshPositions;
+    QVector<QColor> meshColors;
+    QVector<quint32> meshTriangleIndices;
+    const QJsonObject snapshot = root.value(QStringLiteral("mapper_render_snapshot")).toObject();
+    if (!snapshot.isEmpty()) {
+        const QJsonObject pathRender = snapshot.value(QStringLiteral("path_render")).toObject();
+        renderPositions = vector3DListFromJson(pathRender.value(QStringLiteral("positions")).toArray());
+        renderColors = colorListFromJson(pathRender.value(QStringLiteral("colors")).toArray());
+
+        const QJsonObject mesh = snapshot.value(QStringLiteral("mesh")).toObject();
+        meshPositions = vector3DListFromJson(mesh.value(QStringLiteral("positions")).toArray());
+        meshColors = colorListFromJson(mesh.value(QStringLiteral("colors")).toArray());
+        meshTriangleIndices = indexListFromJson(mesh.value(QStringLiteral("triangle_indices")).toArray());
+    }
+    m_openglWidget->setMapperRenderData(renderPositions, renderColors);
+    m_openglWidget->setMapperMeshData(meshPositions, meshColors, meshTriangleIndices);
+
     updateWaypointTable();
     emitWaypointsChanged();
 
@@ -4087,6 +4227,11 @@ bool PathPlannerWidget::loadFromJson(const QString &path)
     return true;
 }
 
+
+void PathPlannerWidget::setPlannerPathsDirectory(const QString &dir)
+{
+    m_plannerPathsDir = dir;
+}
 
 void PathPlannerWidget::setDroneController(DroneController *controller)
 {

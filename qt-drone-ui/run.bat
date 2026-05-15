@@ -3,7 +3,7 @@ REM Simple launcher for Qt Drone UI
 echo Starting Qt Drone UI...
 
 REM Set Qt environment
-set PATH=C:\Qt\6.10.2\mingw_64\bin;C:\Qt\Tools\mingw1310_64\bin;%PATH%
+set PATH=C:\Qt\6.10.0\mingw_64\bin;C:\Qt\Tools\mingw1310_64\bin;%PATH%
 
 REM Change to build directory and run
 cd /d "%~dp0build"

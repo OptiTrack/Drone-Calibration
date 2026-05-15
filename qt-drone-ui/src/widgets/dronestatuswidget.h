@@ -15,6 +15,7 @@
 #include <QListWidget>
 #include <QComboBox>
 #include <QSpinBox>
+#include <QCheckBox>
 
 struct DroneStatus {
     bool connected;
@@ -28,12 +29,17 @@ struct DroneStatus {
     float groundSpeed;
     float verticalSpeed;
     QVector3D position;
+    bool positionIsMapperLocal;
     QVector3D velocity;
     QVector3D attitude; // roll, pitch, yaw in degrees
     QString lastHeartbeat;
     QString systemStatus;
     QStringList errors;
     QStringList warnings;
+    // System health (populated when connected)
+    float px4LoadPercent = -1.0f;  // PX4 mainloop load %; -1 = unknown
+    float voxlTempC      = -1.0f;  // VOXL2 CPU thermal zone °C; -1 = unknown
+    QString voxlTopService;         // highest-CPU voxl service name+% (from SSH poll)
 };
 
 QT_BEGIN_NAMESPACE
@@ -50,6 +56,7 @@ public:
 
     void updateDroneStatus(const DroneStatus &status);
     void setConnectionStatus(bool connected);
+    bool addSystemMessage(const QString &message, const QString &type = "info");
 
 signals:
     void armDisarmRequested(bool arm);
@@ -79,6 +86,8 @@ private:
     QString formatCoordinate(float value, const QString &unit);
     
     Ui::DroneStatusWidget *ui;
+    QCheckBox *m_hideMapperMeshMessagesCheckBox;
+    QLabel *m_healthLabel;    // compact CPU/thermal bar shown at top of widget
     
     // Data and timers
     DroneStatus m_currentStatus;
