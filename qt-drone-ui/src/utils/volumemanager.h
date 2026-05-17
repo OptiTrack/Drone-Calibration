@@ -29,6 +29,18 @@ public:
         QDateTime createdAt;
     };
 
+    struct MapInfo {
+        QString displayName;
+        QString remotePath;
+        QString bundleDir;
+        QString meshPath;
+        QDateTime updatedAt;
+
+        bool hasBundle() const;
+        bool hasMesh() const;
+        bool isValid() const;
+    };
+
     explicit VolumeManager(QObject *parent = nullptr);
 
     // Volume list
@@ -54,6 +66,9 @@ public:
     QString volumesRootDir()                          const;
     QString volumeDir            (const QString &id)  const;
     QString mapDir               (const QString &id)  const;
+    QString mapMetadataPath      (const QString &id)  const;
+    QString mapBundleDir         (const QString &id)  const;
+    QString mapMeshPath          (const QString &id)  const;
     QString flightsTelemetryDir  (const QString &id)  const;
     QString flightsTrajectoriesDir(const QString &id) const;
     QString pathsDir             (const QString &id)  const;
@@ -61,9 +76,16 @@ public:
     // Shortcuts for the currently active volume (return "" when none is set)
     QString activeVolumeDir()             const;
     QString activeMapDir()                const;
+    QString activeMapMetadataPath()       const;
+    QString activeMapBundleDir()          const;
+    QString activeMapMeshPath()           const;
     QString activeFlightsTelemetryDir()   const;
     QString activeTrajectoriesDir()       const;
     QString activePathsDir()              const;
+
+    MapInfo mapInfo(const QString &id) const;
+    MapInfo activeMapInfo() const;
+    bool writeMapInfo(const QString &id, const MapInfo &info) const;
 
     /// Ensure all sub-directories for a volume exist on disk.
     bool ensureVolumeDirs(const QString &id) const;

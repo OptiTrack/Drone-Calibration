@@ -266,6 +266,8 @@ public:
     /// Override the directory used for saving/loading path JSON files.
     /// Pass an empty string to fall back to the built-in plannerPathsDirectory().
     void setPlannerPathsDirectory(const QString &dir);
+    void setPlannerRoomContext(const QString &roomId, const QString &roomName,
+                               const QString &pathsDir, const QString &mapDir);
 
     // Waypoint management
     void addWaypoint(const QVector3D &pos);
@@ -393,6 +395,9 @@ private:
     QString m_backgroundBundleJsonPath;
     QString m_backgroundBundleFolderName;
     QString m_plannerPathsDir; ///< Volume override; empty = use plannerPathsDirectory()
+    QString m_roomId;
+    QString m_roomName;
+    QString m_roomMapDir;
 
     QTimer *m_pathPreviewAnimationTimer;
     int m_pathPreviewWaypointIndex;

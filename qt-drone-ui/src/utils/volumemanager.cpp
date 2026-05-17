@@ -3,11 +3,27 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QUuid>
 #include <QDebug>
+
+bool VolumeManager::MapInfo::hasBundle() const
+{
+    return !bundleDir.trimmed().isEmpty() && QDir(bundleDir).exists();
+}
+
+bool VolumeManager::MapInfo::hasMesh() const
+{
+    return !meshPath.trimmed().isEmpty() && QFileInfo::exists(meshPath);
+}
+
+bool VolumeManager::MapInfo::isValid() const
+{
+    return hasBundle() || hasMesh() || !remotePath.trimmed().isEmpty();
+}
 
 // ---------------------------------------------------------------------------
 // Construction / persistence
@@ -222,6 +238,21 @@ QString VolumeManager::mapDir(const QString &id) const
     return volumeDir(id) + QStringLiteral("/map");
 }
 
+QString VolumeManager::mapMetadataPath(const QString &id) const
+{
+    return mapDir(id) + QStringLiteral("/map.json");
+}
+
+QString VolumeManager::mapBundleDir(const QString &id) const
+{
+    return mapDir(id) + QStringLiteral("/mapper_map");
+}
+
+QString VolumeManager::mapMeshPath(const QString &id) const
+{
+    return mapDir(id) + QStringLiteral("/map.ply");
+}
+
 QString VolumeManager::flightsTelemetryDir(const QString &id) const
 {
     return volumeDir(id) + QStringLiteral("/flights/telemetry");
@@ -248,6 +279,75 @@ bool VolumeManager::ensureVolumeDirs(const QString &id) const
 // Active-volume shortcuts
 QString VolumeManager::activeVolumeDir()           const { return hasActiveVolume() ? volumeDir(m_activeVolumeId)               : QString(); }
 QString VolumeManager::activeMapDir()              const { return hasActiveVolume() ? mapDir(m_activeVolumeId)                   : QString(); }
+QString VolumeManager::activeMapMetadataPath()     const { return hasActiveVolume() ? mapMetadataPath(m_activeVolumeId)          : QString(); }
+QString VolumeManager::activeMapBundleDir()        const { return hasActiveVolume() ? mapBundleDir(m_activeVolumeId)             : QString(); }
+QString VolumeManager::activeMapMeshPath()         const { return hasActiveVolume() ? mapMeshPath(m_activeVolumeId)              : QString(); }
 QString VolumeManager::activeFlightsTelemetryDir() const { return hasActiveVolume() ? flightsTelemetryDir(m_activeVolumeId)      : QString(); }
 QString VolumeManager::activeTrajectoriesDir()     const { return hasActiveVolume() ? flightsTrajectoriesDir(m_activeVolumeId)   : QString(); }
 QString VolumeManager::activePathsDir()            const { return hasActiveVolume() ? pathsDir(m_activeVolumeId)                 : QString(); }
+
+VolumeManager::MapInfo VolumeManager::mapInfo(const QString &id) const
+{
+    MapInfo info;
+    if (!hasVolume(id))
+        return info;
+
+    info.displayName = volumeById(id).name;
+    info.bundleDir = QDir::toNativeSeparators(mapBundleDir(id));
+    info.meshPath = QDir::toNativeSeparators(mapMeshPath(id));
+
+    QFile f(mapMetadataPath(id));
+    if (!f.open(QIODevice::ReadOnly))
+        return info;
+
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    f.close();
+    if (!doc.isObject())
+        return info;
+
+    const QJsonObject root = doc.object();
+    const QString displayName = root.value(QStringLiteral("display_name")).toString();
+    if (!displayName.trimmed().isEmpty())
+        info.displayName = displayName.trimmed();
+    info.remotePath = root.value(QStringLiteral("remote_path")).toString();
+    const QString bundleDirValue = root.value(QStringLiteral("bundle_dir")).toString();
+    if (!bundleDirValue.trimmed().isEmpty())
+        info.bundleDir = QDir(mapDir(id)).filePath(bundleDirValue.trimmed());
+    const QString meshPathValue = root.value(QStringLiteral("mesh_path")).toString();
+    if (!meshPathValue.trimmed().isEmpty())
+        info.meshPath = QDir(mapDir(id)).filePath(meshPathValue.trimmed());
+    info.bundleDir = QDir::toNativeSeparators(info.bundleDir);
+    info.meshPath = QDir::toNativeSeparators(info.meshPath);
+    info.updatedAt = QDateTime::fromString(root.value(QStringLiteral("updated_at")).toString(), Qt::ISODate);
+    return info;
+}
+
+VolumeManager::MapInfo VolumeManager::activeMapInfo() const
+{
+    return hasActiveVolume() ? mapInfo(m_activeVolumeId) : MapInfo();
+}
+
+bool VolumeManager::writeMapInfo(const QString &id, const MapInfo &info) const
+{
+    if (!hasVolume(id))
+        return false;
+    if (!QDir().mkpath(mapDir(id)))
+        return false;
+
+    QJsonObject root;
+    root[QStringLiteral("display_name")] = info.displayName.trimmed().isEmpty()
+                                               ? volumeById(id).name
+                                               : info.displayName.trimmed();
+    root[QStringLiteral("remote_path")] = info.remotePath.trimmed();
+    root[QStringLiteral("bundle_dir")] = QStringLiteral("mapper_map");
+    root[QStringLiteral("mesh_path")] = QStringLiteral("map.ply");
+    root[QStringLiteral("updated_at")] = (info.updatedAt.isValid() ? info.updatedAt : QDateTime::currentDateTime()).toString(Qt::ISODate);
+
+    QFile f(mapMetadataPath(id));
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        qWarning() << "VolumeManager: failed to write map metadata ->" << mapMetadataPath(id);
+        return false;
+    }
+    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    return true;
+}

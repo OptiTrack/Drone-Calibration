@@ -1,10 +1,12 @@
 #include "recordedpathswidget.h"
 #include "ui_recordedpathswidget.h"
+#include "../utils/volumemanager.h"
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QInputDialog>
 #include <QStandardPaths>
 #include <QDateTime>
 #include <QFile>
@@ -17,6 +19,8 @@
 #include <QFileDevice>
 #include <QStyleFactory>
 #include <QFontMetrics>
+#include <QSignalBlocker>
+#include <QUuid>
 #include <cmath>
 
 namespace {
@@ -38,6 +42,44 @@ QString displayBaseNameFromFile(const QString &filePath)
     if (m.hasMatch())
         baseName = baseName.left(m.capturedStart());
     return FlightPath::displayNameFromFileBase(baseName);
+}
+
+QJsonObject plannerJsonFromPath(const FlightPath &path)
+{
+    QJsonObject root = path.toJson();
+    root[QStringLiteral("version")] = 1;
+    return root;
+}
+
+QJsonObject readJsonObject(const QString &filePath)
+{
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+    return doc.isObject() ? doc.object() : QJsonObject();
+}
+
+bool copyDirectoryRecursively(const QString &sourceDirPath, const QString &destDirPath)
+{
+    QDir sourceDir(sourceDirPath);
+    if (!sourceDir.exists())
+        return false;
+    QDir().mkpath(destDirPath);
+
+    const QFileInfoList entries = sourceDir.entryInfoList(QDir::NoDotAndDotDot | QDir::Files | QDir::Dirs);
+    for (const QFileInfo &entry : entries) {
+        const QString destPath = QDir(destDirPath).filePath(entry.fileName());
+        if (entry.isDir()) {
+            if (!copyDirectoryRecursively(entry.absoluteFilePath(), destPath))
+                return false;
+        } else {
+            QFile::remove(destPath);
+            if (!QFile::copy(entry.absoluteFilePath(), destPath))
+                return false;
+        }
+    }
+    return true;
 }
 
 bool deletePathJsonOnDisk(const QString &sourceFilePath, const QString &pathsDir, const QString &displayName)
@@ -74,6 +116,13 @@ bool deletePathJsonOnDisk(const QString &sourceFilePath, const QString &pathsDir
 RecordedPathsWidget::RecordedPathsWidget(QWidget *parent)
     : QWidget(parent)
     , ui(new Ui::RecordedPathsWidget)
+    , m_volumeManager(nullptr)
+    , m_roomCombo(nullptr)
+    , m_newRoomButton(nullptr)
+    , m_renameRoomButton(nullptr)
+    , m_importLegacyButton(nullptr)
+    , m_cleanupLegacyButton(nullptr)
+    , m_roomMapLabel(nullptr)
     , m_selectedPathIndex(-1)
 {
     ui->setupUi(this);
@@ -81,6 +130,7 @@ RecordedPathsWidget::RecordedPathsWidget(QWidget *parent)
     if (QStyle *fusion = QStyleFactory::create(QStringLiteral("Fusion")))
         ui->pathList->setStyle(fusion);
     ui->pathList->setTextElideMode(Qt::ElideNone);
+    setupRoomControls();
     setupConnections();
     clearPathDetails();
     loadPaths();
@@ -100,6 +150,99 @@ void RecordedPathsWidget::setupConnections()
     connect(ui->importButton, &QPushButton::clicked, this, &RecordedPathsWidget::onImportPath);
     connect(ui->exportButton, &QPushButton::clicked, this, &RecordedPathsWidget::onExportPath);
     connect(ui->editPathButton, &QPushButton::clicked, this, &RecordedPathsWidget::onEditPath);
+    connect(m_roomCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &RecordedPathsWidget::onRoomSelectionChanged);
+    connect(m_newRoomButton, &QPushButton::clicked, this, &RecordedPathsWidget::onNewRoom);
+    connect(m_renameRoomButton, &QPushButton::clicked, this, &RecordedPathsWidget::onRenameRoom);
+}
+
+void RecordedPathsWidget::setupRoomControls()
+{
+    QWidget *roomBar = new QWidget(this);
+    QHBoxLayout *roomLayout = new QHBoxLayout(roomBar);
+    roomLayout->setContentsMargins(0, 0, 0, 4);
+    roomLayout->setSpacing(6);
+
+    QLabel *roomLabel = new QLabel(QStringLiteral("Room:"), roomBar);
+    roomLabel->setStyleSheet(QStringLiteral("QLabel { color: white; font-weight: bold; }"));
+
+    m_roomCombo = new QComboBox(roomBar);
+    m_roomCombo->setMinimumWidth(220);
+    m_roomCombo->setStyleSheet(QStringLiteral(
+        "QComboBox { background:#374151; color:#e5e7eb; border:1px solid #4b5563; padding:4px 6px; border-radius:3px; }"
+        "QComboBox QAbstractItemView { background:#374151; color:#e5e7eb; selection-background-color:#007acc; }"));
+
+    m_newRoomButton = new QPushButton(QStringLiteral("New Room"), roomBar);
+    m_renameRoomButton = new QPushButton(QStringLiteral("Rename"), roomBar);
+
+    const QString buttonStyle = QStringLiteral(
+        "QPushButton { background:#374151; color:white; border:1px solid #4b5563; padding:5px 8px; border-radius:3px; }"
+        "QPushButton:hover { background:#4b5563; }"
+        "QPushButton:disabled { background:#1f2937; color:#6b7280; }");
+    for (QPushButton *button : {m_newRoomButton, m_renameRoomButton})
+        button->setStyleSheet(buttonStyle);
+
+    m_roomMapLabel = new QLabel(QStringLiteral("Map: no room selected"), roomBar);
+    m_roomMapLabel->setStyleSheet(QStringLiteral("QLabel { color:#9ca3af; }"));
+
+    roomLayout->addWidget(roomLabel);
+    roomLayout->addWidget(m_roomCombo);
+    roomLayout->addWidget(m_newRoomButton);
+    roomLayout->addWidget(m_renameRoomButton);
+    roomLayout->addStretch();
+    roomLayout->addWidget(m_roomMapLabel);
+
+    ui->mainLayout->insertWidget(0, roomBar);
+}
+
+void RecordedPathsWidget::setVolumeManager(VolumeManager *volumeManager)
+{
+    if (m_volumeManager == volumeManager)
+        return;
+
+    if (m_volumeManager)
+        disconnect(m_volumeManager, nullptr, this, nullptr);
+
+    m_volumeManager = volumeManager;
+    if (m_volumeManager) {
+        connect(m_volumeManager, &VolumeManager::volumeListChanged, this, &RecordedPathsWidget::refreshRooms);
+        connect(m_volumeManager, &VolumeManager::activeVolumeChanged, this, [this](const VolumeManager::VolumeInfo &) {
+            refreshRooms();
+            loadPaths();
+        });
+        connect(m_volumeManager, &VolumeManager::activeVolumeCleared, this, [this]() {
+            refreshRooms();
+            loadPaths();
+        });
+    }
+
+    refreshRooms();
+    loadPaths();
+}
+
+void RecordedPathsWidget::refreshRooms()
+{
+    if (!m_roomCombo)
+        return;
+
+    const QSignalBlocker blocker(m_roomCombo);
+    m_roomCombo->clear();
+    m_roomCombo->addItem(QStringLiteral("No Room Selected"), QString());
+
+    if (m_volumeManager) {
+        const QList<VolumeManager::VolumeInfo> rooms = m_volumeManager->volumes();
+        for (const VolumeManager::VolumeInfo &room : rooms)
+            m_roomCombo->addItem(room.name, room.id);
+
+        const QString activeId = m_volumeManager->activeVolumeId();
+        if (!activeId.isEmpty()) {
+            const int idx = m_roomCombo->findData(activeId);
+            if (idx >= 0)
+                m_roomCombo->setCurrentIndex(idx);
+        }
+    }
+
+    updateRoomSummary();
 }
 
 void RecordedPathsWidget::addPath(const QString &name, const QVector<QVector3D> &points)
@@ -121,6 +264,17 @@ void RecordedPathsWidget::addPath(const QString &name, const QVector<QVector3D> 
 
 QString RecordedPathsWidget::getPathsDirectory()
 {
+    if (m_volumeManager && m_volumeManager->hasActiveVolume()) {
+        const QString roomPathsDir = m_volumeManager->activePathsDir();
+        if (!roomPathsDir.isEmpty()) {
+            QDir().mkpath(roomPathsDir);
+            m_pathsDirectory = QDir(roomPathsDir).absolutePath();
+            return m_pathsDirectory;
+        }
+    }
+    if (m_volumeManager)
+        return {};
+
     if (!m_pathsDirectory.isEmpty() && QDir(m_pathsDirectory).exists()) {
         return m_pathsDirectory;
     }
@@ -163,6 +317,110 @@ QString RecordedPathsWidget::getPathsDirectory()
     return m_pathsDirectory;
 }
 
+QStringList RecordedPathsWidget::legacyPathsDirectories() const
+{
+    QStringList dirs;
+    auto addDir = [&dirs](const QString &path) {
+        if (path.isEmpty())
+            return;
+        const QString abs = QDir(path).absolutePath();
+        if (QDir(abs).exists() && !dirs.contains(abs))
+            dirs.append(abs);
+    };
+
+#ifdef SOURCE_DIR
+    addDir(QString(SOURCE_DIR) + QStringLiteral("/paths"));
+#endif
+    addDir(QCoreApplication::applicationDirPath() + QStringLiteral("/paths"));
+
+    if (m_volumeManager && m_volumeManager->hasActiveVolume())
+        dirs.removeAll(QDir(m_volumeManager->activePathsDir()).absolutePath());
+
+    return dirs;
+}
+
+bool RecordedPathsWidget::writeJsonPreservingPlannerFields(const QString &destPath, const FlightPath &path,
+                                                           const QJsonObject &sourceRoot) const
+{
+    QJsonObject root = sourceRoot.isEmpty() ? plannerJsonFromPath(path) : sourceRoot;
+    root[QStringLiteral("version")] = 1;
+    root[QStringLiteral("name")] = path.name();
+    root[QStringLiteral("description")] = path.description();
+    root[QStringLiteral("created_at")] = path.createdAt().toString(Qt::ISODate);
+    root[QStringLiteral("modified_at")] = QDateTime::currentDateTime().toString(Qt::ISODate);
+    if (!root.contains(QStringLiteral("waypoints"))) {
+        QJsonArray waypointsArray;
+        for (const Waypoint &wp : path.waypoints())
+            waypointsArray.append(wp.toJson());
+        root[QStringLiteral("waypoints")] = waypointsArray;
+    }
+    if (m_volumeManager && m_volumeManager->hasActiveVolume()) {
+        const VolumeManager::VolumeInfo room = m_volumeManager->activeVolume();
+        root[QStringLiteral("room_id")] = room.id;
+        root[QStringLiteral("room_name")] = room.name;
+    }
+
+    QFile file(destPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+        return false;
+    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    return true;
+}
+
+bool RecordedPathsWidget::copyPathIntoCurrentRoom(const QString &sourcePath, QString *destPath)
+{
+    if (!m_volumeManager || !m_volumeManager->hasActiveVolume())
+        return false;
+
+    QFileInfo sourceInfo(sourcePath);
+    if (!sourceInfo.exists() || !sourceInfo.isFile())
+        return false;
+
+    const QString pathsDir = getPathsDirectory();
+    QDir().mkpath(pathsDir);
+
+    QString baseName = sourceInfo.completeBaseName();
+    QString candidate = baseName + QStringLiteral(".json");
+    QString destination = QDir(pathsDir).filePath(candidate);
+    if (QFile::exists(destination)) {
+        const QString timestamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
+        candidate = QStringLiteral("%1_imported_%2.json").arg(baseName, timestamp);
+        destination = QDir(pathsDir).filePath(candidate);
+    }
+
+    QJsonObject root = readJsonObject(sourcePath);
+    if (!root.isEmpty()) {
+        root[QStringLiteral("version")] = 1;
+        const VolumeManager::VolumeInfo room = m_volumeManager->activeVolume();
+        root[QStringLiteral("room_id")] = room.id;
+        root[QStringLiteral("room_name")] = room.name;
+
+        const QString oldBundleName = root.value(QStringLiteral("mapper_map_bundle")).toString();
+        if (!oldBundleName.trimmed().isEmpty()) {
+            const QString oldBundlePath = sourceInfo.absoluteDir().filePath(oldBundleName);
+            if (QDir(oldBundlePath).exists()) {
+                const QString roomBundle = m_volumeManager->activeMapBundleDir();
+                if (!QDir(roomBundle).exists()) {
+                    QDir().mkpath(m_volumeManager->activeMapDir());
+                    copyDirectoryRecursively(oldBundlePath, roomBundle);
+                }
+                root[QStringLiteral("mapper_map_bundle")] = QStringLiteral("../map/mapper_map");
+            }
+        }
+
+        QFile out(destination);
+        if (!out.open(QIODevice::WriteOnly | QIODevice::Text))
+            return false;
+        out.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    } else if (!QFile::copy(sourcePath, destination)) {
+        return false;
+    }
+
+    if (destPath)
+        *destPath = destination;
+    return true;
+}
+
 FlightPath RecordedPathsWidget::loadPathFromFile(const QString &filePath)
 {
     QFile file(filePath);
@@ -201,6 +459,11 @@ void RecordedPathsWidget::loadPaths()
     m_paths.clear();
     
     QString pathsDir = getPathsDirectory();
+    if (pathsDir.isEmpty()) {
+        updatePathList();
+        updateRoomSummary();
+        return;
+    }
     QDir dir(pathsDir);
     
     if (!dir.exists()) {
@@ -224,6 +487,7 @@ void RecordedPathsWidget::loadPaths()
     }
     
     updatePathList();
+    updateRoomSummary();
 }
 
 void RecordedPathsWidget::updatePathList()
@@ -281,6 +545,8 @@ void RecordedPathsWidget::updatePathDetails()
     
     // Calculate path length
     ui->pathLengthLabel->setText(QString("Length: %1 m").arg(path->totalDistance(), 0, 'f', 1));
+
+    updateRoomSummary();
     
     ui->pathDescriptionEdit->setPlainText(path->description());
     
@@ -326,6 +592,7 @@ void RecordedPathsWidget::clearPathDetails()
     ui->pathLengthLabel->clear();
     ui->pathDescriptionEdit->clear();
     ui->waypointDetailsList->clear();
+    updateRoomSummary();
 }
 
 FlightPath* RecordedPathsWidget::getSelectedPath()
@@ -419,11 +686,8 @@ void RecordedPathsWidget::onExportPath()
         "JSON Files (*.json)");
     
     if (!fileName.isEmpty()) {
-        QFile file(fileName);
-        if (file.open(QIODevice::WriteOnly)) {
-            QJsonDocument doc(path->toJson());
-            file.write(doc.toJson(QJsonDocument::Indented));
-            file.close();
+        const QJsonObject sourceRoot = readJsonObject(path->sourceFilePath());
+        if (writeJsonPreservingPlannerFields(fileName, *path, sourceRoot)) {
             QMessageBox::information(this, "Export Successful", 
                                     QString("Path exported successfully to:\n%1").arg(fileName));
         } else {
@@ -440,17 +704,8 @@ void RecordedPathsWidget::onImportPath()
         "JSON Files (*.json)");
     
     if (!fileName.isEmpty()) {
-        // Get destination path
-        QString pathsDir = getPathsDirectory();
-        QFileInfo sourceInfo(fileName);
-        
-        // Generate unique filename
-        QString timestamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
-        QString destFileName = sourceInfo.baseName() + "_imported_" + timestamp + ".json";
-        QString destPath = pathsDir + "/" + destFileName;
-        
-        // Copy the file to the paths folder
-        if (QFile::copy(fileName, destPath)) {
+        QString destPath;
+        if (copyPathIntoCurrentRoom(fileName, &destPath)) {
             // Reload paths to include the new file
             loadPaths();
             
@@ -484,11 +739,8 @@ void RecordedPathsWidget::onEditPath()
                 filePath = QDir(pathsDir).filePath(fileName);
             }
 
-            QFile file(filePath);
-            if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-                file.write(QJsonDocument(path->toJson()).toJson(QJsonDocument::Indented));
-                file.close();
-            }
+            const QJsonObject sourceRoot = readJsonObject(filePath);
+            writeJsonPreservingPlannerFields(filePath, *path, sourceRoot);
         }
         
         const QString jsonPath = canonicalOrAbsolutePath(path->sourceFilePath());
@@ -516,16 +768,20 @@ void RecordedPathsWidget::onDuplicatePath()
     duplicate.setSourceFilePath(QString());
     const QString timestamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
     duplicate.setName(path->name() + QStringLiteral(" (Copy)"));
+    duplicate.setCreatedAt(QDateTime::currentDateTime());
+    duplicate.setModifiedAt(QDateTime::currentDateTime());
 
     const QString pathsDir = getPathsDirectory();
     const QString base = FlightPath::fileBaseFromDisplayName(duplicate.name());
     const QString destPath = QDir(pathsDir).filePath(QStringLiteral("%1_%2.json").arg(base, timestamp));
     
-    QFile file(destPath);
-    if (file.open(QIODevice::WriteOnly)) {
-        file.write(QJsonDocument(duplicate.toJson()).toJson(QJsonDocument::Indented));
-        file.close();
-        
+    QJsonObject sourceRoot = readJsonObject(path->sourceFilePath());
+    if (!sourceRoot.isEmpty()) {
+        sourceRoot[QStringLiteral("id")] = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        sourceRoot[QStringLiteral("name")] = duplicate.name();
+        sourceRoot[QStringLiteral("created_at")] = QDateTime::currentDateTime().toString(Qt::ISODate);
+    }
+    if (writeJsonPreservingPlannerFields(destPath, duplicate, sourceRoot)) {
         // Reload paths to include the new file
         loadPaths();
         
@@ -536,4 +792,178 @@ void RecordedPathsWidget::onDuplicatePath()
     } else {
         QMessageBox::warning(this, "Duplicate Failed", "Failed to duplicate path file.");
     }
+}
+
+void RecordedPathsWidget::onRoomSelectionChanged(int index)
+{
+    if (!m_volumeManager || !m_roomCombo)
+        return;
+
+    const QString roomId = m_roomCombo->itemData(index).toString();
+    if (roomId.isEmpty())
+        m_volumeManager->clearActiveVolume();
+    else
+        m_volumeManager->setActiveVolume(roomId);
+}
+
+void RecordedPathsWidget::onNewRoom()
+{
+    if (!m_volumeManager)
+        return;
+
+    bool ok = false;
+    const QString name = QInputDialog::getText(this,
+                                               QStringLiteral("Create Room"),
+                                               QStringLiteral("Room name:"),
+                                               QLineEdit::Normal,
+                                               QString(),
+                                               &ok).trimmed();
+    if (!ok || name.isEmpty())
+        return;
+
+    const QString id = m_volumeManager->createVolume(name);
+    if (id.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Create Room"), QStringLiteral("Could not create the room."));
+        return;
+    }
+    m_volumeManager->setActiveVolume(id);
+}
+
+void RecordedPathsWidget::onRenameRoom()
+{
+    if (!m_volumeManager || !m_volumeManager->hasActiveVolume())
+        return;
+
+    const VolumeManager::VolumeInfo room = m_volumeManager->activeVolume();
+    bool ok = false;
+    const QString name = QInputDialog::getText(this,
+                                               QStringLiteral("Rename Room"),
+                                               QStringLiteral("Room name:"),
+                                               QLineEdit::Normal,
+                                               room.name,
+                                               &ok).trimmed();
+    if (!ok || name.isEmpty())
+        return;
+
+    if (!m_volumeManager->renameVolume(room.id, name, room.description))
+        QMessageBox::warning(this, QStringLiteral("Rename Room"), QStringLiteral("Could not rename the room."));
+}
+
+void RecordedPathsWidget::onImportLegacyPaths()
+{
+    if (!m_volumeManager || !m_volumeManager->hasActiveVolume()) {
+        QMessageBox::information(this, QStringLiteral("Import Old Paths"),
+                                 QStringLiteral("Select or create a room before importing old paths."));
+        return;
+    }
+
+    QStringList candidates;
+    for (const QString &dirPath : legacyPathsDirectories()) {
+        QDir dir(dirPath);
+        const QFileInfoList files = dir.entryInfoList(QStringList() << QStringLiteral("*.json"), QDir::Files, QDir::Name);
+        for (const QFileInfo &file : files)
+            candidates.append(file.absoluteFilePath());
+    }
+
+    if (candidates.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("Import Old Paths"),
+                                 QStringLiteral("No legacy JSON paths were found outside the selected room."));
+        return;
+    }
+
+    const int ret = QMessageBox::question(
+        this,
+        QStringLiteral("Import Old Paths"),
+        QStringLiteral("Import %1 legacy path file(s) into room \"%2\"?\n\nOriginal files will be left in place.")
+            .arg(candidates.size())
+            .arg(m_volumeManager->activeVolume().name),
+        QMessageBox::Yes | QMessageBox::No);
+    if (ret != QMessageBox::Yes)
+        return;
+
+    int copied = 0;
+    for (const QString &candidate : candidates) {
+        if (copyPathIntoCurrentRoom(candidate))
+            ++copied;
+    }
+
+    loadPaths();
+    QMessageBox::information(this, QStringLiteral("Import Old Paths"),
+                             QStringLiteral("Imported %1 of %2 path file(s).").arg(copied).arg(candidates.size()));
+}
+
+void RecordedPathsWidget::onCleanupLegacyPaths()
+{
+    if (!m_volumeManager || !m_volumeManager->hasActiveVolume()) {
+        QMessageBox::information(this, QStringLiteral("Clean Old Paths"),
+                                 QStringLiteral("Select a room before cleaning old path files."));
+        return;
+    }
+
+    QStringList deleteCandidates;
+    const QDir activeDir(getPathsDirectory());
+    for (const QString &dirPath : legacyPathsDirectories()) {
+        QDir dir(dirPath);
+        const QFileInfoList files = dir.entryInfoList(QStringList() << QStringLiteral("*.json"), QDir::Files, QDir::Name);
+        for (const QFileInfo &file : files) {
+            if (QFile::exists(activeDir.filePath(file.fileName())))
+                deleteCandidates.append(file.absoluteFilePath());
+        }
+    }
+
+    if (deleteCandidates.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("Clean Old Paths"),
+                                 QStringLiteral("No duplicate legacy path files were found."));
+        return;
+    }
+
+    const int ret = QMessageBox::warning(
+        this,
+        QStringLiteral("Clean Old Paths"),
+        QStringLiteral("Delete %1 old duplicate file(s) from the legacy paths folders?\n\nThis cannot be undone.")
+            .arg(deleteCandidates.size()),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (ret != QMessageBox::Yes)
+        return;
+
+    int removed = 0;
+    for (const QString &path : deleteCandidates) {
+        QFile f(path);
+        f.setPermissions(QFileDevice::ReadUser | QFileDevice::WriteUser);
+        if (f.remove())
+            ++removed;
+    }
+
+    QMessageBox::information(this, QStringLiteral("Clean Old Paths"),
+                             QStringLiteral("Deleted %1 of %2 duplicate file(s).").arg(removed).arg(deleteCandidates.size()));
+}
+
+void RecordedPathsWidget::updateRoomSummary()
+{
+    const bool hasRoom = m_volumeManager && m_volumeManager->hasActiveVolume();
+    if (m_renameRoomButton)
+        m_renameRoomButton->setEnabled(hasRoom);
+    if (m_importLegacyButton)
+        m_importLegacyButton->setEnabled(hasRoom);
+    if (m_cleanupLegacyButton)
+        m_cleanupLegacyButton->setEnabled(hasRoom);
+
+    if (!m_roomMapLabel)
+        return;
+    if (!hasRoom) {
+        m_roomMapLabel->setText(QStringLiteral("Map: no room selected"));
+        return;
+    }
+
+    const VolumeManager::MapInfo map = m_volumeManager->activeMapInfo();
+    QString status = QStringLiteral("missing");
+    if (map.hasBundle())
+        status = QStringLiteral("bundle available");
+    else if (map.hasMesh())
+        status = QStringLiteral("mesh available");
+    else if (!map.remotePath.trimmed().isEmpty())
+        status = QStringLiteral("remote only");
+
+    m_roomMapLabel->setText(QStringLiteral("Map: %1 (%2)").arg(m_volumeManager->activeVolume().name, status));
 }
