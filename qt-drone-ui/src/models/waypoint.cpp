@@ -80,6 +80,7 @@ QJsonObject Waypoint::toJson() const
     json["sequence"] = m_sequence;
     json["type"] = m_waypointType;
     json["acceptance_radius"] = static_cast<double>(m_acceptanceRadius);
+    json["corner_radius"] = static_cast<double>(m_cornerRadiusM);
     json["pass_through"] = m_passThrough;
     
     // Local position for UI
@@ -109,6 +110,7 @@ Waypoint Waypoint::fromJson(const QJsonObject &json)
     wp.m_sequence = json["sequence"].toInt(0);
     wp.m_waypointType = json["type"].toString("NAV_WAYPOINT");
     wp.m_acceptanceRadius = static_cast<float>(json["acceptance_radius"].toDouble(0.5));
+    wp.m_cornerRadiusM = static_cast<float>(json["corner_radius"].toDouble(0.0));
     wp.m_passThrough = json["pass_through"].toBool(false);
     
     // Local position
@@ -132,6 +134,33 @@ bool Waypoint::isMapperHome() const
 void Waypoint::setAsMapperHome(bool enable)
 {
     m_waypointType = enable ? QStringLiteral("MAPPER_HOME") : QStringLiteral("NAV_WAYPOINT");
+}
+
+void Waypoint::setCurve(bool enable)
+{
+    if (isMapperHome())
+        return;
+
+    if (enable) {
+        m_waypointType = QStringLiteral("CURVE");
+        m_yawAngle = 0.0f; // curve points have auto yaw
+    } else {
+        if (m_waypointType == QStringLiteral("CURVE"))
+            m_waypointType = QStringLiteral("NAV_WAYPOINT");
+    }
+}
+
+void Waypoint::setYawAngle(float angle)
+{
+    if (isCurve()) return; // curve points have auto yaw — ignore user setting
+    m_yawAngle = angle;
+}
+
+void Waypoint::setCornerRadius(float r)
+{
+    m_cornerRadiusM = qBound(0.0f, r, 10.0f);
+    // NOTE: radius is deliberately decoupled from waypoint type.
+    // Use setCurve() to toggle CURVE mode independently.
 }
 
 QString Waypoint::toString() const
@@ -162,7 +191,8 @@ bool Waypoint::operator==(const Waypoint &other) const
            std::abs(m_relativeAltitudeM - other.m_relativeAltitudeM) < kFloatEps &&
            std::abs(m_acceptanceRadius - other.m_acceptanceRadius) < kFloatEps &&
            std::abs(m_holdTime - other.m_holdTime) < kFloatEps &&
-           std::abs(m_yawAngle - other.m_yawAngle) < kFloatEps;
+           std::abs(m_yawAngle - other.m_yawAngle) < kFloatEps &&
+           std::abs(m_cornerRadiusM - other.m_cornerRadiusM) < kFloatEps;
 }
 
 bool Waypoint::operator!=(const Waypoint &other) const
