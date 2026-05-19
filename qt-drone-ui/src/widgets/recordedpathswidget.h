@@ -10,7 +10,8 @@
 #include <QLineEdit>
 #include <QTextEdit>
 #include <QGroupBox>
-#include <QComboBox>
+#include <QMenu>
+#include <QToolButton>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QVector3D>
@@ -40,6 +41,7 @@ signals:
     void pathLoadRequested(const QVector<QVector3D> &points);
     /// Full planner JSON (waypoints + mapper_map_path); preferred when the list entry came from disk.
     void pathJsonLoadRequested(const QString &absoluteJsonPath);
+    void roomChangeRequested(const QString &roomId);
 
 private slots:
     void onPathSelectionChanged();
@@ -49,9 +51,9 @@ private slots:
     void onImportPath();
     void onEditPath();
     void onDuplicatePath();
-    void onRoomSelectionChanged(int index);
     void onNewRoom();
     void onRenameRoom();
+    void onDeleteRoom();
     void onImportLegacyPaths();
     void onCleanupLegacyPaths();
 
@@ -73,11 +75,11 @@ private:
     Ui::RecordedPathsWidget *ui;
     QString m_pathsDirectory;
     VolumeManager *m_volumeManager;
-    QComboBox *m_roomCombo;
+    QToolButton *m_roomButton;
+    QMenu *m_roomMenu;
     QPushButton *m_newRoomButton;
     QPushButton *m_renameRoomButton;
-    QPushButton *m_importLegacyButton;
-    QPushButton *m_cleanupLegacyButton;
+    QPushButton *m_deleteRoomButton;
     QLabel *m_roomMapLabel;
     
     // Data

@@ -88,6 +88,8 @@ void DroneController::initializeConnection()
             this, &DroneController::onVOXLDataReceived);
     connect(m_voxlConnection, &VOXLConnection::errorOccurred,
             this, &DroneController::onVOXLError);
+    connect(m_voxlConnection, &VOXLConnection::statusChanged,
+            this, &DroneController::messageReceived);
     connect(m_voxlConnection, &VOXLConnection::mapperBundleDownloadFinished,
             this, &DroneController::mapperBundleDownloadFinished);
     connect(m_voxlConnection, &VOXLConnection::mapperBundleUploadFinished,
@@ -441,29 +443,38 @@ void DroneController::onVOXLDataReceived(const QJsonObject &data)
 
         if (statusData.contains("position")) {
             QJsonObject pos = statusData["position"].toObject();
-            m_currentStatus.position = QVector3D(
-                pos["lat"].toDouble(),
-                pos["lon"].toDouble(),
-                pos["alt"].toDouble()
-            );
-            m_currentStatus.positionIsMapperLocal = false;
-            m_currentStatus.altitude = pos["alt"].toDouble();
+            // Do not let GPS telemetry overwrite the mapper-local pose after
+            // VOXL Mapper is available; mixing frames here causes the status UI
+            // to flicker between lat/lon and local XYZ.
+            if (!m_haveMapperPose) {
+                m_currentStatus.position = QVector3D(
+                    pos["lat"].toDouble(),
+                    pos["lon"].toDouble(),
+                    pos["alt"].toDouble()
+                );
+                m_currentStatus.positionIsMapperLocal = false;
+                m_currentStatus.altitude = pos["alt"].toDouble();
+            }
         }
 
         if (statusData.contains("latitude") || statusData.contains("longitude")) {
-            m_currentStatus.positionIsMapperLocal = false;
-            m_currentStatus.position.setX(static_cast<float>(statusData["latitude"].toDouble(m_currentStatus.position.x())));
-            m_currentStatus.position.setY(static_cast<float>(statusData["longitude"].toDouble(m_currentStatus.position.y())));
+            if (!m_haveMapperPose) {
+                m_currentStatus.positionIsMapperLocal = false;
+                m_currentStatus.position.setX(static_cast<float>(statusData["latitude"].toDouble(m_currentStatus.position.x())));
+                m_currentStatus.position.setY(static_cast<float>(statusData["longitude"].toDouble(m_currentStatus.position.y())));
+            }
         }
         if (statusData.contains("altitude")) {
-            m_currentStatus.altitude = static_cast<float>(statusData["altitude"].toDouble());
-            if (!m_currentStatus.positionIsMapperLocal)
+            if (!m_haveMapperPose) {
+                m_currentStatus.altitude = static_cast<float>(statusData["altitude"].toDouble());
                 m_currentStatus.position.setZ(m_currentStatus.altitude);
+            }
         } else if (statusData.contains("gpsAltitude")) {
-            if (!m_currentStatus.positionIsMapperLocal)
+            if (!m_haveMapperPose && !m_currentStatus.positionIsMapperLocal)
                 m_currentStatus.position.setZ(static_cast<float>(statusData["gpsAltitude"].toDouble()));
         } else if (statusData.contains("localAltitude")) {
-            m_currentStatus.altitude = static_cast<float>(statusData["localAltitude"].toDouble());
+            if (!m_haveMapperPose)
+                m_currentStatus.altitude = static_cast<float>(statusData["localAltitude"].toDouble());
         }
         if (statusData.contains("groundSpeed")) {
             m_currentStatus.groundSpeed = static_cast<float>(statusData["groundSpeed"].toDouble());
@@ -926,10 +937,31 @@ void DroneController::saveMapperMap(const QString &format, const QString &remote
         }
         return;
     }
-    m_mapperClient->saveMap(format, remotePath);
-    emit messageReceived(remotePath.trimmed().isEmpty()
-                             ? QStringLiteral("VOXL Mapper save map command sent")
-                             : QStringLiteral("VOXL Mapper save map command sent: %1").arg(remotePath.trimmed()));
+    const QString cleanRemote = remotePath.trimmed();
+    if (!cleanRemote.isEmpty() && m_voxlConnection) {
+        m_voxlConnection->cancelCurrentScp(QStringLiteral("Cancelled previous SCP transfer before starting a new mapper map save."));
+        QString quotedRemote = cleanRemote;
+        quotedRemote.replace(QStringLiteral("'"), QStringLiteral("'\"'\"'"));
+        emit messageReceived(QStringLiteral("Preparing VOXL mapper save directory: %1").arg(cleanRemote));
+        m_voxlConnection->sshRunCommand(QStringLiteral("mkdir -p '%1'").arg(quotedRemote));
+    }
+
+    auto sendSave = [this, format, remotePath]() {
+        if (!m_mapperClient || !m_mapperClient->isMeshConnected()) {
+            emit errorOccurred(QStringLiteral("Cannot save map: VOXL Mapper mesh socket disconnected"));
+            return;
+        }
+        m_mapperClient->saveMap(format, remotePath);
+        emit messageReceived(remotePath.trimmed().isEmpty()
+                                 ? QStringLiteral("VOXL Mapper save_map command sent; waiting for files on drone...")
+                                 : QStringLiteral("VOXL Mapper save_map command sent: %1; waiting for files on drone...")
+                                       .arg(remotePath.trimmed()));
+    };
+
+    if (!cleanRemote.isEmpty() && m_voxlConnection)
+        QTimer::singleShot(900, this, sendSave);
+    else
+        sendSave();
 }
 
 void DroneController::downloadMapperMapFromVehicle(const QString &localDir, const QString &remotePath)

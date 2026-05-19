@@ -35,6 +35,7 @@
 #include <vector>
 #include "../models/waypoint.h"
 #include "../models/trajectory.h"
+#include "../utils/volumemanager.h"
 
 class DroneController;
 class QFrame;
@@ -302,6 +303,7 @@ public:
     void setPlannerPathsDirectory(const QString &dir);
     void setPlannerRoomContext(const QString &roomId, const QString &roomName,
                                const QString &pathsDir, const QString &mapDir);
+    void setMissionRooms(const QList<VolumeManager::VolumeInfo> &rooms, const QString &activeRoomId);
 
     void setNextWaypointAsCurve(bool enable, float defaultRadiusM);
     bool selectedWaypointIsCurve() const;
@@ -325,10 +327,14 @@ public:
     /// of the raw trace into the scene. Returns false on read/parse failure.
     bool loadPathFromRecording(const QString &fileName);
     void clearMapperVisualization();
+    bool hasEditorWaypoints() const;
+    void prepareForRoomSwitch();
 
 signals:
     void pathSaved(const QString &name, const QVector<QVector3D> &points);
     void waypointsChanged(const std::vector<Waypoint> &waypoints);
+    void missionRoomChangeRequested(const QString &roomId);
+    void missionRoomCreateRequested();
 
 private slots:
     void onClearPath();
@@ -415,6 +421,8 @@ private:
     
     // Path controls
     QToolButton *m_pathMenuButton;
+    QToolButton *m_missionRoomButton;
+    QMenu *m_missionRoomMenu;
     QPushButton *m_uploadMissionButton;
     QPushButton *m_missionPlayButton;
     QPushButton *m_missionPauseContinueButton;
@@ -426,6 +434,7 @@ private:
     QPushButton *m_previewDecorationsButton;
     QLineEdit *m_pathNameEdit;
     QLabel *m_missionStatusLabel;
+    QLabel *m_mapTransferStatusLabel;
 
     // Curve-mode state
     bool  m_nextWaypointIsCurve = false;
@@ -462,9 +471,11 @@ private:
     QString m_uploadedWaypointFingerprint;
     QString m_lastControllerError;
     QString m_lastMissionStatusText;
+    QString m_mapTransferStatusText;
 
     bool m_updatingWaypointTable;
     bool m_reorderingWaypointRows;
+    bool m_updatingMissionRoomMenu;
 
     void removeMapperHomeWaypointAndRefresh();
 };

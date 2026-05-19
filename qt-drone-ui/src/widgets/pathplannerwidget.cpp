@@ -15,6 +15,7 @@
 #include <QCoreApplication>
 #include <QApplication>
 #include <QDir>
+#include <QDirIterator>
 #include <QDateTime>
 #include <QtMath>
 #include <QPainter>
@@ -55,6 +56,60 @@ static QString plannerPathsDirectory()
         QDir().mkpath(exePathsDir);
     return exeDir.absolutePath();
 #endif
+}
+
+static bool directoryContainsFiles(const QString &path)
+{
+    if (path.trimmed().isEmpty() || !QDir(path).exists())
+        return false;
+
+    QDirIterator it(path, QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+    return it.hasNext();
+}
+
+static QString compactPathSegment(const QString &segment)
+{
+    if (segment.size() <= 22)
+        return segment;
+    return segment.left(8) + QStringLiteral("...") + segment.right(5);
+}
+
+static QString compactPathForStatus(const QString &path)
+{
+    QString normalized = QDir::fromNativeSeparators(path.trimmed());
+    if (normalized.isEmpty())
+        return normalized;
+
+    const bool hasDrive = normalized.size() > 1 && normalized.at(1) == QLatin1Char(':');
+    const QString prefix = hasDrive ? normalized.left(2) + QStringLiteral("/.../")
+                                    : (normalized.startsWith(QLatin1Char('/')) ? QStringLiteral("/.../") : QStringLiteral(".../"));
+    const QStringList parts = normalized.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    const int keepCount = qMin(3, parts.size());
+    QStringList tail;
+    for (int i = parts.size() - keepCount; i < parts.size(); ++i)
+        tail << compactPathSegment(parts.at(i));
+
+    return prefix + tail.join(QLatin1Char('/'));
+}
+
+static QString compactMapTransferStatus(const QString &message)
+{
+    const QString marker = QStringLiteral("SCP: ");
+    const int markerIndex = message.indexOf(marker, 0, Qt::CaseInsensitive);
+    if (markerIndex < 0)
+        return message;
+
+    const int pathsStart = markerIndex + marker.size();
+    const QString prefix = message.left(pathsStart);
+    const QString paths = message.mid(pathsStart);
+    const QString arrow = QStringLiteral(" -> ");
+    const int arrowIndex = paths.indexOf(arrow);
+    if (arrowIndex < 0)
+        return message;
+
+    const QString remotePath = paths.left(arrowIndex);
+    const QString localPath = paths.mid(arrowIndex + arrow.size());
+    return prefix + compactPathForStatus(remotePath) + arrow + compactPathForStatus(localPath);
 }
 
 // Waypoint / planner "logical" frame — same numbers as saved JSON and the RGB origin gizmo:
@@ -2808,7 +2863,7 @@ void PathPlannerOpenGLWidget::resetCamera()
 
 // PathPlannerWidget Implementation
 PathPlannerWidget::PathPlannerWidget(QWidget *parent)
-    : QWidget(parent), m_mainLayout(nullptr), m_contentLayout(nullptr), m_topBarWidget(nullptr), m_controlsLayout(nullptr), m_topBarPreUploadToolbar(nullptr), m_topBarEditingCluster(nullptr), m_topBarMissionCluster(nullptr), m_topBarReturnToEditButton(nullptr), m_topBarLandButton(nullptr), m_topBarRtlButton(nullptr), m_topBarForceDisarmButton(nullptr), m_topBarFlightTermButton(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_viewGroup(nullptr), m_waypointTable(nullptr), m_waypointCountLabel(nullptr), m_waypointDefaultsButton(nullptr), m_defaultAcceptanceRadiusSpinBox(nullptr), m_defaultHoldSpinBox(nullptr), m_defaultYawSpinBox(nullptr), m_pathMenuButton(nullptr), m_uploadMissionButton(nullptr), m_missionPlayButton(nullptr), m_missionPauseContinueButton(nullptr), m_createModeButton(nullptr), m_addCurvePointButton(nullptr), m_transformModeButton(nullptr), m_playPathPreviewButton(nullptr), m_stopPathPreviewButton(nullptr), m_previewDecorationsButton(nullptr), m_pathNameEdit(nullptr), m_missionStatusLabel(nullptr), m_resetCameraButton(nullptr), m_viewModeButton(nullptr), m_defaultAltitudeSpinBox(nullptr), m_undoEditButton(nullptr), m_redoEditButton(nullptr), m_pathPreviewAnimationTimer(nullptr), m_pathPreviewWaypointIndex(0), m_pathPreviewProgress(0.0f), m_isPlayingPathPreview(false), m_selectedWaypoint(-1), m_droneController(nullptr), m_hasUploadedSnapshot(false), m_waypointsDirtySinceUpload(false), m_editingLocked(false), m_updatingWaypointTable(false), m_reorderingWaypointRows(false)
+    : QWidget(parent), m_mainLayout(nullptr), m_contentLayout(nullptr), m_topBarWidget(nullptr), m_controlsLayout(nullptr), m_topBarPreUploadToolbar(nullptr), m_topBarEditingCluster(nullptr), m_topBarMissionCluster(nullptr), m_topBarReturnToEditButton(nullptr), m_topBarLandButton(nullptr), m_topBarRtlButton(nullptr), m_topBarForceDisarmButton(nullptr), m_topBarFlightTermButton(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_viewGroup(nullptr), m_waypointTable(nullptr), m_waypointCountLabel(nullptr), m_waypointDefaultsButton(nullptr), m_defaultAcceptanceRadiusSpinBox(nullptr), m_defaultHoldSpinBox(nullptr), m_defaultYawSpinBox(nullptr), m_pathMenuButton(nullptr), m_missionRoomButton(nullptr), m_missionRoomMenu(nullptr), m_uploadMissionButton(nullptr), m_missionPlayButton(nullptr), m_missionPauseContinueButton(nullptr), m_createModeButton(nullptr), m_addCurvePointButton(nullptr), m_transformModeButton(nullptr), m_playPathPreviewButton(nullptr), m_stopPathPreviewButton(nullptr), m_previewDecorationsButton(nullptr), m_pathNameEdit(nullptr), m_missionStatusLabel(nullptr), m_mapTransferStatusLabel(nullptr), m_resetCameraButton(nullptr), m_viewModeButton(nullptr), m_defaultAltitudeSpinBox(nullptr), m_undoEditButton(nullptr), m_redoEditButton(nullptr), m_pathPreviewAnimationTimer(nullptr), m_pathPreviewWaypointIndex(0), m_pathPreviewProgress(0.0f), m_isPlayingPathPreview(false), m_selectedWaypoint(-1), m_droneController(nullptr), m_hasUploadedSnapshot(false), m_waypointsDirtySinceUpload(false), m_editingLocked(false), m_updatingWaypointTable(false), m_reorderingWaypointRows(false), m_updatingMissionRoomMenu(false)
 {
     setupUI();
 
@@ -2841,6 +2896,16 @@ void PathPlannerWidget::setupUI()
     setupTopBar();
     visualizerLayout->addWidget(m_topBarWidget);
 
+    m_mapTransferStatusLabel = new QLabel(visualizerPane);
+    m_mapTransferStatusLabel->setTextFormat(Qt::RichText);
+    m_mapTransferStatusLabel->setWordWrap(true);
+    m_mapTransferStatusLabel->setVisible(false);
+    m_mapTransferStatusLabel->setMinimumHeight(24);
+    m_mapTransferStatusLabel->setStyleSheet(
+        "QLabel { background-color: #172033; color: #bfdbfe; border: 1px solid #2563eb; "
+        "border-radius: 3px; padding: 3px 8px; font-size: 11px; font-weight: 600; }");
+    visualizerLayout->addWidget(m_mapTransferStatusLabel);
+
     // Create OpenGL widget
     m_openglWidget = new PathPlannerOpenGLWidget;
     visualizerLayout->addWidget(m_openglWidget, 1);
@@ -2863,6 +2928,8 @@ void PathPlannerWidget::setupUI()
     QScrollArea *controlsScrollArea = new QScrollArea(this);
     controlsScrollArea->setWidgetResizable(true);
     controlsScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    controlsScrollArea->setMinimumWidth(300);
+    controlsScrollArea->setMaximumWidth(380);
     controlsScrollArea->setStyleSheet("QScrollArea { border: none; background: transparent; }");
 
     QWidget *controlsContainer = new QWidget;
@@ -2873,6 +2940,8 @@ void PathPlannerWidget::setupUI()
 
     controlsScrollArea->setWidget(controlsContainer);
     m_contentLayout->addWidget(controlsScrollArea, 1);
+    m_contentLayout->setStretch(0, 1);
+    m_contentLayout->setStretch(1, 0);
 
     setupControls();
     setupWaypointTable();
@@ -3228,7 +3297,7 @@ void PathPlannerWidget::setupTopBar()
     m_pathMenuButton->setMenu(pathMenu);
 
     m_pathNameEdit = new QLineEdit("New Path", m_topBarWidget);
-    m_pathNameEdit->setMinimumWidth(220);
+    m_pathNameEdit->setMinimumWidth(160);
     m_pathNameEdit->setPlaceholderText("Path name");
     m_pathNameEdit->setStyleSheet(
         "QLineEdit { background-color: #2b2f35; color: #e5e7eb; border: 1px solid #4b5563; border-radius: 3px; padding: 3px 8px; } "
@@ -3238,11 +3307,38 @@ void PathPlannerWidget::setupTopBar()
             m_waypointGroup->setTitle("Waypoints - " + (text.isEmpty() ? QString("New Path") : text));
     });
 
+    QLabel *roomLabel = new QLabel(QStringLiteral("Room:"), m_topBarWidget);
+    roomLabel->setStyleSheet(QStringLiteral("QLabel { color: #cbd5e1; font-size: 11px; font-weight: 600; }"));
+    m_missionRoomButton = new QToolButton(m_topBarWidget);
+    m_missionRoomButton->setText(QStringLiteral("No Room"));
+    m_missionRoomButton->setMinimumWidth(150);
+    m_missionRoomButton->setMaximumWidth(220);
+    m_missionRoomButton->setFixedHeight(24);
+    m_missionRoomButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_missionRoomButton->setToolTip(QStringLiteral("Room/map target for saving and loading trajectories"));
+    m_missionRoomButton->setStyleSheet(QStringLiteral(
+        "QToolButton { background:#374151; color:#e5e7eb; border:1px solid #4b5563; padding:2px 8px; border-radius:3px; font-size:11px; text-align:left; }"
+        "QToolButton:hover { background:#4b5563; }"));
+    m_missionRoomMenu = new QMenu(m_missionRoomButton);
+    m_missionRoomMenu->setStyleSheet(QStringLiteral(
+        "QMenu { background-color:#2d2d2d; color:#e5e7eb; border:1px solid #4b5563; }"
+        "QMenu::item { padding:5px 24px 5px 12px; }"
+        "QMenu::item:selected { background-color:#374151; }"
+        "QMenu::separator { height:1px; background:#4b5563; margin:4px 0; }"));
+    connect(m_missionRoomButton, &QToolButton::clicked, this, [this]() {
+        if (!m_missionRoomMenu || !m_missionRoomButton)
+            return;
+        m_missionRoomMenu->popup(m_missionRoomButton->mapToGlobal(QPoint(0, m_missionRoomButton->height())));
+    });
+
     m_topBarEditingCluster = new QWidget(m_topBarWidget);
     QHBoxLayout *editLay = new QHBoxLayout(m_topBarEditingCluster);
     editLay->setContentsMargins(0, 0, 0, 0);
     editLay->setSpacing(4);
     editLay->addWidget(m_pathMenuButton);
+    editLay->addWidget(roomLabel);
+    editLay->addWidget(m_missionRoomButton);
+    makeThinSeparator(editLay);
     editLay->addWidget(m_pathNameEdit);
     makeThinSeparator(editLay);
     editLay->addWidget(m_transformModeButton);
@@ -3683,10 +3779,16 @@ void PathPlannerWidget::onSavePath()
     const QString fileName = dir.absoluteFilePath(sanitizedName + QStringLiteral(".json"));
     if (QFile::exists(fileName))
     {
-        QMessageBox::warning(this, "Save Path",
-                             QString("A saved waypoint path named '%1' already exists.\nPlease choose a new name.")
-                                 .arg(pathName));
-        return;
+        const QMessageBox::StandardButton overwrite = QMessageBox::question(
+            this,
+            "Save Path",
+            QString("A saved waypoint path named '%1' already exists in this room.\n\n"
+                    "Overwrite the trajectory and replace this room's saved map with the current drone map?")
+                .arg(pathName),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (overwrite != QMessageBox::Yes)
+            return;
     }
 
     QVector<QVector3D> points;
@@ -3722,28 +3824,18 @@ void PathPlannerWidget::onSavePath()
 
         m_backgroundBundleJsonPath = fileName;
         m_backgroundBundleFolderName = bundleFolderName;
+        m_mapTransferStatusText = QStringLiteral("Path saved. Preparing VOXL map save folder...");
 
         m_droneController->saveMapperMap(QStringLiteral("ply"), remotePkg);
-
-        if (m_missionStatusLabel) {
-            m_missionStatusLabel->setText(
-                QStringLiteral("<span style=\"color:#93c5fd;font-weight:600;\">Path saved — copying mapper map from "
-                               "VOXL (scp)…</span>"));
-            m_missionStatusLabel->setStyleSheet(QStringLiteral("QLabel { border: none; font-size: 11px; }"));
-        }
+        updateMissionChrome();
 
         QTimer::singleShot(4000, this, [this, localBundleAbsPath, remotePkg]() {
             if (!m_droneController)
                 return;
+            m_mapTransferStatusText = QStringLiteral("Downloading saved mapper map from VOXL via SCP...");
+            updateMissionChrome();
             m_droneController->downloadMapperMapFromVehicle(localBundleAbsPath, remotePkg);
         });
-
-        QMessageBox::information(
-            this,
-            "Save Path",
-            QString("Path saved to:\n%1\n\nThe room map was cleared locally and is copying from VOXL into:\n%2\n\n"
-                    "You will get another message when that finishes (or if it fails).")
-                .arg(fileName, localBundleAbsPath));
         return;
     }
 
@@ -3880,6 +3972,21 @@ void PathPlannerWidget::clearMapperVisualization()
         return;
     m_openglWidget->setMapperRenderData({}, {});
     m_openglWidget->setMapperMeshData({}, {}, {});
+}
+
+bool PathPlannerWidget::hasEditorWaypoints() const
+{
+    return m_openglWidget && !m_openglWidget->waypoints().empty();
+}
+
+void PathPlannerWidget::prepareForRoomSwitch()
+{
+    if (m_pathNameEdit)
+        m_pathNameEdit->setText(QStringLiteral("New Path"));
+    clearMapperVisualization();
+    m_mapperMapPath.clear();
+    m_mapperMapBundleDir.clear();
+    clearPath();
 }
 
 bool PathPlannerWidget::loadPathFromFile(const QString &fileName, bool showSuccessDialog)
@@ -4531,6 +4638,17 @@ void PathPlannerWidget::updateMissionChrome()
         m_missionStatusLabel->setToolTip(connected ? vehicleText : QString());
     }
 
+    if (m_mapTransferStatusLabel) {
+        const bool showTransferStatus = !m_mapTransferStatusText.trimmed().isEmpty();
+        const QString compactStatus = compactMapTransferStatus(m_mapTransferStatusText);
+        m_mapTransferStatusLabel->setVisible(showTransferStatus);
+        m_mapTransferStatusLabel->setText(showTransferStatus
+                                              ? QStringLiteral("Map save debug: %1")
+                                                    .arg(compactStatus.toHtmlEscaped())
+                                              : QString());
+        m_mapTransferStatusLabel->setToolTip(showTransferStatus ? m_mapTransferStatusText : QString());
+    }
+
     const bool shouldLockEditing = (phase == MissionWorkspacePhase::UploadedReady ||
                                     phase == MissionWorkspacePhase::Running ||
                                     phase == MissionWorkspacePhase::Paused) &&
@@ -4657,6 +4775,10 @@ bool PathPlannerWidget::saveToJson(const QString &path, const QString &mapperMap
     root["waypoints"] = waypointsArray;
 
     QJsonDocument doc(root);
+    const QFileInfo fileInfo(path);
+    if (!QDir().mkpath(fileInfo.absolutePath()))
+        return false;
+
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly))
     {
@@ -4772,6 +4894,52 @@ void PathPlannerWidget::setPlannerRoomContext(const QString &roomId, const QStri
     setPlannerPathsDirectory(pathsDir);
 }
 
+void PathPlannerWidget::setMissionRooms(const QList<VolumeManager::VolumeInfo> &rooms, const QString &activeRoomId)
+{
+    if (!m_missionRoomButton || !m_missionRoomMenu)
+        return;
+
+    m_updatingMissionRoomMenu = true;
+    m_missionRoomMenu->clear();
+
+    QString activeRoomName = QStringLiteral("No Room");
+    for (const VolumeManager::VolumeInfo &room : rooms) {
+        QAction *roomAction = m_missionRoomMenu->addAction(room.name);
+        roomAction->setCheckable(true);
+        roomAction->setChecked(room.id == activeRoomId);
+        connect(roomAction, &QAction::triggered, this, [this, room]() {
+            if (!m_updatingMissionRoomMenu)
+                emit missionRoomChangeRequested(room.id);
+        });
+        if (room.id == activeRoomId)
+            activeRoomName = room.name;
+    }
+
+    if (!rooms.isEmpty())
+        m_missionRoomMenu->addSeparator();
+
+    QAction *noRoomAction = m_missionRoomMenu->addAction(QStringLiteral("No Room"));
+    noRoomAction->setCheckable(true);
+    noRoomAction->setChecked(activeRoomId.isEmpty());
+    connect(noRoomAction, &QAction::triggered, this, [this]() {
+        if (!m_updatingMissionRoomMenu)
+            emit missionRoomChangeRequested(QString());
+    });
+
+    m_missionRoomMenu->addSeparator();
+    QAction *newRoomAction = m_missionRoomMenu->addAction(QStringLiteral("+ Room"));
+    connect(newRoomAction, &QAction::triggered, this, [this]() {
+        if (!m_updatingMissionRoomMenu)
+            emit missionRoomCreateRequested();
+    });
+
+    m_missionRoomButton->setText(activeRoomName);
+    m_missionRoomButton->setToolTip(activeRoomId.isEmpty()
+                                        ? QStringLiteral("No room selected. Select or create a room before saving.")
+                                        : QStringLiteral("Saving into room: %1").arg(activeRoomName));
+    m_updatingMissionRoomMenu = false;
+}
+
 void PathPlannerWidget::setDroneController(DroneController *controller)
 {
     m_droneController = controller;
@@ -4814,6 +4982,23 @@ void PathPlannerWidget::setDroneController(DroneController *controller)
                     m_lastMissionStatusText = status;
                     updateMissionChrome();
                 });
+        connect(m_droneController, &DroneController::messageReceived,
+                this, [this](const QString &message) {
+                    if (m_backgroundBundleJsonPath.isEmpty())
+                        return;
+                    const bool isMapTransferStatus =
+                        message.contains(QStringLiteral("Preparing VOXL mapper save directory"), Qt::CaseInsensitive)
+                        || message.contains(QStringLiteral("save_map command sent"), Qt::CaseInsensitive)
+                        || message.contains(QStringLiteral("Downloading mapper map from VOXL"), Qt::CaseInsensitive)
+                        || message.contains(QStringLiteral("Mapper map copied from VOXL"), Qt::CaseInsensitive)
+                        || message.contains(QStringLiteral("SCP download failed"), Qt::CaseInsensitive)
+                        || message.contains(QStringLiteral("SCP process error"), Qt::CaseInsensitive)
+                        || message.contains(QStringLiteral("SSH command failed"), Qt::CaseInsensitive);
+                    if (!isMapTransferStatus)
+                        return;
+                    m_mapTransferStatusText = message;
+                    updateMissionChrome();
+                });
         connect(m_droneController, &DroneController::errorOccurred,
                 this, [this](const QString &error) {
                     m_lastControllerError = error;
@@ -4834,10 +5019,23 @@ void PathPlannerWidget::onMapperBundleDownloadFinished(bool success, const QStri
     const QString bundleFolderName = m_backgroundBundleFolderName;
     m_backgroundBundleJsonPath.clear();
     m_backgroundBundleFolderName.clear();
+    m_mapTransferStatusText.clear();
 
-    if (m_missionStatusLabel) {
-        m_missionStatusLabel->clear();
-        updateMissionChrome();
+    updateMissionChrome();
+
+    QString downloadMessage = message;
+    const QString expectedBundlePath = QFileInfo(jsonPath).absoluteDir().filePath(bundleFolderName);
+    const QString reportedBundlePath = success ? message : QString();
+    const QString downloadedBundlePath = !reportedBundlePath.trimmed().isEmpty()
+                                             ? reportedBundlePath
+                                             : expectedBundlePath;
+    const bool hasDownloadedMap = success && directoryContainsFiles(downloadedBundlePath);
+    if (success && !hasDownloadedMap) {
+        success = false;
+        downloadMessage = QStringLiteral(
+                              "SCP finished, but no map files were found in the saved room map folder.\n"
+                              "Expected local folder:\n%1")
+                              .arg(downloadedBundlePath);
     }
 
     const QString bundleForJson = success ? bundleFolderName : QString();
@@ -4851,7 +5049,7 @@ void PathPlannerWidget::onMapperBundleDownloadFinished(bool success, const QStri
 
     m_mapperMapBundleDir.clear();
     if (success) {
-        const QString abs = QFileInfo(jsonPath).absoluteDir().filePath(bundleFolderName);
+        const QString abs = downloadedBundlePath;
         if (QDir(abs).exists())
             m_mapperMapBundleDir = QDir::toNativeSeparators(abs);
 
@@ -4885,7 +5083,7 @@ void PathPlannerWidget::onMapperBundleDownloadFinished(bool success, const QStri
             QString("Waypoint file was saved earlier, but copying the map from VOXL failed "
                     "(scp/SSH, firewall, or the map had not finished writing on the drone).\n\n%1\n\nJSON:\n%2\n\n"
                     "VOXL load path:\n%3")
-                .arg(message, jsonPath, m_mapperMapPath));
+                .arg(downloadMessage, jsonPath, m_mapperMapPath));
     }
 }
 

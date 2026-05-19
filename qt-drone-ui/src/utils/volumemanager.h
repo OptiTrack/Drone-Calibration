@@ -56,6 +56,7 @@ public:
     // CRUD
     /// Create a new volume and return its id.  Returns empty string on failure.
     QString createVolume(const QString &name, const QString &description = QString());
+    /// Delete a volume and its on-disk room folder, including saved paths, maps, and telemetry.
     bool    deleteVolume(const QString &id);
     bool    renameVolume(const QString &id, const QString &newName,
                          const QString &newDescription = QString());

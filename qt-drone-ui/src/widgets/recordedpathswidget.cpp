@@ -19,7 +19,7 @@
 #include <QFileDevice>
 #include <QStyleFactory>
 #include <QFontMetrics>
-#include <QSignalBlocker>
+#include <QAction>
 #include <QUuid>
 #include <cmath>
 
@@ -117,11 +117,11 @@ RecordedPathsWidget::RecordedPathsWidget(QWidget *parent)
     : QWidget(parent)
     , ui(new Ui::RecordedPathsWidget)
     , m_volumeManager(nullptr)
-    , m_roomCombo(nullptr)
+    , m_roomButton(nullptr)
+    , m_roomMenu(nullptr)
     , m_newRoomButton(nullptr)
     , m_renameRoomButton(nullptr)
-    , m_importLegacyButton(nullptr)
-    , m_cleanupLegacyButton(nullptr)
+    , m_deleteRoomButton(nullptr)
     , m_roomMapLabel(nullptr)
     , m_selectedPathIndex(-1)
 {
@@ -150,10 +150,9 @@ void RecordedPathsWidget::setupConnections()
     connect(ui->importButton, &QPushButton::clicked, this, &RecordedPathsWidget::onImportPath);
     connect(ui->exportButton, &QPushButton::clicked, this, &RecordedPathsWidget::onExportPath);
     connect(ui->editPathButton, &QPushButton::clicked, this, &RecordedPathsWidget::onEditPath);
-    connect(m_roomCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &RecordedPathsWidget::onRoomSelectionChanged);
     connect(m_newRoomButton, &QPushButton::clicked, this, &RecordedPathsWidget::onNewRoom);
     connect(m_renameRoomButton, &QPushButton::clicked, this, &RecordedPathsWidget::onRenameRoom);
+    connect(m_deleteRoomButton, &QPushButton::clicked, this, &RecordedPathsWidget::onDeleteRoom);
 }
 
 void RecordedPathsWidget::setupRoomControls()
@@ -166,29 +165,45 @@ void RecordedPathsWidget::setupRoomControls()
     QLabel *roomLabel = new QLabel(QStringLiteral("Room:"), roomBar);
     roomLabel->setStyleSheet(QStringLiteral("QLabel { color: white; font-weight: bold; }"));
 
-    m_roomCombo = new QComboBox(roomBar);
-    m_roomCombo->setMinimumWidth(220);
-    m_roomCombo->setStyleSheet(QStringLiteral(
-        "QComboBox { background:#374151; color:#e5e7eb; border:1px solid #4b5563; padding:4px 6px; border-radius:3px; }"
-        "QComboBox QAbstractItemView { background:#374151; color:#e5e7eb; selection-background-color:#007acc; }"));
+    m_roomButton = new QToolButton(roomBar);
+    m_roomButton->setText(QStringLiteral("No Room Selected"));
+    m_roomButton->setMinimumWidth(220);
+    m_roomButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_roomButton->setStyleSheet(QStringLiteral(
+        "QToolButton { background:#374151; color:#e5e7eb; border:1px solid #4b5563; padding:4px 6px; border-radius:3px; text-align:left; }"
+        "QToolButton:hover { background:#4b5563; }"));
+
+    m_roomMenu = new QMenu(m_roomButton);
+    m_roomMenu->setStyleSheet(QStringLiteral(
+        "QMenu { background-color:#2d2d2d; color:#e5e7eb; border:1px solid #4b5563; }"
+        "QMenu::item { padding:5px 24px 5px 12px; }"
+        "QMenu::item:selected { background-color:#374151; }"
+        "QMenu::separator { height:1px; background:#4b5563; margin:4px 0; }"));
+    connect(m_roomButton, &QToolButton::clicked, this, [this]() {
+        if (!m_roomMenu || !m_roomButton)
+            return;
+        m_roomMenu->popup(m_roomButton->mapToGlobal(QPoint(0, m_roomButton->height())));
+    });
 
     m_newRoomButton = new QPushButton(QStringLiteral("New Room"), roomBar);
     m_renameRoomButton = new QPushButton(QStringLiteral("Rename"), roomBar);
+    m_deleteRoomButton = new QPushButton(QStringLiteral("Delete Room"), roomBar);
 
     const QString buttonStyle = QStringLiteral(
         "QPushButton { background:#374151; color:white; border:1px solid #4b5563; padding:5px 8px; border-radius:3px; }"
         "QPushButton:hover { background:#4b5563; }"
         "QPushButton:disabled { background:#1f2937; color:#6b7280; }");
-    for (QPushButton *button : {m_newRoomButton, m_renameRoomButton})
+    for (QPushButton *button : {m_newRoomButton, m_renameRoomButton, m_deleteRoomButton})
         button->setStyleSheet(buttonStyle);
 
     m_roomMapLabel = new QLabel(QStringLiteral("Map: no room selected"), roomBar);
     m_roomMapLabel->setStyleSheet(QStringLiteral("QLabel { color:#9ca3af; }"));
 
     roomLayout->addWidget(roomLabel);
-    roomLayout->addWidget(m_roomCombo);
+    roomLayout->addWidget(m_roomButton);
     roomLayout->addWidget(m_newRoomButton);
     roomLayout->addWidget(m_renameRoomButton);
+    roomLayout->addWidget(m_deleteRoomButton);
     roomLayout->addStretch();
     roomLayout->addWidget(m_roomMapLabel);
 
@@ -222,26 +237,49 @@ void RecordedPathsWidget::setVolumeManager(VolumeManager *volumeManager)
 
 void RecordedPathsWidget::refreshRooms()
 {
-    if (!m_roomCombo)
+    if (!m_roomButton || !m_roomMenu)
         return;
 
-    const QSignalBlocker blocker(m_roomCombo);
-    m_roomCombo->clear();
-    m_roomCombo->addItem(QStringLiteral("No Room Selected"), QString());
+    m_roomMenu->clear();
+    QString activeRoomName = QStringLiteral("No Room Selected");
+    QString activeId;
 
     if (m_volumeManager) {
         const QList<VolumeManager::VolumeInfo> rooms = m_volumeManager->volumes();
-        for (const VolumeManager::VolumeInfo &room : rooms)
-            m_roomCombo->addItem(room.name, room.id);
-
-        const QString activeId = m_volumeManager->activeVolumeId();
-        if (!activeId.isEmpty()) {
-            const int idx = m_roomCombo->findData(activeId);
-            if (idx >= 0)
-                m_roomCombo->setCurrentIndex(idx);
+        activeId = m_volumeManager->activeVolumeId();
+        for (const VolumeManager::VolumeInfo &room : rooms) {
+            QAction *roomAction = m_roomMenu->addAction(room.name);
+            roomAction->setCheckable(true);
+            roomAction->setChecked(room.id == activeId);
+            connect(roomAction, &QAction::triggered, this, [this, room]() {
+                emit roomChangeRequested(room.id);
+            });
+            if (room.id == activeId)
+                activeRoomName = room.name;
         }
+
+        if (!rooms.isEmpty())
+            m_roomMenu->addSeparator();
     }
 
+    QAction *noRoomAction = m_roomMenu->addAction(QStringLiteral("No Room Selected"));
+    noRoomAction->setCheckable(true);
+    noRoomAction->setChecked(activeId.isEmpty());
+    connect(noRoomAction, &QAction::triggered, this, [this]() {
+        emit roomChangeRequested(QString());
+    });
+
+    m_roomMenu->addSeparator();
+    QAction *newRoomAction = m_roomMenu->addAction(QStringLiteral("+ Room"));
+    connect(newRoomAction, &QAction::triggered, this, &RecordedPathsWidget::onNewRoom);
+
+    m_roomButton->setText(activeRoomName);
+    m_roomButton->setToolTip(activeId.isEmpty()
+                                 ? QStringLiteral("No room selected.")
+                                 : QStringLiteral("Saved Paths room: %1").arg(activeRoomName));
+    const bool hasActiveRoom = m_volumeManager && m_volumeManager->hasActiveVolume();
+    m_renameRoomButton->setEnabled(hasActiveRoom);
+    m_deleteRoomButton->setEnabled(hasActiveRoom);
     updateRoomSummary();
 }
 
@@ -794,18 +832,6 @@ void RecordedPathsWidget::onDuplicatePath()
     }
 }
 
-void RecordedPathsWidget::onRoomSelectionChanged(int index)
-{
-    if (!m_volumeManager || !m_roomCombo)
-        return;
-
-    const QString roomId = m_roomCombo->itemData(index).toString();
-    if (roomId.isEmpty())
-        m_volumeManager->clearActiveVolume();
-    else
-        m_volumeManager->setActiveVolume(roomId);
-}
-
 void RecordedPathsWidget::onNewRoom()
 {
     if (!m_volumeManager)
@@ -826,7 +852,7 @@ void RecordedPathsWidget::onNewRoom()
         QMessageBox::warning(this, QStringLiteral("Create Room"), QStringLiteral("Could not create the room."));
         return;
     }
-    m_volumeManager->setActiveVolume(id);
+    emit roomChangeRequested(id);
 }
 
 void RecordedPathsWidget::onRenameRoom()
@@ -847,6 +873,50 @@ void RecordedPathsWidget::onRenameRoom()
 
     if (!m_volumeManager->renameVolume(room.id, name, room.description))
         QMessageBox::warning(this, QStringLiteral("Rename Room"), QStringLiteral("Could not rename the room."));
+}
+
+void RecordedPathsWidget::onDeleteRoom()
+{
+    if (!m_volumeManager || !m_volumeManager->hasActiveVolume())
+        return;
+
+    const VolumeManager::VolumeInfo room = m_volumeManager->activeVolume();
+    const int pathCount = m_paths.size();
+    const QString roomDir = QDir::toNativeSeparators(m_volumeManager->volumeDir(room.id));
+    QMessageBox confirmBox(this);
+    confirmBox.setIcon(QMessageBox::Warning);
+    confirmBox.setWindowTitle(QStringLiteral("Delete Room"));
+    confirmBox.setText(QStringLiteral("Delete room \"%1\"?").arg(room.name));
+    confirmBox.setInformativeText(
+        QStringLiteral("This permanently deletes the room folder, including:\n"
+                       "- %1 saved trajector%2\n"
+                       "- the saved room map\n"
+                       "- any recorded telemetry/trajectory files in the room\n\n"
+                       "Folder:\n%3")
+            .arg(pathCount)
+            .arg(pathCount == 1 ? QStringLiteral("y") : QStringLiteral("ies"))
+            .arg(roomDir));
+    QPushButton *deleteButton = confirmBox.addButton(QStringLiteral("Delete Room"), QMessageBox::DestructiveRole);
+    confirmBox.addButton(QMessageBox::Cancel);
+    confirmBox.setDefaultButton(QMessageBox::Cancel);
+    confirmBox.exec();
+
+    if (confirmBox.clickedButton() != deleteButton)
+        return;
+
+    if (!m_volumeManager->deleteVolume(room.id)) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Delete Room"),
+                             QStringLiteral("Could not delete room \"%1\". Close any files in the room folder and try again.")
+                                 .arg(room.name));
+        return;
+    }
+
+    m_selectedPathIndex = -1;
+    m_paths.clear();
+    ui->pathList->clear();
+    clearPathDetails();
+    loadPaths();
 }
 
 void RecordedPathsWidget::onImportLegacyPaths()
@@ -944,10 +1014,6 @@ void RecordedPathsWidget::updateRoomSummary()
     const bool hasRoom = m_volumeManager && m_volumeManager->hasActiveVolume();
     if (m_renameRoomButton)
         m_renameRoomButton->setEnabled(hasRoom);
-    if (m_importLegacyButton)
-        m_importLegacyButton->setEnabled(hasRoom);
-    if (m_cleanupLegacyButton)
-        m_cleanupLegacyButton->setEnabled(hasRoom);
 
     if (!m_roomMapLabel)
         return;

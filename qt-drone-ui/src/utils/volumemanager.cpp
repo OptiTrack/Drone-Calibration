@@ -161,7 +161,16 @@ bool VolumeManager::deleteVolume(const QString &id)
     if (idx < 0)
         return false;
 
-    // Remove from list and registry (does NOT delete files — caller decides).
+    const QString dirPath = volumeDir(id);
+    if (QDir(dirPath).exists()) {
+        QDir dir(dirPath);
+        if (!dir.removeRecursively()) {
+            qWarning() << "VolumeManager: failed to delete volume directory ->" << dirPath;
+            return false;
+        }
+    }
+
+    // Remove from list and registry after the room folder was removed.
     m_volumes.removeAt(idx);
     if (m_activeVolumeId == id) {
         m_activeVolumeId.clear();

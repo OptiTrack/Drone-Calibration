@@ -54,6 +54,7 @@ public:
     void uploadFileToVoxl(const QString &localFilePath, const QString &remotePath, const QString &uploadLabel = QStringLiteral("file"));
     void downloadDirectoryFromVoxl(const QString &localDir, const QString &remotePath);
     void uploadDirectoryToVoxl(const QString &localDir, const QString &remotePath);
+    void cancelCurrentScp(const QString &reason = QString());
     void runMission(const QString &missionFileName);
     void getMissionStatus();
     void cancelMission();
@@ -112,6 +113,7 @@ private slots:
     // Mission-related slots
     void onScpProcessFinished(int exitCode);
     void onScpProcessError();
+    void onScpProgressTick();
     void onMissionApiReplyFinished();
     void onMissionApiError(QNetworkReply::NetworkError error);
 
@@ -187,6 +189,9 @@ private:
     QProcess *m_scpProcess;
     ScpMode m_scpMode;
     QString m_scpDownloadLocalPath;
+    QTimer *m_scpProgressTimer;
+    QElapsedTimer m_scpElapsedTimer;
+    qint64 m_lastScpProgressBytes;
     QNetworkReply *m_missionApiReply;
     QString m_currentMissionFile;
     QString m_currentUploadLabel;

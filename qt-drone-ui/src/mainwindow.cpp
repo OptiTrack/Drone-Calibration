@@ -5,6 +5,7 @@
 #include "widgets/recordedvideoswidget.h"
 #include "widgets/dronestatuswidget.h"
 #include "controllers/dronecontroller.h"
+#include "models/flightpath.h"
 
 #include <QApplication>
 #include <QStatusBar>
@@ -45,6 +46,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_newVolumeButton(nullptr)
     , m_logButton(nullptr)
     , m_drawerOpen(true)
+    , m_preserveWorkspaceForNextRoomChange(false)
     , m_activeView("camera")
 {
     setWindowTitle("OptiTrack Drone Control - Modal AI Starling 2 Max");
@@ -62,6 +64,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     setupUI();
     connectSignals();
+    refreshPlannerRooms();
 
     if (m_volumeManager->hasActiveVolume())
         applyActiveVolume(m_volumeManager->activeVolume());
@@ -482,6 +485,12 @@ void MainWindow::connectSignals()
             this, &MainWindow::onPathSaved);
     connect(m_pathPlannerWidget, &PathPlannerWidget::pathSaved,
             m_recordedPathsWidget, &RecordedPathsWidget::addPath);
+    connect(m_pathPlannerWidget, &PathPlannerWidget::missionRoomChangeRequested,
+            this, [this](const QString &roomId) {
+                requestActiveVolume(roomId);
+            });
+    connect(m_pathPlannerWidget, &PathPlannerWidget::missionRoomCreateRequested,
+            this, &MainWindow::onNewVolumeRequested);
     
     // Recorded paths signals
     connect(m_recordedPathsWidget, &RecordedPathsWidget::pathDeleted,
@@ -490,6 +499,10 @@ void MainWindow::connectSignals()
             this, &MainWindow::onPathLoadRequested);
     connect(m_recordedPathsWidget, &RecordedPathsWidget::pathJsonLoadRequested,
             this, &MainWindow::onPathJsonLoadRequested);
+    connect(m_recordedPathsWidget, &RecordedPathsWidget::roomChangeRequested,
+            this, [this](const QString &roomId) {
+                requestActiveVolume(roomId);
+            });
     
     // Camera feed signals
     connect(m_cameraFeedWidget, &CameraFeedWidget::recordingSaved,
@@ -574,16 +587,23 @@ void MainWindow::connectSignals()
     }
 
     connect(m_volumeManager, &VolumeManager::volumeListChanged,
-            this, &MainWindow::rebuildVolumeCombo);
+            this, [this]() {
+                rebuildVolumeCombo();
+                refreshPlannerRooms();
+            });
     connect(m_volumeManager, &VolumeManager::activeVolumeChanged,
             this, &MainWindow::applyActiveVolume);
     connect(m_volumeManager, &VolumeManager::activeVolumeCleared,
             this, [this]() {
                 // Revert to default log dirs
                 m_flightLogger->setVolumeFlightDirs({}, {});
+                m_pathPlannerWidget->prepareForRoomSwitch();
                 m_pathPlannerWidget->setPlannerRoomContext({}, {}, {}, {});
+                refreshPlannerRooms();
                 if (m_recordedPathsWidget)
                     m_recordedPathsWidget->loadPaths();
+                if (m_droneController && m_droneController->isConnected())
+                    m_droneController->clearMapperMap();
                 statusBar()->showMessage(QStringLiteral("Volume cleared — saving to default logs/"), 4000);
             });
 
@@ -720,17 +740,20 @@ void MainWindow::rebuildVolumeCombo()
     }
 }
 
+void MainWindow::refreshPlannerRooms()
+{
+    if (!m_pathPlannerWidget || !m_volumeManager)
+        return;
+    m_pathPlannerWidget->setMissionRooms(m_volumeManager->volumes(), m_volumeManager->activeVolumeId());
+}
+
 void MainWindow::onVolumeComboChanged(int index)
 {
     if (!m_volumeCombo)
         return;
 
     const QString id = m_volumeCombo->itemData(index).toString();
-    if (id.isEmpty()) {
-        m_volumeManager->clearActiveVolume();
-    } else {
-        m_volumeManager->setActiveVolume(id);
-    }
+    requestActiveVolume(id);
 }
 
 void MainWindow::onNewVolumeRequested()
@@ -753,9 +776,52 @@ void MainWindow::onNewVolumeRequested()
         return;
     }
 
-    // Auto-select the newly created volume.
-    m_volumeManager->setActiveVolume(id);
-    statusBar()->showMessage(QStringLiteral("Volume \"%1\" created and selected").arg(name.trimmed()), 4000);
+    // Creating a room changes the save target, but should not wipe the current working map/trajectory.
+    if (requestActiveVolume(id, true))
+        statusBar()->showMessage(QStringLiteral("Room \"%1\" created and selected; current map preserved").arg(name.trimmed()), 4000);
+}
+
+bool MainWindow::requestActiveVolume(const QString &roomId, bool preserveCurrentWorkspace)
+{
+    if (!m_volumeManager)
+        return false;
+
+    if (roomId == m_volumeManager->activeVolumeId()) {
+        refreshPlannerRooms();
+        if (m_recordedPathsWidget)
+            m_recordedPathsWidget->refreshRooms();
+        return true;
+    }
+
+    if (!preserveCurrentWorkspace && m_pathPlannerWidget && m_pathPlannerWidget->hasEditorWaypoints()) {
+        const QString targetName = roomId.isEmpty()
+                                       ? QStringLiteral("No Room")
+                                       : m_volumeManager->volumeById(roomId).name;
+        const int ret = QMessageBox::question(
+            this,
+            QStringLiteral("Switch Room"),
+            QStringLiteral("Switch to \"%1\"?\n\nThis will clear the current trajectory editor and switch the VOXL map context.")
+                .arg(targetName),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (ret != QMessageBox::Yes) {
+            refreshPlannerRooms();
+            if (m_recordedPathsWidget)
+                m_recordedPathsWidget->refreshRooms();
+            return false;
+        }
+    }
+
+    m_preserveWorkspaceForNextRoomChange = preserveCurrentWorkspace;
+    if (roomId.isEmpty()) {
+        m_volumeManager->clearActiveVolume();
+        return true;
+    }
+
+    const bool changed = m_volumeManager->setActiveVolume(roomId);
+    if (!changed)
+        m_preserveWorkspaceForNextRoomChange = false;
+    return changed;
 }
 
 void MainWindow::applyActiveVolume(const VolumeManager::VolumeInfo &volume)
@@ -768,12 +834,45 @@ void MainWindow::applyActiveVolume(const VolumeManager::VolumeInfo &volume)
     m_pathPlannerWidget->setPlannerRoomContext(volume.id, volume.name,
                                                m_volumeManager->activePathsDir(),
                                                m_volumeManager->activeMapDir());
+    if (m_preserveWorkspaceForNextRoomChange) {
+        m_preserveWorkspaceForNextRoomChange = false;
+        refreshPlannerRooms();
+        if (m_recordedPathsWidget)
+            m_recordedPathsWidget->loadPaths();
+        statusBar()->showMessage(
+            QStringLiteral("Room \"%1\" active as save target — current map preserved").arg(volume.name),
+            5000);
+        return;
+    }
+
+    m_pathPlannerWidget->prepareForRoomSwitch();
+    refreshPlannerRooms();
     if (m_recordedPathsWidget)
         m_recordedPathsWidget->loadPaths();
 
+    const VolumeManager::MapInfo map = m_volumeManager->activeMapInfo();
+    if (m_droneController && m_droneController->isConnected()) {
+        if (map.hasBundle()) {
+            const QString remotePath = map.remotePath.trimmed().isEmpty()
+                                           ? QStringLiteral("/data/voxl_mapper/missions/%1")
+                                                 .arg(FlightPath::fileBaseFromDisplayName(volume.name))
+                                           : map.remotePath.trimmed();
+            m_droneController->restoreMapperMapFromBundle(map.bundleDir, remotePath);
+            statusBar()->showMessage(
+                QStringLiteral("Room \"%1\" active — restoring saved map to VOXL").arg(volume.name),
+                5000);
+            return;
+        }
+
+        m_droneController->clearMapperMap();
+        statusBar()->showMessage(
+            QStringLiteral("Room \"%1\" active — no saved map, cleared VOXL map").arg(volume.name),
+            5000);
+        return;
+    }
+
     statusBar()->showMessage(
-        QStringLiteral("Volume \"%1\" active — logs/paths in %2")
-            .arg(volume.name, m_volumeManager->activeVolumeDir()),
+        QStringLiteral("Room \"%1\" active — drone offline, map will restore when loaded/saved").arg(volume.name),
         5000);
 }
 

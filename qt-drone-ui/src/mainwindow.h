@@ -56,6 +56,8 @@ private:
     void connectSignals();
     void setActiveView(const QString &viewName);
     void rebuildVolumeCombo();
+    void refreshPlannerRooms();
+    bool requestActiveVolume(const QString &roomId, bool preserveCurrentWorkspace = false);
     void applyActiveVolume(const VolumeManager::VolumeInfo &volume);
     
     Ui::MainWindow *ui;
@@ -92,6 +94,7 @@ private:
 
     // State
     bool m_drawerOpen;
+    bool m_preserveWorkspaceForNextRoomChange;
     QString m_activeView;
     QVector<QVector3D> m_draftPoints;
 };

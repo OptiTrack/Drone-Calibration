@@ -3,6 +3,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
+#include <QDirIterator>
 #include <QUrl>
 #include <QUrlQuery>
 #include <QHttpMultiPart>
@@ -29,6 +30,29 @@ enum MavCommand : quint16 {
     MavCmdDoFlightTermination = 185,
     MavCmdComponentArmDisarm = 400,
 };
+
+qint64 directorySizeBytes(const QString &dirPath)
+{
+    qint64 total = 0;
+    QDirIterator it(dirPath, QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        it.next();
+        total += it.fileInfo().size();
+    }
+    return total;
+}
+
+QString humanBytes(qint64 bytes)
+{
+    static const char *units[] = {"B", "KB", "MB", "GB"};
+    double value = static_cast<double>(bytes);
+    int unit = 0;
+    while (value >= 1024.0 && unit < 3) {
+        value /= 1024.0;
+        ++unit;
+    }
+    return QStringLiteral("%1 %2").arg(value, 0, unit == 0 ? 'f' : 'f', unit == 0 ? 0 : 1).arg(QString::fromLatin1(units[unit]));
+}
 
 quint16 crcAccumulate(quint8 data, quint16 crc)
 {
@@ -156,16 +180,22 @@ VOXLConnection::VOXLConnection(QObject *parent)
     , m_runnerApiPort(8080)
     , m_scpProcess(nullptr)
     , m_scpMode(ScpMode::Upload)
+    , m_scpProgressTimer(new QTimer(this))
+    , m_lastScpProgressBytes(0)
     , m_missionApiReply(nullptr)
     , m_currentUploadLabel(QStringLiteral("file"))
 {
     connect(m_heartbeatTimer, &QTimer::timeout, this, &VOXLConnection::onHeartbeatTimer);
     connect(m_connectionTimer, &QTimer::timeout, this, &VOXLConnection::onConnectionTimer);
+    m_scpProgressTimer->setInterval(1000);
+    connect(m_scpProgressTimer, &QTimer::timeout, this, &VOXLConnection::onScpProgressTick);
 }
 
 VOXLConnection::~VOXLConnection()
 {
     disconnect();
+    if (m_scpProgressTimer)
+        m_scpProgressTimer->stop();
     if (m_scpProcess) {
         m_scpProcess->kill();
         delete m_scpProcess;
@@ -683,9 +713,11 @@ void VOXLConnection::uploadFileToVoxl(const QString &localFilePath, const QStrin
     qDebug() << "Uploading" << label << "to VOXL2:" << localFilePath << "->" << remotePath;
     emit statusChanged(QString("Uploading %1...").arg(label));
     
-    // Use SCP to transfer the file to VOXL2
+    // Use legacy SCP protocol for VOXL/dropbear compatibility. Newer OpenSSH scp
+    // defaults to SFTP mode, which embedded VOXL images often close immediately.
     // Command: scp localFilePath root@<voxl_ip>:<remotePath>
     if (m_scpProcess) {
+        QObject::disconnect(m_scpProcess, nullptr, this, nullptr);
         m_scpProcess->kill();
         delete m_scpProcess;
     }
@@ -699,8 +731,10 @@ void VOXLConnection::uploadFileToVoxl(const QString &localFilePath, const QStrin
     // Build SCP command
     QString remoteTarget = QString("root@%1:%2").arg(m_voxlHost, remotePath);
     QStringList arguments;
-    arguments << "-o" << "StrictHostKeyChecking=no"  // Auto-accept host key
+    arguments << "-O"
+              << "-o" << "StrictHostKeyChecking=no"  // Auto-accept host key
               << "-o" << "UserKnownHostsFile=/dev/null"  // Don't save to known_hosts
+              << "-o" << "ConnectTimeout=10"
               << localFilePath
               << remoteTarget;
     
@@ -730,6 +764,7 @@ void VOXLConnection::downloadDirectoryFromVoxl(const QString &localDir, const QS
         QDir(nativeLocal).removeRecursively();
 
     if (m_scpProcess) {
+        QObject::disconnect(m_scpProcess, nullptr, this, nullptr);
         m_scpProcess->kill();
         m_scpProcess->deleteLater();
         m_scpProcess = nullptr;
@@ -748,14 +783,21 @@ void VOXLConnection::downloadDirectoryFromVoxl(const QString &localDir, const QS
         remoteArg += QLatin1Char('/');
 
     QStringList arguments;
-    arguments << QStringLiteral("-r")
+    arguments << QStringLiteral("-O")
+              << QStringLiteral("-r")
               << QStringLiteral("-o") << QStringLiteral("StrictHostKeyChecking=no")
               << QStringLiteral("-o") << QStringLiteral("UserKnownHostsFile=/dev/null")
+              << QStringLiteral("-o") << QStringLiteral("ConnectTimeout=10")
               << remoteArg
               << nativeLocal;
 
-    emit statusChanged(QStringLiteral("Downloading mapper map from VOXL via scp…"));
+    emit statusChanged(QStringLiteral("Downloading mapper map from VOXL via SCP: %1 -> %2")
+                           .arg(cleanRemote, nativeLocal));
     m_scpProcess->start(QStringLiteral("scp"), arguments);
+    m_lastScpProgressBytes = 0;
+    m_scpElapsedTimer.restart();
+    if (m_scpProgressTimer)
+        m_scpProgressTimer->start();
 }
 
 void VOXLConnection::uploadDirectoryToVoxl(const QString &localDir, const QString &remotePath)
@@ -776,6 +818,7 @@ void VOXLConnection::uploadDirectoryToVoxl(const QString &localDir, const QStrin
     }
 
     if (m_scpProcess) {
+        QObject::disconnect(m_scpProcess, nullptr, this, nullptr);
         m_scpProcess->kill();
         m_scpProcess->deleteLater();
         m_scpProcess = nullptr;
@@ -797,14 +840,35 @@ void VOXLConnection::uploadDirectoryToVoxl(const QString &localDir, const QStrin
         remoteArg += QLatin1Char('/');
 
     QStringList arguments;
-    arguments << QStringLiteral("-r")
+    arguments << QStringLiteral("-O")
+              << QStringLiteral("-r")
               << QStringLiteral("-o") << QStringLiteral("StrictHostKeyChecking=no")
               << QStringLiteral("-o") << QStringLiteral("UserKnownHostsFile=/dev/null")
+              << QStringLiteral("-o") << QStringLiteral("ConnectTimeout=10")
               << localArg
               << remoteArg;
 
     emit statusChanged(QStringLiteral("Uploading mapper map bundle to VOXL via scp…"));
     m_scpProcess->start(QStringLiteral("scp"), arguments);
+}
+
+void VOXLConnection::cancelCurrentScp(const QString &reason)
+{
+    if (!m_scpProcess)
+        return;
+
+    if (m_scpProgressTimer)
+        m_scpProgressTimer->stop();
+    QObject::disconnect(m_scpProcess, nullptr, this, nullptr);
+    m_scpProcess->kill();
+    m_scpProcess->deleteLater();
+    m_scpProcess = nullptr;
+    m_scpMode = ScpMode::Upload;
+    m_scpDownloadLocalPath.clear();
+    m_lastScpProgressBytes = 0;
+    emit statusChanged(reason.trimmed().isEmpty()
+                           ? QStringLiteral("Cancelled existing SCP transfer.")
+                           : reason.trimmed());
 }
 
 void VOXLConnection::runMission(const QString &missionFileName)
@@ -934,23 +998,45 @@ void VOXLConnection::sshRunCommand(const QString &remoteCommand)
 
 void VOXLConnection::onScpProcessFinished(int exitCode)
 {
+    QProcess *proc = qobject_cast<QProcess *>(sender());
+    if (proc && proc != m_scpProcess) {
+        proc->deleteLater();
+        return;
+    }
+
     const bool isDownload = (m_scpMode == ScpMode::Download);
     const bool isUploadDir = (m_scpMode == ScpMode::UploadDirectory);
+    if (m_scpProgressTimer)
+        m_scpProgressTimer->stop();
     if (exitCode == 0) {
         if (isDownload) {
+            const QString downloadedPath = m_scpDownloadLocalPath;
             m_scpMode = ScpMode::Upload;
+            if (m_scpProcess) {
+                m_scpProcess->deleteLater();
+                m_scpProcess = nullptr;
+            }
+            m_scpDownloadLocalPath.clear();
             emit statusChanged(QStringLiteral("Mapper map copied from VOXL."));
-            emit mapperBundleDownloadFinished(true, m_scpDownloadLocalPath);
+            emit mapperBundleDownloadFinished(true, downloadedPath);
             return;
         }
         if (isUploadDir) {
             m_scpMode = ScpMode::Upload;
+            if (m_scpProcess) {
+                m_scpProcess->deleteLater();
+                m_scpProcess = nullptr;
+            }
             emit statusChanged(QStringLiteral("Mapper map bundle uploaded to VOXL."));
             emit mapperBundleUploadFinished(true, QString());
             return;
         }
         const QString label = m_currentUploadLabel.isEmpty() ? QStringLiteral("file") : m_currentUploadLabel;
         qDebug() << label << "uploaded successfully";
+        if (m_scpProcess) {
+            m_scpProcess->deleteLater();
+            m_scpProcess = nullptr;
+        }
         emit missionUploadComplete();
         emit statusChanged(QString("%1 uploaded").arg(label.left(1).toUpper() + label.mid(1)));
     } else {
@@ -960,6 +1046,11 @@ void VOXLConnection::onScpProcessFinished(int exitCode)
                 errorMsg += QStringLiteral(": %1").arg(QString::fromLocal8Bit(m_scpProcess->readAllStandardError()));
             qWarning() << errorMsg;
             m_scpMode = ScpMode::Upload;
+            if (m_scpProcess) {
+                m_scpProcess->deleteLater();
+                m_scpProcess = nullptr;
+            }
+            m_scpDownloadLocalPath.clear();
             emit mapperBundleDownloadFinished(false, errorMsg);
             return;
         }
@@ -969,6 +1060,10 @@ void VOXLConnection::onScpProcessFinished(int exitCode)
                 errorMsg += QStringLiteral(": %1").arg(QString::fromLocal8Bit(m_scpProcess->readAllStandardError()));
             qWarning() << errorMsg;
             m_scpMode = ScpMode::Upload;
+            if (m_scpProcess) {
+                m_scpProcess->deleteLater();
+                m_scpProcess = nullptr;
+            }
             emit mapperBundleUploadFinished(false, errorMsg);
             return;
         }
@@ -977,6 +1072,10 @@ void VOXLConnection::onScpProcessFinished(int exitCode)
             errorMsg += QString(": %1").arg(QString::fromLocal8Bit(m_scpProcess->readAllStandardError()));
         }
         qWarning() << errorMsg;
+        if (m_scpProcess) {
+            m_scpProcess->deleteLater();
+            m_scpProcess = nullptr;
+        }
         emit missionUploadFailed(errorMsg);
         emit errorOccurred(errorMsg);
     }
@@ -984,8 +1083,16 @@ void VOXLConnection::onScpProcessFinished(int exitCode)
 
 void VOXLConnection::onScpProcessError()
 {
+    QProcess *proc = qobject_cast<QProcess *>(sender());
+    if (proc && proc != m_scpProcess) {
+        proc->deleteLater();
+        return;
+    }
+
     const bool isDownload = (m_scpMode == ScpMode::Download);
     const bool isUploadDir = (m_scpMode == ScpMode::UploadDirectory);
+    if (m_scpProgressTimer)
+        m_scpProgressTimer->stop();
     QString errorMsg = QStringLiteral("SCP process error");
     if (m_scpProcess) {
         errorMsg += QString(": %1").arg(m_scpProcess->errorString());
@@ -993,16 +1100,46 @@ void VOXLConnection::onScpProcessError()
     qWarning() << errorMsg;
     if (isDownload) {
         m_scpMode = ScpMode::Upload;
+        if (m_scpProcess) {
+            m_scpProcess->deleteLater();
+            m_scpProcess = nullptr;
+        }
+        m_scpDownloadLocalPath.clear();
         emit mapperBundleDownloadFinished(false, errorMsg);
         return;
     }
     if (isUploadDir) {
         m_scpMode = ScpMode::Upload;
+        if (m_scpProcess) {
+            m_scpProcess->deleteLater();
+            m_scpProcess = nullptr;
+        }
         emit mapperBundleUploadFinished(false, errorMsg);
         return;
     }
+    if (m_scpProcess) {
+        m_scpProcess->deleteLater();
+        m_scpProcess = nullptr;
+    }
     emit missionUploadFailed(errorMsg);
     emit errorOccurred(errorMsg);
+}
+
+void VOXLConnection::onScpProgressTick()
+{
+    if (!m_scpProcess || m_scpMode != ScpMode::Download || m_scpDownloadLocalPath.isEmpty())
+        return;
+
+    const qint64 bytes = directorySizeBytes(m_scpDownloadLocalPath);
+    const qint64 elapsedMs = qMax<qint64>(1, m_scpElapsedTimer.elapsed());
+    const double bytesPerSecond = static_cast<double>(bytes) * 1000.0 / static_cast<double>(elapsedMs);
+    const qint64 delta = bytes - m_lastScpProgressBytes;
+    m_lastScpProgressBytes = bytes;
+
+    emit statusChanged(QStringLiteral("Downloading mapper map from VOXL: copied %1 at %2/s%3")
+                           .arg(humanBytes(bytes))
+                           .arg(humanBytes(static_cast<qint64>(bytesPerSecond)))
+                           .arg(delta <= 0 ? QStringLiteral(" (waiting for data)") : QString()));
 }
 
 void VOXLConnection::onMissionApiReplyFinished()
