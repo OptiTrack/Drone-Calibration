@@ -7,9 +7,11 @@
 #include <QVector3D>
 #include <QColor>
 #include <QJsonObject>
+#include <QStringList>
 #include <vector>
 #include "../widgets/dronestatuswidget.h"
 #include "../models/waypoint.h"
+#include "../models/trajectory.h"
 #include "../network/voxlmapperclient.h"
 
 class VOXLConnection;
@@ -107,6 +109,18 @@ public:
     bool isMissionRunning() const { return m_missionActive; }
     bool isMissionPaused() const { return m_missionPaused; }
 
+    // Trajectory mode (parallels mapper mission API).
+    // Validates first; if invalid, emits trajectoryValidationFailed and returns.
+    // Online: writes JSON to persistent AppLocalData/trajectories/traj_<ts>.json,
+    //         then uploads via SCP to /data/trajectories/inbox/trajectory.json on VOXL.
+    //         After upload succeeds, execution is explicitly started via VOXL runner API.
+    // Offline: writes the same file and emits trajectoryStaged(path, summary) without uploading.
+    void uploadTrajectory(const Trajectory &traj);
+    void stageTrajectoryLocally(const Trajectory &traj);
+    void cancelTrajectory();
+    bool isTrajectoryActive() const { return m_trajectoryActive; }
+    QString lastTrajectoryFilePath() const { return m_lastTrajectoryPath; }
+
 signals:
     void connectionStatusChanged(bool connected);
     void statusUpdated(const DroneStatus &status);
@@ -118,6 +132,15 @@ signals:
     void warningIssued(const QString &warning);
     void messageReceived(const QString &message);
     void mapperBundleDownloadFinished(bool success, const QString &message);
+
+    // Trajectory signals
+    void trajectoryStaged(const QString &localPath, const QString &summary);   // summary: "N samples · X.X s · Y.Y m · peak Z.Z m/s"
+    void trajectoryUploaded(const QString &localPath);
+    void trajectoryStarted(const QString &missionFileName);
+    void trajectoryUploadFailed(const QString &reason);
+    void trajectoryStartFailed(const QString &reason);
+    void trajectoryValidationFailed(const QStringList &reasons);
+    void trajectoryCancelled();
 
 private slots:
     void onHeartbeatTimer();
@@ -137,6 +160,9 @@ private slots:
 private:
     void initializeConnection();
     void stopMapperPortalWatchdog();
+    // Writes traj JSON to AppLocalData/trajectories/, sets m_lastTrajectoryPath.
+    // Returns empty string on failure (also emits trajectoryUploadFailed).
+    QString writeTrajectoryFile(const Trajectory &traj);
     void requestStatus();
     void processStatusData(const QJsonObject &data);
     void processMissionStatus(const QJsonObject &data);
@@ -217,6 +243,12 @@ private:
     QTimer *m_mapperPortalWatchdog;
     QTimer *m_thermalPollTimer;
     
+    // Trajectory state
+    bool m_trajectoryActive = false;
+    QString m_lastTrajectoryPath;
+    bool m_uploadingTrajectory = false;   // tag to distinguish missionUploadComplete callers
+    bool m_startingTrajectory = false;
+
     // Manual control state
     bool m_manualControlActive;
     QTimer *m_manualControlTimer;

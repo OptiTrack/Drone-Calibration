@@ -29,8 +29,12 @@
 #include <QSet>
 #include <QVector>
 #include <QEvent>
+#include <QComboBox>
+#include <QDesktopServices>
+#include <QUrl>
 #include <vector>
 #include "../models/waypoint.h"
+#include "../models/trajectory.h"
 
 class DroneController;
 class QFrame;
@@ -72,7 +76,13 @@ public:
     void setDefaultYawAngle(float yawDeg) { m_defaultYawAngle = yawDeg; }
     float defaultYawAngle() const { return m_defaultYawAngle; }
     void setNavigationOnly(bool on);
+    void setDecorationsHidden(bool hidden);
+    bool decorationsHidden() const { return m_decorationsHidden; }
     void setEditorTools(bool createEnabled, bool transformEnabled);
+    /// One-shot bias for the next addWaypoint(): make it a curve point with the given radius.
+    /// Sticks across multiple additions until cleared (called repeatedly from the UI on every toggle).
+    void setNextWaypointAsCurve(bool enable, float defaultRadiusM);
+    bool selectedWaypointIsCurve() const;
     bool createToolEnabled() const { return m_createToolEnabled; }
     bool transformToolEnabled() const { return m_transformToolEnabled; }
     bool undo();
@@ -84,6 +94,10 @@ public:
     void setDronePoseLogical(const QVector3D &positionLogical, float yawDeg);
     void setMapperRenderData(const QVector<QVector3D> &positionsLogical, const QVector<QColor> &colors);
     void setMapperMeshData(const QVector<QVector3D> &positionsLogical, const QVector<QColor> &colors, const QVector<quint32> &triangleIndices);
+    /// Set / clear the low-opacity dashed "first pass" overlay that shows the raw recording
+    /// behind a fitted curve path. Hidden during camera manipulation.
+    void setRecordingBackbone(const QVector<QVector3D> &positionsLogical);
+    void clearRecordingBackbone();
     const QVector<QVector3D> &mapperRenderPositionsLogical() const { return m_mapperRenderPositionsLogical; }
     const QVector<QColor> &mapperRenderColors() const { return m_mapperRenderColors; }
     const QVector<QVector3D> &mapperMeshPositionsLogical() const { return m_mapperMeshPositionsLogical; }
@@ -138,8 +152,13 @@ private:
     void drawAxes();
     void drawDroneAxes();
     void drawMapperRenderData();
+    void drawRecordingBackbone();
     void drawGizmo();
     void drawWaypointLabels(QPainter &painter);
+    // Trajectory visualization cache (rebuilt whenever waypoints or settings change).
+    void rebuildVisualizationCacheIfNeeded();
+    void setTrajectoryVisualization(bool on, float cruiseMs, float sampleHz);
+    void invalidateTrajectoryCache();
     void updateCamera();
     void updateProjection();
     QVector3D screenToWorld(const QPoint &screenPos, float depth = 0.0f);
@@ -203,8 +222,11 @@ private:
     // View mode
     ViewMode m_viewMode;
     bool m_navigationOnly = false;
+    bool m_decorationsHidden = false;
     bool m_createToolEnabled = false;
     bool m_transformToolEnabled = true;
+    bool  m_nextWaypointIsCurve = false;
+    float m_nextWaypointRadiusM = 0.0f;
     float m_orthoZoom;
     float m_defaultAltitude;
     float m_defaultAcceptanceRadius;
@@ -215,6 +237,10 @@ private:
     bool m_hasDronePose;
     QVector<QVector3D> m_mapperRenderPositionsLogical;
     QVector<QColor> m_mapperRenderColors;
+    // Dashed semi-transparent "first pass" overlay (raw flight-log positions, logical Z-up).
+    QVector<QVector3D> m_recordingBackbonePositionsLogical;
+    bool m_cameraInteracting = false;
+    QTimer *m_backboneRevealTimer = nullptr;
     QVector<QVector3D> m_mapperMeshPositionsLogical;
     QVector<QColor> m_mapperMeshColors;
     QVector<quint32> m_mapperMeshTriangleIndices;
@@ -246,7 +272,15 @@ private:
     QVector<EditCommand> m_undoStack;
     QVector<EditCommand> m_redoStack;
     bool m_applyingHistory;
-    
+
+    // Trajectory visualization cache
+    QVector<QVector3D> m_visualizationPath;    // logical-frame positions (Z-up)
+    QVector<float>     m_visualizationSpeeds;  // |v| per sample, same length as positions
+    bool m_visualizationDirty = true;
+    bool m_trajectoryVisualizationMode = false;
+    float m_visualizationCruiseMs = 2.5f;
+    float m_visualizationSampleHz = 20.0f;
+
     // Animation
     QTimer *m_animationTimer;
     float m_animationTime;
@@ -269,6 +303,9 @@ public:
     void setPlannerRoomContext(const QString &roomId, const QString &roomName,
                                const QString &pathsDir, const QString &mapDir);
 
+    void setNextWaypointAsCurve(bool enable, float defaultRadiusM);
+    bool selectedWaypointIsCurve() const;
+
     // Waypoint management
     void addWaypoint(const QVector3D &pos);
     void updateWaypoint(int id, const Waypoint &wp);
@@ -284,6 +321,9 @@ public:
     bool loadFromJson(const QString &path);
     /// Load waypoints + mapper metadata from disk; clears local mesh/plan preview; optional map reload uses clear-then-load on VOXL.
     bool loadPathFromFile(const QString &fileName, bool showSuccessDialog = true);
+    /// Parse a FlightLogger recording, fit a curve-point path, drop a low-opacity backbone overlay
+    /// of the raw trace into the scene. Returns false on read/parse failure.
+    bool loadPathFromRecording(const QString &fileName);
     void clearMapperVisualization();
 
 signals:
@@ -294,6 +334,7 @@ private slots:
     void onClearPath();
     void onSavePath();
     void onLoadPath();
+    void onLoadPathFromRecording();
     void onMapperBundleDownloadFinished(bool success, const QString &message);
     void onUploadMission();
     void onMissionPlayClicked();
@@ -378,11 +419,17 @@ private:
     QPushButton *m_missionPlayButton;
     QPushButton *m_missionPauseContinueButton;
     QPushButton *m_createModeButton;
+    QPushButton *m_addCurvePointButton = nullptr;
     QPushButton *m_transformModeButton;
     QPushButton *m_playPathPreviewButton;
     QPushButton *m_stopPathPreviewButton;
+    QPushButton *m_previewDecorationsButton;
     QLineEdit *m_pathNameEdit;
     QLabel *m_missionStatusLabel;
+
+    // Curve-mode state
+    bool  m_nextWaypointIsCurve = false;
+    float m_nextCurveDefaultRadiusM = 1.5f;
     
     // View controls
     QPushButton *m_resetCameraButton;

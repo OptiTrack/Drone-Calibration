@@ -37,7 +37,15 @@ public:
     /// VOXL mapper / planner home marker (serialized as type "MAPPER_HOME"); sequence id 0 in the mission UI.
     bool isMapperHome() const;
     void setAsMapperHome(bool enable = true);
-    
+
+    /// Curve waypoint — the drone arcs tangent through this point.
+    bool isCurve() const { return m_waypointType == "CURVE"; }
+    void setCurve(bool enable);
+
+    /// Turn-radius for this vertex in meters. 0 = sharp visit (no arc).
+    float cornerRadius() const { return m_cornerRadiusM; }
+    void setCornerRadius(float r);
+
     // Setters
     void setPosition(const QVector3D &position) { m_position = position; }
     void setPosition(float x, float y, float z) { m_position = QVector3D(x, y, z); }
@@ -61,7 +69,8 @@ public:
     void setWaypointType(const QString &type) { m_waypointType = type; }
     void setAcceptanceRadius(float radius) { m_acceptanceRadius = radius; }
     void setHoldTime(float time) { m_holdTime = time; }
-    void setYawAngle(float angle) { m_yawAngle = angle; }
+    /// No-op on curve waypoints (their yaw is auto-derived from velocity heading).
+    void setYawAngle(float angle);
     void setPassThrough(bool passThrough) { m_passThrough = passThrough; }
     
     // Utility functions
@@ -94,6 +103,7 @@ private:
     float m_yawAngle;
     bool m_passThrough;
     QDateTime m_createdAt;
+    float m_cornerRadiusM = 0.0f; ///< Turn radius at this vertex (m); 0 = sharp.
 };
 
 Q_DECLARE_METATYPE(Waypoint)
