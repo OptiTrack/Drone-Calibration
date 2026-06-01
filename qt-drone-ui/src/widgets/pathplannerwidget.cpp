@@ -3371,6 +3371,13 @@ void PathPlannerWidget::onSavePath()
         return;
     }
 
+    if (m_plannerPathsDir.trimmed().isEmpty() || m_roomId.trimmed().isEmpty())
+    {
+        QMessageBox::warning(this, "Save Path",
+                             "Select or create a room in Saved Paths before saving a trajectory.");
+        return;
+    }
+
     // Get path name from top-bar field; must be unique.
     QString pathName = m_pathNameEdit->text().trimmed();
     if (pathName.isEmpty() || pathName == "New Path")
@@ -3405,15 +3412,22 @@ void PathPlannerWidget::onSavePath()
     for (const auto &wp : m_openglWidget->waypoints())
         points.append(QVector3D(wp.x(), wp.y(), wp.z()));
 
-    const QString bundleFolderName = sanitizedName + QStringLiteral("_mapper_map");
-    const QString localBundleAbsPath = dir.absoluteFilePath(bundleFolderName);
-    const QString remotePkg = QStringLiteral("/data/voxl_mapper/missions/%1").arg(sanitizedName);
+    const QString roomMapName = FlightPath::fileBaseFromDisplayName(
+        m_roomName.trimmed().isEmpty() ? m_roomId : m_roomName);
+    const QString bundleFolderName = QStringLiteral("../map/mapper_map");
+    const QString localBundleAbsPath = QDir(m_roomMapDir).filePath(QStringLiteral("mapper_map"));
+    const QString remotePkg = QStringLiteral("/data/voxl_mapper/missions/%1").arg(roomMapName);
 
     const bool canBundle = m_droneController && m_droneController->isConnected()
                            && m_droneController->isMapperMeshConnected();
 
     if (canBundle) {
         m_mapperMapPath = remotePkg;
+        if (!m_roomMapDir.trimmed().isEmpty()) {
+            QDir roomMapDir(m_roomMapDir);
+            roomMapDir.removeRecursively();
+            QDir().mkpath(m_roomMapDir);
+        }
         if (!saveToJson(fileName, bundleFolderName)) {
             QMessageBox::warning(this, "Save Path", "Failed to save path.");
             return;
@@ -3446,10 +3460,9 @@ void PathPlannerWidget::onSavePath()
         QMessageBox::information(
             this,
             "Save Path",
-            QString("Path saved to:\n%1\n\nThe waypoint file is ready in Saved Paths. "
-                    "The mapper map folder is copying from VOXL in the background; you will get another message when "
-                    "that finishes (or if it fails).")
-                .arg(fileName));
+            QString("Path saved to:\n%1\n\nThe room map was cleared locally and is copying from VOXL into:\n%2\n\n"
+                    "You will get another message when that finishes (or if it fails).")
+                .arg(fileName, localBundleAbsPath));
         return;
     }
 
@@ -3508,18 +3521,28 @@ bool PathPlannerWidget::loadPathFromFile(const QString &fileName, bool showSucce
     if (m_waypointGroup)
         m_waypointGroup->setTitle("Waypoints - " + loadedName);
 
-    if (!m_mapperMapPath.isEmpty() && m_droneController && m_droneController->isConnected()) {
-        if (QMessageBox::question(this,
-                                  "Load Associated VOXL Map",
-                                  QString("This trajectory references a VOXL Mapper map:\n%1\n\n"
-                                          "Clear the current mapper map on VOXL and load this one? "
-                                          "(Recommended to avoid overlapping maps.)")
-                                      .arg(m_mapperMapPath),
-                                  QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
-            if (!m_mapperMapBundleDir.isEmpty() && QDir(m_mapperMapBundleDir).exists())
-                m_droneController->restoreMapperMapFromBundle(m_mapperMapBundleDir, m_mapperMapPath);
-            else
-                m_droneController->replaceMapperMap(m_mapperMapPath);
+    if (m_droneController && m_droneController->isConnected()) {
+        const bool hasLocalRoomMap = !m_mapperMapBundleDir.isEmpty() && QDir(m_mapperMapBundleDir).exists();
+        if (hasLocalRoomMap) {
+            const QString remotePath = m_mapperMapPath.trimmed().isEmpty()
+                                           ? QStringLiteral("/data/voxl_mapper/missions/%1").arg(
+                                                 FlightPath::fileBaseFromDisplayName(
+                                                     m_roomName.trimmed().isEmpty() ? loadedName : m_roomName))
+                                           : m_mapperMapPath.trimmed();
+            m_mapperMapPath = remotePath;
+            m_droneController->restoreMapperMapFromBundle(m_mapperMapBundleDir, remotePath);
+            if (m_missionStatusLabel) {
+                m_missionStatusLabel->setText(
+                    QStringLiteral("<span style=\"color:#93c5fd;font-weight:600;\">Restoring saved room map to VOXL…</span>"));
+                m_missionStatusLabel->setStyleSheet(QStringLiteral("QLabel { border: none; font-size: 11px; }"));
+            }
+        } else if (!m_mapperMapPath.isEmpty()) {
+            QMessageBox::warning(this,
+                                 "Load Associated VOXL Map",
+                                 QString("This trajectory references a room map, but the saved local map folder is missing:\n%1\n\n"
+                                         "The waypoints were loaded, but the app did not pull a replacement map from VOXL.")
+                                     .arg(m_mapperMapBundleDir.isEmpty() ? QStringLiteral("(no local map folder recorded)")
+                                                                         : m_mapperMapBundleDir));
         }
     }
 
@@ -4136,6 +4159,10 @@ bool PathPlannerWidget::saveToJson(const QString &path, const QString &mapperMap
 
     const QFileInfo outInfo(path);
     root["name"] = FlightPath::displayNameFromFileBase(outInfo.baseName());
+    if (!m_roomId.trimmed().isEmpty())
+        root["room_id"] = m_roomId.trimmed();
+    if (!m_roomName.trimmed().isEmpty())
+        root["room_name"] = m_roomName.trimmed();
     const QDateTime now = QDateTime::currentDateTime();
     root["created_at"] = now.toString(Qt::ISODate);
     root["modified_at"] = now.toString(Qt::ISODate);
@@ -4225,6 +4252,19 @@ bool PathPlannerWidget::loadFromJson(const QString &path)
         if (QDir(abs).exists())
             m_mapperMapBundleDir = QDir::toNativeSeparators(abs);
     }
+    if (m_mapperMapBundleDir.isEmpty() && !m_roomMapDir.trimmed().isEmpty()) {
+        const QString roomBundle = QDir(m_roomMapDir).filePath(QStringLiteral("mapper_map"));
+        if (QDir(roomBundle).exists())
+            m_mapperMapBundleDir = QDir::toNativeSeparators(roomBundle);
+    }
+    if (m_mapperMapPath.trimmed().isEmpty() && !m_roomMapDir.trimmed().isEmpty()) {
+        QFile metaFile(QDir(m_roomMapDir).filePath(QStringLiteral("map.json")));
+        if (metaFile.open(QIODevice::ReadOnly)) {
+            const QJsonDocument metaDoc = QJsonDocument::fromJson(metaFile.readAll());
+            if (metaDoc.isObject())
+                m_mapperMapPath = metaDoc.object().value(QStringLiteral("remote_path")).toString();
+        }
+    }
     std::vector<Waypoint> waypoints;
 
     for (const QJsonValue &value : waypointsArray)
@@ -4271,6 +4311,15 @@ bool PathPlannerWidget::loadFromJson(const QString &path)
 void PathPlannerWidget::setPlannerPathsDirectory(const QString &dir)
 {
     m_plannerPathsDir = dir;
+}
+
+void PathPlannerWidget::setPlannerRoomContext(const QString &roomId, const QString &roomName,
+                                              const QString &pathsDir, const QString &mapDir)
+{
+    m_roomId = roomId;
+    m_roomName = roomName;
+    m_roomMapDir = mapDir;
+    setPlannerPathsDirectory(pathsDir);
 }
 
 void PathPlannerWidget::setDroneController(DroneController *controller)
@@ -4348,14 +4397,29 @@ void PathPlannerWidget::onMapperBundleDownloadFinished(bool success, const QStri
         return;
     }
 
+    const QString displayName = FlightPath::displayNameFromFileBase(QFileInfo(jsonPath).baseName());
+
     m_mapperMapBundleDir.clear();
     if (success) {
         const QString abs = QFileInfo(jsonPath).absoluteDir().filePath(bundleFolderName);
         if (QDir(abs).exists())
             m_mapperMapBundleDir = QDir::toNativeSeparators(abs);
-    }
 
-    const QString displayName = FlightPath::displayNameFromFileBase(QFileInfo(jsonPath).baseName());
+        if (!m_roomMapDir.trimmed().isEmpty()) {
+            QDir().mkpath(m_roomMapDir);
+            QJsonObject mapMeta;
+            mapMeta[QStringLiteral("display_name")] = m_roomName.trimmed().isEmpty()
+                                                          ? displayName
+                                                          : m_roomName.trimmed();
+            mapMeta[QStringLiteral("remote_path")] = m_mapperMapPath.trimmed();
+            mapMeta[QStringLiteral("bundle_dir")] = QStringLiteral("mapper_map");
+            mapMeta[QStringLiteral("mesh_path")] = QStringLiteral("map.ply");
+            mapMeta[QStringLiteral("updated_at")] = QDateTime::currentDateTime().toString(Qt::ISODate);
+            QFile metaFile(QDir(m_roomMapDir).filePath(QStringLiteral("map.json")));
+            if (metaFile.open(QIODevice::WriteOnly | QIODevice::Text))
+                metaFile.write(QJsonDocument(mapMeta).toJson(QJsonDocument::Indented));
+        }
+    }
 
     if (success) {
         QMessageBox::information(

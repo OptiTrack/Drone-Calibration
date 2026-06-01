@@ -60,15 +60,11 @@ MainWindow::MainWindow(QWidget *parent)
     // Initialize flight telemetry logger
     m_flightLogger = new FlightLogger(this);
 
-    // Push active volume dirs into logger on startup if one is already saved.
-    if (m_volumeManager->hasActiveVolume()) {
-        m_flightLogger->setVolumeFlightDirs(
-            m_volumeManager->activeFlightsTelemetryDir(),
-            m_volumeManager->activeTrajectoriesDir());
-    }
-
     setupUI();
     connectSignals();
+
+    if (m_volumeManager->hasActiveVolume())
+        applyActiveVolume(m_volumeManager->activeVolume());
     
     // Set initial view
     setActiveView("home");
@@ -434,6 +430,7 @@ void MainWindow::setupMainContent()
     
     // Index 2: Flight History (Recorded Paths)
     m_recordedPathsWidget = new RecordedPathsWidget;
+    m_recordedPathsWidget->setVolumeManager(m_volumeManager);
     m_contentStack->addWidget(m_recordedPathsWidget);
     
     // Index 3: Media Library (Recorded Videos)
@@ -447,29 +444,6 @@ void MainWindow::setupMainContent()
 
 void MainWindow::setupStatusBar()
 {
-    // Volume selector — always visible so the user can identify and switch the
-    // active flight volume without entering a settings page.
-    m_volumeCombo = new QComboBox;
-    m_volumeCombo->setMinimumWidth(160);
-    m_volumeCombo->setMaximumWidth(220);
-    m_volumeCombo->setToolTip("Active volume — flight logs, trajectories and maps are saved here");
-    m_volumeCombo->setStyleSheet(
-        "QComboBox { background:#374151; color:#e5e7eb; border:1px solid #4b5563;"
-        "            padding:1px 4px; border-radius:3px; font-size:11px; }"
-        "QComboBox::drop-down { border:none; }"
-        "QComboBox QAbstractItemView { background:#374151; color:#e5e7eb; "
-        "    selection-background-color:#007acc; }");
-
-    m_newVolumeButton = new QPushButton(QStringLiteral("+ Volume"));
-    m_newVolumeButton->setToolTip("Create a new flight volume");
-    m_newVolumeButton->setFixedHeight(20);
-    m_newVolumeButton->setStyleSheet(
-        "QPushButton { background:#374151; color:#93c5fd; border:1px solid #4b5563;"
-        "              padding:0 6px; border-radius:3px; font-size:11px; }"
-        "QPushButton:hover { background:#4b5563; }");
-
-    rebuildVolumeCombo();
-
     m_logButton = new QPushButton(QStringLiteral("\u25CF Log"));
     m_logButton->setToolTip("Start or stop flight telemetry and trajectory logging");
     m_logButton->setCheckable(true);
@@ -481,9 +455,6 @@ void MainWindow::setupStatusBar()
         "QPushButton:checked { background:#065f46; color:#34d399; border-color:#34d399; }"
         "QPushButton:hover { background:#4b5563; }");
 
-    statusBar()->addPermanentWidget(new QLabel(QStringLiteral("Volume:")));
-    statusBar()->addPermanentWidget(m_volumeCombo);
-    statusBar()->addPermanentWidget(m_newVolumeButton);
     statusBar()->addPermanentWidget(m_logButton);
 
     statusBar()->showMessage("Ready - Disconnected from drone");
@@ -610,10 +581,14 @@ void MainWindow::connectSignals()
             });
 
     // --- Volume selector ---
-    connect(m_newVolumeButton, &QPushButton::clicked,
-            this, &MainWindow::onNewVolumeRequested);
-    connect(m_volumeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &MainWindow::onVolumeComboChanged);
+    if (m_newVolumeButton) {
+        connect(m_newVolumeButton, &QPushButton::clicked,
+                this, &MainWindow::onNewVolumeRequested);
+    }
+    if (m_volumeCombo) {
+        connect(m_volumeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, &MainWindow::onVolumeComboChanged);
+    }
 
     connect(m_volumeManager, &VolumeManager::volumeListChanged,
             this, &MainWindow::rebuildVolumeCombo);
@@ -623,7 +598,9 @@ void MainWindow::connectSignals()
             this, [this]() {
                 // Revert to default log dirs
                 m_flightLogger->setVolumeFlightDirs({}, {});
-                m_pathPlannerWidget->setPlannerPathsDirectory({});
+                m_pathPlannerWidget->setPlannerRoomContext({}, {}, {}, {});
+                if (m_recordedPathsWidget)
+                    m_recordedPathsWidget->loadPaths();
                 statusBar()->showMessage(QStringLiteral("Volume cleared — saving to default logs/"), 4000);
             });
 
@@ -805,7 +782,11 @@ void MainWindow::applyActiveVolume(const VolumeManager::VolumeInfo &volume)
         m_volumeManager->activeFlightsTelemetryDir(),
         m_volumeManager->activeTrajectoriesDir());
 
-    m_pathPlannerWidget->setPlannerPathsDirectory(m_volumeManager->activePathsDir());
+    m_pathPlannerWidget->setPlannerRoomContext(volume.id, volume.name,
+                                               m_volumeManager->activePathsDir(),
+                                               m_volumeManager->activeMapDir());
+    if (m_recordedPathsWidget)
+        m_recordedPathsWidget->loadPaths();
 
     statusBar()->showMessage(
         QStringLiteral("Volume \"%1\" active — logs/paths in %2")
