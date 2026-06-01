@@ -511,6 +511,8 @@ void MainWindow::connectSignals()
             this, &MainWindow::onPathSaved);
     connect(m_pathPlannerWidget, &PathPlannerWidget::pathSaved,
             m_recordedPathsWidget, &RecordedPathsWidget::addPath);
+    connect(m_pathPlannerWidget, &PathPlannerWidget::vioResetRequested,
+            m_droneController, &DroneController::resetVioService);
     
     // Recorded paths signals
     connect(m_recordedPathsWidget, &RecordedPathsWidget::pathDeleted,
@@ -591,6 +593,21 @@ void MainWindow::connectSignals()
             m_droneController, &DroneController::forceDisarm);
     connect(m_droneStatusWidget, &DroneStatusWidget::flightTerminationRequested,
             m_droneController, &DroneController::flightTermination);
+    connect(m_droneStatusWidget, &DroneStatusWidget::setPx4ParameterRequested,
+            m_droneController, &DroneController::setPx4Parameter);
+    connect(m_droneController, &DroneController::px4ParameterReceived,
+            m_droneStatusWidget, [this](const QString &paramId, float value) {
+                if (paramId == QStringLiteral("NAV_DLL_ACT")) {
+                    m_droneStatusWidget->onNavDllActReceived(value);
+                    m_droneStatusWidget->addSystemMessage(
+                        QString("NAV_DLL_ACT = %1 (%2)")
+                            .arg(static_cast<int>(value))
+                            .arg(static_cast<int>(value) == 0
+                                     ? QStringLiteral("RC-Only arming")
+                                     : QStringLiteral("GCS-Required arming")),
+                        "info");
+                }
+            });
 
     // --- Volume selector ---
     connect(m_newVolumeButton, &QPushButton::clicked,

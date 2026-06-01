@@ -61,6 +61,10 @@ public:
     void forceDisarm();
     /// PX4 flight termination (MAV_CMD_DO_FLIGHTTERMINATION); strongest software stop if enabled in firmware.
     void flightTermination();
+    /// Send MAVLink PARAM_SET to write a PX4 parameter (INT32 by default; pass paramType=9 for float).
+    void setPx4Parameter(const QString &paramId, float value, quint8 paramType = 6);
+    /// Request a single PX4 parameter by name; result comes back via px4ParameterReceived().
+    void requestPx4Parameter(const QString &paramId);
 
     // Mission/waypoint control
     void uploadMission(const QVector<QVector3D> &waypoints);
@@ -74,10 +78,9 @@ public:
     void abortMission();
     void clearMission();
     void clearMapperMap();
-    /// SSH-restart voxl-mapper on the drone, then reconnect the mapper WebSocket.
-    /// More reliable than clear_map when the mapper service is stuck or unresponsive.
-    void restartMapperService();
     void loadMapperMap(const QString &remotePath = QString());
+    /// SSH-restart a VIO service by name (e.g. "voxl-open-vins-server" or "voxl-qvio-server").
+    void resetVioService(const QString &serviceName);
     /// clear_map on VOXL, then load_map after a short delay (avoids stacking two maps in mapper + garbled mesh in the UI).
     void replaceMapperMap(const QString &remotePath = QString());
     /// clear_map, scp-upload a saved local bundle folder to remotePath, then load_map (live /mesh stream resumes after load).
@@ -118,6 +121,8 @@ signals:
     void warningIssued(const QString &warning);
     void messageReceived(const QString &message);
     void mapperBundleDownloadFinished(bool success, const QString &message);
+    /// Forwarded from VOXLConnection when a PARAM_VALUE message is received.
+    void px4ParameterReceived(const QString &paramId, float value);
 
 private slots:
     void onHeartbeatTimer();
@@ -216,7 +221,9 @@ private:
     QString m_pendingBundleRestoreRemote;
     QTimer *m_mapperPortalWatchdog;
     QTimer *m_thermalPollTimer;
-    
+    QTimer *m_paramPollTimer;  ///< Retries PARAM_REQUEST_READ for NAV_DLL_ACT until a value arrives.
+    bool m_navDllActKnown;    ///< True once NAV_DLL_ACT has been received; stops poll timer.
+
     // Manual control state
     bool m_manualControlActive;
     QTimer *m_manualControlTimer;

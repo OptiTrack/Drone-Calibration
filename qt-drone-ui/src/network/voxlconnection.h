@@ -87,6 +87,8 @@ signals:
     void missionCompleted();
     void missionCancelled();
     void sshCommandFinished(bool success, const QString &output);
+    /// Emitted when a PARAM_VALUE message is received from the autopilot.
+    void px4ParameterReceived(const QString &paramId, float value);
 
 private slots:
     void onTcpConnected();
@@ -134,6 +136,10 @@ private:
                                 float param5 = 0.0f,
                                 float param6 = 0.0f,
                                 float param7 = 0.0f);
+    // MAVLink PARAM_SET (msg ID 23). paramType: 6 = INT32, 9 = REAL32.
+    void sendMavlinkParamSet(const QString &paramId, float value, quint8 paramType = 6);
+    // MAVLink PARAM_REQUEST_READ (msg ID 20). Pass param_index=-1 to look up by name.
+    void sendMavlinkParamRequestRead(const QString &paramId);
     void sendMavlinkPacket(quint32 messageId, const QByteArray &payload, quint8 crcExtra);
     QJsonObject createCommand(const QString &command, const QJsonObject &params = QJsonObject());
     

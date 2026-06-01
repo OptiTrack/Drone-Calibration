@@ -22,6 +22,7 @@
 #include <QMenu>
 #include <QAction>
 #include <QTimer>
+#include <QTabWidget>
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QPaintEvent>
@@ -287,6 +288,8 @@ public:
 signals:
     void pathSaved(const QString &name, const QVector<QVector3D> &points);
     void waypointsChanged(const std::vector<Waypoint> &waypoints);
+    /// Emitted when the user confirms a VIO service restart.
+    void vioResetRequested(const QString &serviceName);
 
 private slots:
     void onClearPath();
@@ -413,6 +416,8 @@ private:
 
     bool m_updatingWaypointTable;
     bool m_reorderingWaypointRows;
+
+    QVBoxLayout *m_rightPanelLayout;  // wraps scroll area + pinned VIO group
 
     void removeMapperHomeWaypointAndRefresh();
 };

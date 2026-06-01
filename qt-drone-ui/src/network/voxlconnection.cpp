@@ -278,6 +278,12 @@ void VOXLConnection::sendCommand(const QString &command, const QJsonObject &para
                                static_cast<float>(params["param5"].toDouble()),
                                static_cast<float>(params["param6"].toDouble()),
                                static_cast<float>(params["param7"].toDouble()));
+    } else if (command == "set_param") {
+        sendMavlinkParamSet(params["param_id"].toString(),
+                            static_cast<float>(params["value"].toDouble()),
+                            static_cast<quint8>(params["param_type"].toInt(6)));
+    } else if (command == "request_param") {
+        sendMavlinkParamRequestRead(params["param_id"].toString());
     } else {
         emit errorOccurred(QString("MAVLink command is not implemented yet: %1").arg(command));
     }
@@ -558,6 +564,30 @@ void VOXLConnection::processMavlinkMessage(quint32 messageId,
         }
         break;
     }
+    case 22: { // PARAM_VALUE
+        if (m_haveAutopilotTarget && systemId != m_targetSystemId) {
+            return;
+        }
+        // Payload: param_value(float32) | param_count(uint16) | param_index(uint16) | param_id[16] | param_type(uint8)
+        const float rawValue = readFloatLe(payload, 0);
+        // param_type is at byte 24; INT32 values are bit-cast in the float field by PX4.
+        // Reverse the memcpy so callers receive the actual integer as a float.
+        const quint8 pType = (payload.size() > 24) ? static_cast<quint8>(payload[24]) : 0;
+        float paramValue = rawValue;
+        if (pType == 6) { // MAV_PARAM_TYPE_INT32
+            int32_t ival;
+            memcpy(&ival, &rawValue, sizeof(float));
+            paramValue = static_cast<float>(ival);
+        }
+        const QByteArray rawId = payload.mid(8, 16);
+        // Truncate at first null byte — the field is null-padded to 16 chars
+        int nullPos = rawId.indexOf('\0');
+        const QString paramId = (nullPos >= 0)
+            ? QString::fromLatin1(rawId.constData(), nullPos)
+            : QString::fromLatin1(rawId);
+        emit px4ParameterReceived(paramId, paramValue);
+        return;
+    }
     case 77: { // COMMAND_ACK
         const quint16 command = readLe<quint16>(payload, 0);
         const quint8 result = readLe<quint8>(payload, 2);
@@ -614,6 +644,54 @@ void VOXLConnection::sendMavlinkCommandLong(quint16 command,
     payload.append(static_cast<char>(0)); // confirmation
 
     sendMavlinkPacket(76, payload, 152);
+}
+
+void VOXLConnection::sendMavlinkParamRequestRead(const QString &paramId)
+{
+    // MAVLink PARAM_REQUEST_READ (message ID 20, CRC extra 214)
+    // Payload: param_index(int16) | target_system | target_component | param_id[16]
+    QByteArray payload;
+    // param_index = -1: look up by name
+    const qint16 paramIndex = -1;
+    char indexBytes[2];
+    qToLittleEndian(paramIndex, indexBytes);
+    payload.append(indexBytes, 2);
+    payload.append(static_cast<char>(m_targetSystemId));
+    payload.append(static_cast<char>(m_targetComponentId));
+    QByteArray id = paramId.toLatin1().left(16);
+    id.resize(16, '\0');
+    payload.append(id);
+
+    sendMavlinkPacket(20, payload, 214);
+}
+
+void VOXLConnection::sendMavlinkParamSet(const QString &paramId, float value, quint8 paramType)
+{
+    // MAVLink PARAM_SET (message ID 23, CRC extra 168)
+    // Payload layout: param_value(float32) | target_system | target_component | param_id[16] | param_type
+    QByteArray payload;
+    // INT32 parameters are bit-cast into the float field (PX4 uses memcpy to decode them,
+    // NOT a numeric cast — so int32(2) must become the float whose bytes are 0x00000002,
+    // not 2.0f whose bytes are 0x40000000).
+    if (paramType == 6) { // MAV_PARAM_TYPE_INT32
+        int32_t ival = static_cast<int32_t>(value);
+        float fval;
+        memcpy(&fval, &ival, sizeof(float));
+        appendFloatLe(payload, fval);
+    } else {
+        appendFloatLe(payload, value);
+    }
+    payload.append(static_cast<char>(m_targetSystemId));
+    payload.append(static_cast<char>(m_targetComponentId));
+
+    // param_id: exactly 16 bytes, null-padded
+    QByteArray id = paramId.toLatin1().left(16);
+    id.resize(16, '\0');
+    payload.append(id);
+
+    payload.append(static_cast<char>(paramType));
+
+    sendMavlinkPacket(23, payload, 168);
 }
 
 void VOXLConnection::sendMavlinkPacket(quint32 messageId, const QByteArray &payload, quint8 crcExtra)

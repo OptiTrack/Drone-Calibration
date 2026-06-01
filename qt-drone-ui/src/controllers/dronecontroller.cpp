@@ -37,6 +37,8 @@ DroneController::DroneController(QObject *parent)
     , m_pendingMapperMapCommand(PendingMapperMapCommand::None)
     , m_mapperPortalWatchdog(nullptr)
     , m_thermalPollTimer(nullptr)
+    , m_paramPollTimer(nullptr)
+    , m_navDllActKnown(false)
     , m_manualControlActive(false)
     , m_manualControlTimer(nullptr)
 {
@@ -89,6 +91,23 @@ void DroneController::initializeConnection()
             this, &DroneController::mapperBundleDownloadFinished);
     connect(m_voxlConnection, &VOXLConnection::mapperBundleUploadFinished,
             this, &DroneController::onMapperBundleUploadForRestoreFinished);
+    connect(m_voxlConnection, &VOXLConnection::px4ParameterReceived,
+            this, [this](const QString &paramId, float value) {
+                if (paramId == QStringLiteral("NAV_DLL_ACT") && !m_navDllActKnown) {
+                    m_navDllActKnown = true;
+                    if (m_paramPollTimer)
+                        m_paramPollTimer->stop();
+                }
+                emit px4ParameterReceived(paramId, value);
+            });
+
+    // Poll for NAV_DLL_ACT every 2 s until it is received (PX4 often misses the first request).
+    m_paramPollTimer = new QTimer(this);
+    m_paramPollTimer->setInterval(2000);
+    connect(m_paramPollTimer, &QTimer::timeout, this, [this]() {
+        if (m_connected && !m_navDllActKnown)
+            requestPx4Parameter(QStringLiteral("NAV_DLL_ACT"));
+    });
     connect(m_voxlConnection, &VOXLConnection::sshCommandFinished,
             this, [this](bool success, const QString &output) {
                 if (success)
@@ -226,7 +245,13 @@ void DroneController::updateConnectionStatus(bool connected)
             m_heartbeatTimer->start();
             m_statusUpdateTimer->start();
             m_thermalPollTimer->start();
+            // Read current arming mode; retry every 2 s until PX4 responds.
+            m_navDllActKnown = false;
+            requestPx4Parameter(QStringLiteral("NAV_DLL_ACT"));
+            m_paramPollTimer->start();
         } else {
+            m_navDllActKnown = false;
+            m_paramPollTimer->stop();
             m_heartbeatTimer->stop();
             m_statusUpdateTimer->stop();
             m_thermalPollTimer->stop();
@@ -340,6 +365,30 @@ void DroneController::flightTermination()
     sendCommand("flight_termination");
     emit missionStatusChanged(QStringLiteral("Flight termination command sent (PX4; may require reboot)"));
     emit messageReceived(QStringLiteral("Flight termination sent — check PX4 CBRK_FLIGHTTERM / docs"));
+}
+
+void DroneController::requestPx4Parameter(const QString &paramId)
+{
+    if (!m_connected) {
+        return;
+    }
+    QJsonObject params;
+    params["param_id"] = paramId;
+    sendCommand("request_param", params);
+}
+
+void DroneController::setPx4Parameter(const QString &paramId, float value, quint8 paramType)
+{
+    if (!m_connected) {
+        emit errorOccurred("Cannot set parameter: not connected to drone");
+        return;
+    }
+    QJsonObject params;
+    params["param_id"]   = paramId;
+    params["value"]      = static_cast<double>(value);
+    params["param_type"] = static_cast<int>(paramType);
+    sendCommand("set_param", params);
+    emit messageReceived(QString("Parameter %1 set to %2").arg(paramId).arg(value));
 }
 
 void DroneController::sendCommand(const QString &command, const QJsonObject &params)
@@ -757,57 +806,22 @@ void DroneController::clearMission()
 
 void DroneController::clearMapperMap()
 {
-    if (!m_mapperClient || !m_mapperClient->isMeshConnected()) {
-        if (m_mapperClient && !m_droneHost.trimmed().isEmpty()) {
-            m_pendingMapperMapCommand = PendingMapperMapCommand::Clear;
-            m_mapperClient->connectToMapper(m_droneHost, 80);
-            emit messageReceived("Connecting to VOXL Mapper mesh socket before clearing map...");
-        } else {
-            emit errorOccurred("Cannot clear map: VOXL Mapper is not connected");
-        }
+    if (!m_mapperClient || m_droneHost.trimmed().isEmpty()) {
+        emit errorOccurred(QStringLiteral("Cannot clear map: not connected to VOXL Mapper"));
         return;
     }
-    m_mapperClient->clearMap();
-    emit messageReceived("VOXL Mapper clear map command sent");
-
-    // voxl-mapper resets its portal state after clear_map which can leave our
-    // mesh socket in a dead-but-appears-connected state.  Cycle the socket
-    // after 1.5 s so subsequent commands (load_map, clear_map) always use a
-    // fresh connection.
-    const QString host = m_droneHost;
-    QTimer::singleShot(1500, this, [this, host]() {
-        if (m_mapperClient) {
-            emit messageReceived("Reconnecting mapper mesh socket after clear...");
-            m_mapperClient->reconnectMesh();
-        }
-    });
-}
-
-void DroneController::restartMapperService()
-{
-    if (!m_voxlConnection || m_droneHost.trimmed().isEmpty()) {
-        emit errorOccurred("Cannot restart mapper service: not connected to drone");
-        return;
+    if (m_mapperClient->isMeshConnected()) {
+        // Send the restart POST — this is what VOXL Portal's Clear Map button
+        // actually does (POST :8099/restart-voxl-mapper). The WebSocket sockets
+        // will drop and auto-reconnect as voxl-mapper comes back up.
+        m_mapperClient->restartMapper();
+        emit messageReceived(QStringLiteral("VOXL Mapper restart requested (clear map)"));
+    } else {
+        // Socket is down — reconnect and dispatch the command when it comes up.
+        m_pendingMapperMapCommand = PendingMapperMapCommand::Clear;
+        emit messageReceived(QStringLiteral("Reconnecting VOXL Mapper mesh before clear..."));
+        m_mapperClient->reconnectMesh();
     }
-
-    emit messageReceived("Sending SSH restart command to voxl-mapper service...");
-
-    // Disconnect the mapper WebSocket immediately — the service is about to
-    // go down and our sockets would become stale anyway.
-    if (m_mapperClient)
-        m_mapperClient->disconnectFromMapper();
-
-    m_voxlConnection->sshRunCommand(QStringLiteral("voxl-restart voxl-mapper"));
-
-    // Reconnect the mapper WebSocket after 4 s (enough time for the service
-    // to come back up and voxl-portal to begin accepting connections again).
-    const QString host = m_droneHost;
-    QTimer::singleShot(4000, this, [this, host]() {
-        if (m_mapperClient && m_connected) {
-            emit messageReceived("Reconnecting to VOXL Mapper after service restart...");
-            m_mapperClient->connectToMapper(host, 80);
-        }
-    });
 }
 
 void DroneController::loadMapperMap(const QString &remotePath)
@@ -998,7 +1012,10 @@ void DroneController::onMapperMeshConnectedChanged(bool connected)
         saveMapperMap(format.isEmpty() ? QStringLiteral("ply") : format, path);
         break;
     case PendingMapperMapCommand::Clear:
-        clearMapperMap();
+        // Call clearMap() directly here — do NOT call clearMapperMap() which
+        // would queue another reconnect and loop indefinitely.
+        m_mapperClient->clearMap();
+        emit messageReceived(QStringLiteral("VOXL Mapper clear map command sent"));
         break;
     case PendingMapperMapCommand::LoadAfterClear:
         replaceMapperMap(path);
@@ -1134,6 +1151,35 @@ void DroneController::onThermalPollTimer()
         cmd
     };
     proc->start(QStringLiteral("ssh"), args);
+}
+
+void DroneController::resetVioService(const QString &serviceName)
+{
+    if (!m_mapperClient || m_droneHost.trimmed().isEmpty()) {
+        emit errorOccurred(QStringLiteral("Cannot reset VIO: not connected to VOXL Mapper"));
+        return;
+    }
+    // VOXL Portal vio.js resets each service by opening a NEW WebSocket
+    // connection to /reset_qvio/ or /reset_ov/ — the connection itself
+    // triggers the reset.  No message is sent and the /mesh socket is not
+    // involved, so no reconnect step is needed.
+    if (serviceName == QLatin1String("voxl-qvio-server")) {
+        m_mapperClient->resetQvio();
+        emit messageReceived(QStringLiteral("QVIO reset sent to drone (/reset_qvio/)"));
+    } else if (serviceName == QLatin1String("voxl-open-vins-server")) {
+        m_mapperClient->resetOv();
+        emit messageReceived(QStringLiteral("OV Extended reset sent to drone (/reset_ov/)"));
+    } else if (serviceName == QLatin1String("voxl-mapper")) {
+        if (!m_voxlConnection || m_droneHost.trimmed().isEmpty()) {
+            emit errorOccurred(QStringLiteral("Cannot restart mapper: not connected to VOXL"));
+            return;
+        }
+        m_voxlConnection->sshRunCommand(
+            QStringLiteral("systemctl restart voxl-mapper && echo 'voxl-mapper restarted successfully'"));
+        emit messageReceived(QStringLiteral("Restarting voxl-mapper service via SSH..."));
+    } else {
+        emit errorOccurred(QStringLiteral("Unknown VIO service: %1").arg(serviceName));
+    }
 }
 
 void DroneController::stopMapperPortalWatchdog()

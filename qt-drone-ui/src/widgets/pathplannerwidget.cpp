@@ -2551,7 +2551,7 @@ void PathPlannerOpenGLWidget::resetCamera()
 
 // PathPlannerWidget Implementation
 PathPlannerWidget::PathPlannerWidget(QWidget *parent)
-    : QWidget(parent), m_mainLayout(nullptr), m_contentLayout(nullptr), m_topBarWidget(nullptr), m_controlsLayout(nullptr), m_topBarPreUploadToolbar(nullptr), m_topBarEditingCluster(nullptr), m_topBarMissionCluster(nullptr), m_topBarReturnToEditButton(nullptr), m_topBarLandButton(nullptr), m_topBarRtlButton(nullptr), m_topBarForceDisarmButton(nullptr), m_topBarFlightTermButton(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_viewGroup(nullptr), m_waypointTable(nullptr), m_waypointCountLabel(nullptr), m_waypointDefaultsButton(nullptr), m_defaultAcceptanceRadiusSpinBox(nullptr), m_defaultHoldSpinBox(nullptr), m_defaultYawSpinBox(nullptr), m_pathMenuButton(nullptr), m_uploadMissionButton(nullptr), m_missionPlayButton(nullptr), m_missionPauseContinueButton(nullptr), m_createModeButton(nullptr), m_transformModeButton(nullptr), m_playPathPreviewButton(nullptr), m_stopPathPreviewButton(nullptr), m_pathNameEdit(nullptr), m_missionStatusLabel(nullptr), m_resetCameraButton(nullptr), m_viewModeButton(nullptr), m_defaultAltitudeSpinBox(nullptr), m_undoEditButton(nullptr), m_redoEditButton(nullptr), m_pathPreviewAnimationTimer(nullptr), m_pathPreviewWaypointIndex(0), m_pathPreviewProgress(0.0f), m_isPlayingPathPreview(false), m_selectedWaypoint(-1), m_droneController(nullptr), m_hasUploadedSnapshot(false), m_waypointsDirtySinceUpload(false), m_editingLocked(false), m_updatingWaypointTable(false), m_reorderingWaypointRows(false)
+    : QWidget(parent), m_mainLayout(nullptr), m_contentLayout(nullptr), m_topBarWidget(nullptr), m_controlsLayout(nullptr), m_topBarPreUploadToolbar(nullptr), m_topBarEditingCluster(nullptr), m_topBarMissionCluster(nullptr), m_topBarReturnToEditButton(nullptr), m_topBarLandButton(nullptr), m_topBarRtlButton(nullptr), m_topBarForceDisarmButton(nullptr), m_topBarFlightTermButton(nullptr), m_openglWidget(nullptr), m_waypointGroup(nullptr), m_viewGroup(nullptr), m_waypointTable(nullptr), m_waypointCountLabel(nullptr), m_waypointDefaultsButton(nullptr), m_defaultAcceptanceRadiusSpinBox(nullptr), m_defaultHoldSpinBox(nullptr), m_defaultYawSpinBox(nullptr), m_pathMenuButton(nullptr), m_uploadMissionButton(nullptr), m_missionPlayButton(nullptr), m_missionPauseContinueButton(nullptr), m_createModeButton(nullptr), m_transformModeButton(nullptr), m_playPathPreviewButton(nullptr), m_stopPathPreviewButton(nullptr), m_pathNameEdit(nullptr), m_missionStatusLabel(nullptr), m_resetCameraButton(nullptr), m_viewModeButton(nullptr), m_defaultAltitudeSpinBox(nullptr), m_undoEditButton(nullptr), m_redoEditButton(nullptr), m_pathPreviewAnimationTimer(nullptr), m_pathPreviewWaypointIndex(0), m_pathPreviewProgress(0.0f), m_isPlayingPathPreview(false), m_selectedWaypoint(-1), m_droneController(nullptr), m_hasUploadedSnapshot(false), m_waypointsDirtySinceUpload(false), m_editingLocked(false), m_updatingWaypointTable(false), m_reorderingWaypointRows(false), m_rightPanelLayout(nullptr)
 {
     setupUI();
 
@@ -2615,7 +2615,15 @@ void PathPlannerWidget::setupUI()
     m_controlsLayout->setSizeConstraint(QLayout::SetMinimumSize);
 
     controlsScrollArea->setWidget(controlsContainer);
-    m_contentLayout->addWidget(controlsScrollArea, 1);
+
+    // Wrap the scroll area in a right-panel widget so the VIO group can be
+    // pinned to the bottom outside the scroll area.
+    QWidget *rightPanel = new QWidget(this);
+    m_rightPanelLayout = new QVBoxLayout(rightPanel);
+    m_rightPanelLayout->setContentsMargins(0, 0, 0, 0);
+    m_rightPanelLayout->setSpacing(0);
+    m_rightPanelLayout->addWidget(controlsScrollArea, 1);
+    m_contentLayout->addWidget(rightPanel, 1);
 
     setupControls();
     setupWaypointTable();
@@ -2801,10 +2809,6 @@ void PathPlannerWidget::setupTopBar()
     QAction *uploadMapperMapAction = pathMenu->addAction("Upload Mesh Export File...");
     QAction *saveMapperMapAction = pathMenu->addAction("Save VOXL Map...");
     QAction *clearMapperMapAction = pathMenu->addAction("Clear VOXL Map");
-    QAction *restartMapperAction  = pathMenu->addAction("Restart Mapper Service (SSH)");
-    restartMapperAction->setToolTip(
-        "SSH into the drone and run 'voxl-restart voxl-mapper'. "
-        "Use this when Clear Map has no effect or the mapper service is unresponsive.");
     QAction *planHomeAction = pathMenu->addAction("Plan VOXL Home (place H at drone pose)");
     planHomeAction->setToolTip(QStringLiteral(
         "Sends plan_home to voxl-mapper (home goal is fixed in mapper at (0,0,-1.5) per ModalAI docs — see voxl-mapper README). "
@@ -2880,22 +2884,9 @@ void PathPlannerWidget::setupTopBar()
             QMessageBox::warning(this, "Clear VOXL Map", "Connect to VOXL before clearing the mapper map.");
             return;
         }
-        if (QMessageBox::question(this, "Clear VOXL Map", "Clear the current VOXL Mapper map?") == QMessageBox::Yes) {
+        if (QMessageBox::question(this, "Clear VOXL Map",
+                "Clear the current VOXL Mapper map?") == QMessageBox::Yes) {
             m_droneController->clearMapperMap();
-            clearMapperVisualization();
-        }
-    });
-    connect(restartMapperAction, &QAction::triggered, this, [this]() {
-        if (!m_droneController || !m_droneController->isConnected()) {
-            QMessageBox::warning(this, "Restart Mapper Service",
-                                 "Connect to the drone first.");
-            return;
-        }
-        const auto btn = QMessageBox::question(this, "Restart Mapper Service",
-            "SSH into the drone and restart voxl-mapper?\n\n"
-            "The live map stream will be interrupted for ~4 seconds while the service restarts.");
-        if (btn == QMessageBox::Yes) {
-            m_droneController->restartMapperService();
             clearMapperVisualization();
         }
     });
@@ -3103,6 +3094,55 @@ void PathPlannerWidget::setupControls()
     }
 
     m_controlsLayout->addStretch();
+
+    // VIO Reset — single button that resets both OV Extended and QVIO.
+    {
+        const QString groupStyle =
+            QStringLiteral("QGroupBox { color: white; border: 1px solid #4b5563; border-radius: 4px; "
+                           "margin-top: 1ex; padding-top: 10px; } "
+                           "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }");
+        const QString btnStyle =
+            QStringLiteral("QPushButton { background: #b91c1c; color: white; border: none; "
+                           "padding: 6px 14px; border-radius: 4px; font-weight: bold; } "
+                           "QPushButton:hover { background: #991b1b; } "
+                           "QPushButton:disabled { background: #4b5563; color: #6b7280; }");
+
+        QGroupBox *vioGroup = new QGroupBox(QStringLiteral("VIO Reset"), this);
+        vioGroup->setStyleSheet(groupStyle);
+        QVBoxLayout *vioGroupLayout = new QVBoxLayout(vioGroup);
+        vioGroupLayout->setContentsMargins(6, 8, 6, 8);
+        vioGroupLayout->setSpacing(6);
+
+        QLabel *desc = new QLabel(
+            QStringLiteral("Resets both Open-VINS and QVIO services. "
+                           "VIO will be interrupted for several seconds — "
+                           "do not reset during an active flight."),
+            vioGroup);
+        desc->setWordWrap(true);
+        desc->setStyleSheet(QStringLiteral("QLabel { color: #9ca3af; font-size: 11px; }"));
+
+        QPushButton *btn = new QPushButton(QStringLiteral("Reset VIO"), vioGroup);
+        btn->setStyleSheet(btnStyle);
+        btn->setFixedHeight(30);
+
+        connect(btn, &QPushButton::clicked, this, [this]() {
+            const auto ans = QMessageBox::question(
+                this,
+                QStringLiteral("Reset VIO"),
+                QStringLiteral("Reset VIO on the drone?<br><br>"
+                               "Both Open-VINS and QVIO will be restarted. "
+                               "VIO will be interrupted for several seconds. "
+                               "Do not reset during an active flight."));
+            if (ans == QMessageBox::Yes) {
+                emit vioResetRequested(QStringLiteral("voxl-open-vins-server"));
+                emit vioResetRequested(QStringLiteral("voxl-qvio-server"));
+            }
+        });
+
+        vioGroupLayout->addWidget(desc);
+        vioGroupLayout->addWidget(btn);
+        m_rightPanelLayout->addWidget(vioGroup);
+    }
 
     // Connect signals
     connect(m_uploadMissionButton, &QPushButton::clicked, this, &PathPlannerWidget::onUploadMission);
