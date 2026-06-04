@@ -62,6 +62,7 @@ set(HEADERS
     src/widgets/dronestatuswidget.h
     src/controllers/dronecontroller.h
     src/models/waypoint.h
+    src/models/trajectory.h
     src/models/flightpath.h
     src/models/recording.h
     src/network/voxlconnection.h
@@ -70,6 +71,7 @@ set(HEADERS
     src/utils/flightlogger.h
     src/utils/volumemanager.h
     src/utils/voxlmappaths.h
+    src/utils/pathfitter.h
 )
 
 # Source files
@@ -84,6 +86,7 @@ set(SOURCES
     src/widgets/dronestatuswidget.cpp
     src/controllers/dronecontroller.cpp
     src/models/waypoint.cpp
+    src/models/trajectory.cpp
     src/models/flightpath.cpp
     src/models/recording.cpp
     src/network/voxlconnection.cpp
@@ -92,6 +95,7 @@ set(SOURCES
     src/utils/flightlogger.cpp
     src/utils/volumemanager.cpp
     src/utils/voxlmappaths.cpp
+    src/utils/pathfitter.cpp
 )
 
 # UI files
