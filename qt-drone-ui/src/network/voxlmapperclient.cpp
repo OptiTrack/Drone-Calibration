@@ -1,6 +1,8 @@
 #include "voxlmapperclient.h"
 
 #include <QDebug>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QRandomGenerator>
 #include <QtEndian>
 #include <QtMath>
@@ -101,9 +103,48 @@ void VOXLMapperClient::connectToMapper(const QString &host, int port)
     m_port = port;
     disconnectFromMapper();
 
-    openSocket(m_planSocket, QStringLiteral("/plan"));
-    openSocket(m_meshSocket, QStringLiteral("/mesh"));
-    openSocket(m_poseSocket, QStringLiteral("/pose"));
+    // voxl-portal (Node.js) initializes its backend proxy to voxl-mapper
+    // lazily — only after it receives a plain HTTP request on port 80.
+    // We send GET / and wait for the HTTP response headers before opening
+    // WebSocket channels, so we KNOW the portal is ready. A 3 s fallback
+    // timer opens sockets anyway if the response never arrives.
+    QTcpSocket *wakeSocket = new QTcpSocket(this);
+
+    // Shared one-shot flag so only one path (response or timeout) opens sockets.
+    auto opened = std::make_shared<bool>(false);
+
+    auto openAll = [this, host, port, opened]() {
+        if (*opened) return;
+        *opened = true;
+        if (m_host != host || m_port != port) return;
+        openSocket(m_planSocket, QStringLiteral("/plan"));
+        openSocket(m_meshSocket, QStringLiteral("/mesh"));
+        openSocket(m_poseSocket, QStringLiteral("/pose"));
+    };
+
+    connect(wakeSocket, &QTcpSocket::connected, this, [wakeSocket, host, port]() {
+        wakeSocket->write(
+            "GET / HTTP/1.1\r\n"
+            "Host: " + host.toLatin1() + ":" + QByteArray::number(port) + "\r\n"
+            "Connection: close\r\n\r\n");
+    });
+    // Open sockets as soon as we receive any HTTP response bytes (portal is up).
+    connect(wakeSocket, &QTcpSocket::readyRead, this, [wakeSocket, openAll]() {
+        wakeSocket->readAll(); // discard response body
+        wakeSocket->disconnectFromHost();
+        openAll();
+    });
+    connect(wakeSocket, &QTcpSocket::disconnected, wakeSocket, &QObject::deleteLater);
+    connect(wakeSocket,
+            QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::errorOccurred),
+            this, [wakeSocket, openAll](QAbstractSocket::SocketError) {
+                wakeSocket->deleteLater();
+                openAll(); // try anyway if TCP fails
+            });
+    wakeSocket->connectToHost(host, static_cast<quint16>(port));
+
+    // Fallback: open after 3 s in case the HTTP response is very slow.
+    QTimer::singleShot(3000, this, [openAll]() { openAll(); });
 }
 
 void VOXLMapperClient::disconnectFromMapper()
@@ -183,9 +224,68 @@ void VOXLMapperClient::clearMap()
     sendMeshCommand(QStringLiteral("clear_map"));
 }
 
+void VOXLMapperClient::restartMapper()
+{
+    if (m_host.trimmed().isEmpty())
+        return;
+    QNetworkAccessManager *nam = new QNetworkAccessManager(this);
+    QNetworkRequest req(QUrl(QStringLiteral("http://%1:8099/restart-voxl-mapper").arg(m_host)));
+    req.setRawHeader("X-Restart-Token", "change-this-token");
+    req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QNetworkReply *reply = nam->post(req, QByteArray());
+    connect(reply, &QNetworkReply::finished, this, [this, reply, nam]() {
+        if (reply->error() == QNetworkReply::NoError)
+            emit statusChanged(QStringLiteral("voxl-mapper restart requested — sockets will reconnect"));
+        else
+            emit errorOccurred(QStringLiteral("Mapper restart request failed: %1").arg(reply->errorString()));
+        reply->deleteLater();
+        nam->deleteLater();
+    });
+}
+
 void VOXLMapperClient::resetVio()
 {
     sendMeshCommand(QStringLiteral("reset_vio"));
+}
+
+void VOXLMapperClient::resetQvio()
+{
+    triggerResetEndpoint(QStringLiteral("/reset_qvio/"));
+}
+
+void VOXLMapperClient::resetOv()
+{
+    triggerResetEndpoint(QStringLiteral("/reset_ov/"));
+}
+
+void VOXLMapperClient::triggerResetEndpoint(const QString &path)
+{
+    // Mirrors VOXL Portal vio.js: open a new WebSocket to /reset_qvio/ or
+    // /reset_ov/ — the act of connecting triggers the reset on the drone.
+    // No message needs to be sent; we disconnect shortly after the handshake.
+    if (m_host.trimmed().isEmpty())
+        return;
+
+    QTcpSocket *socket = new QTcpSocket(nullptr); // no parent; managed via deleteLater
+
+    connect(socket, &QTcpSocket::connected, this, [this, socket, path]() {
+        sendHandshake(*socket, path);
+        // Give the handshake time to be flushed, then disconnect
+        QTimer::singleShot(500, socket, &QTcpSocket::disconnectFromHost);
+    });
+
+    // Clean up when the socket closes normally
+    connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+
+    // Clean up (and report) on error
+    connect(socket, QOverload<QAbstractSocket::SocketError>::of(&QTcpSocket::errorOccurred),
+            this, [this, socket, path](QAbstractSocket::SocketError) {
+                emit errorOccurred(
+                    QStringLiteral("VIO reset failed (%1): %2").arg(path, socket->errorString()));
+                socket->deleteLater();
+            });
+
+    socket->connectToHost(m_host, static_cast<quint16>(m_port));
 }
 
 void VOXLMapperClient::loadMap(const QString &remotePath)

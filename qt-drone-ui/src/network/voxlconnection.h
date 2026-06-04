@@ -11,6 +11,7 @@
 #include <QJsonDocument>
 #include <QBuffer>
 #include <QProcess>
+#include <QQueue>
 #include <QHostAddress>
 #include <QElapsedTimer>
 
@@ -52,8 +53,6 @@ public:
     // Mission upload and control (VOXL2 Runner API)
     void uploadMissionFile(const QString &localFilePath, const QString &remotePath = "/data/trajectories/inbox/trajectory.json");
     void uploadFileToVoxl(const QString &localFilePath, const QString &remotePath, const QString &uploadLabel = QStringLiteral("file"));
-    void downloadDirectoryFromVoxl(const QString &localDir, const QString &remotePath);
-    void uploadDirectoryToVoxl(const QString &localDir, const QString &remotePath);
     void runMission(const QString &missionFileName);
     void getMissionStatus();
     void cancelMission();
@@ -66,6 +65,8 @@ public:
     void setConnectionTimeout(int timeoutMs) { m_connectionTimeout = timeoutMs; }
     void setHeartbeatInterval(int intervalMs);
     void setVoxlHost(const QString &host) { m_voxlHost = host; }
+    /// When set, non-interactive SSH uses this password (VOXL default is often oelinux123).
+    void setVoxlSshPassword(const QString &password);
     void setRunnerApiPort(int port) { m_runnerApiPort = port; }
 
 signals:
@@ -81,12 +82,12 @@ signals:
     void missionUploadProgress(int percent);
     void missionUploadComplete();
     void missionUploadFailed(const QString &error);
-    void mapperBundleDownloadFinished(bool success, const QString &message);
-    void mapperBundleUploadFinished(bool success, const QString &message);
     void missionStatusReceived(const QJsonObject &status);
     void missionCompleted();
     void missionCancelled();
     void sshCommandFinished(bool success, const QString &output);
+    /// Emitted when a PARAM_VALUE message is received from the autopilot.
+    void px4ParameterReceived(const QString &paramId, float value);
 
 private slots:
     void onTcpConnected();
@@ -134,6 +135,10 @@ private:
                                 float param5 = 0.0f,
                                 float param6 = 0.0f,
                                 float param7 = 0.0f);
+    // MAVLink PARAM_SET (msg ID 23). paramType: 6 = INT32, 9 = REAL32.
+    void sendMavlinkParamSet(const QString &paramId, float value, quint8 paramType = 6);
+    // MAVLink PARAM_REQUEST_READ (msg ID 20). Pass param_index=-1 to look up by name.
+    void sendMavlinkParamRequestRead(const QString &paramId);
     void sendMavlinkPacket(quint32 messageId, const QByteArray &payload, quint8 crcExtra);
     QJsonObject createCommand(const QString &command, const QJsonObject &params = QJsonObject());
     
@@ -182,11 +187,20 @@ private:
     
     // Mission upload management (VOXL2 Runner API)
     QString m_voxlHost;
+    QString m_voxlSshPassword;
+    QString m_sshAskpassScriptPath;
     int m_runnerApiPort;  // Default: 8080
-    enum class ScpMode { Upload, Download, UploadDirectory };
+    enum class ScpMode { Upload };
     QProcess *m_scpProcess;
     ScpMode m_scpMode;
-    QString m_scpDownloadLocalPath;
+    void startNextSshCommand();
+    void finishSshCommand(bool success, const QString &output);
+    void cancelPendingSshCommands();
+
+    QQueue<QString> m_sshCommandQueue;
+    bool m_sshRunning = false;
+    QProcess *m_sshProcess = nullptr;
+    QTimer *m_sshTimeoutTimer = nullptr;
     QNetworkReply *m_missionApiReply;
     QString m_currentMissionFile;
     QString m_currentUploadLabel;

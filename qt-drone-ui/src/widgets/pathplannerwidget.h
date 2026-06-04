@@ -22,6 +22,7 @@
 #include <QMenu>
 #include <QAction>
 #include <QTimer>
+#include <QTabWidget>
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QPaintEvent>
@@ -300,6 +301,8 @@ public:
     /// Override the directory used for saving/loading path JSON files.
     /// Pass an empty string to fall back to the built-in plannerPathsDirectory().
     void setPlannerPathsDirectory(const QString &dir);
+    void setPlannerRoomContext(const QString &roomId, const QString &roomName,
+                               const QString &pathsDir, const QString &mapDir);
 
     void setNextWaypointAsCurve(bool enable, float defaultRadiusM);
     bool selectedWaypointIsCurve() const;
@@ -315,7 +318,7 @@ public:
     void clearPath();
     
     // JSON persistence
-    bool saveToJson(const QString &path, const QString &mapperMapBundleFolderName = QString());
+    bool saveToJson(const QString &path);
     bool loadFromJson(const QString &path);
     /// Load waypoints + mapper metadata from disk; clears local mesh/plan preview; optional map reload uses clear-then-load on VOXL.
     bool loadPathFromFile(const QString &fileName, bool showSuccessDialog = true);
@@ -327,13 +330,17 @@ public:
 signals:
     void pathSaved(const QString &name, const QVector<QVector3D> &points);
     void waypointsChanged(const std::vector<Waypoint> &waypoints);
+    /// Emitted when the user confirms a VIO service restart.
+    void vioResetRequested(const QString &serviceName);
+    /// Emitted when a path's map context is known (load or save). Used to persist map metadata
+    /// to the active volume and refresh the Saved Paths tab map status label.
+    void mapContextEstablished(const QString &roomId, const QString &mapperSubdir);
 
 private slots:
     void onClearPath();
     void onSavePath();
     void onLoadPath();
     void onLoadPathFromRecording();
-    void onMapperBundleDownloadFinished(bool success, const QString &message);
     void onUploadMission();
     void onMissionPlayClicked();
     void onMissionPauseContinueClicked();
@@ -436,10 +443,10 @@ private:
     QPushButton *m_undoEditButton;
     QPushButton *m_redoEditButton;
     QString m_mapperMapPath;
-    QString m_mapperMapBundleDir;
-    QString m_backgroundBundleJsonPath;
-    QString m_backgroundBundleFolderName;
     QString m_plannerPathsDir; ///< Volume override; empty = use plannerPathsDirectory()
+    QString m_roomId;
+    QString m_roomName;
+    QString m_roomMapDir;
 
     QTimer *m_pathPreviewAnimationTimer;
     int m_pathPreviewWaypointIndex;
@@ -460,6 +467,8 @@ private:
 
     bool m_updatingWaypointTable;
     bool m_reorderingWaypointRows;
+
+    QVBoxLayout *m_rightPanelLayout;  // wraps scroll area + pinned VIO group
 
     void removeMapperHomeWaypointAndRefresh();
 };

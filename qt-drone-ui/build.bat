@@ -7,11 +7,50 @@ echo Building Qt Drone UI...
 REM Always run from repo root regardless of caller location
 pushd "%~dp0"
 
+REM Locate Qt and build tools. Set QT_VERSION before running to force a version.
+set "QT_ROOT=C:\Qt"
+set "QT_VERSION_DIR="
+if defined QT_VERSION (
+    if exist "%QT_ROOT%\%QT_VERSION%\mingw_64\bin\qmake.exe" (
+        set "QT_VERSION_DIR=%QT_ROOT%\%QT_VERSION%"
+    )
+)
+if not defined QT_VERSION_DIR (
+    for /f "delims=" %%D in ('dir /b /ad /o-n "%QT_ROOT%\6.*" 2^>nul') do (
+        if exist "%QT_ROOT%\%%D\mingw_64\bin\qmake.exe" (
+            set "QT_VERSION_DIR=%QT_ROOT%\%%D"
+            goto :qt_found
+        )
+    )
+)
+:qt_found
+if not defined QT_VERSION_DIR (
+    echo Could not find a Qt 6 MinGW kit under "%QT_ROOT%".
+    echo Install Qt with the MinGW component, or set QT_VERSION to an installed version.
+    goto :fail
+)
+
+set "MINGW_DIR="
+for /f "delims=" %%D in ('dir /b /ad /o-n "%QT_ROOT%\Tools\mingw*_64" 2^>nul') do (
+    if exist "%QT_ROOT%\Tools\%%D\bin\gcc.exe" (
+        set "MINGW_DIR=%QT_ROOT%\Tools\%%D"
+        goto :mingw_found
+    )
+)
+:mingw_found
+if not defined MINGW_DIR (
+    echo Could not find a MinGW toolchain under "%QT_ROOT%\Tools".
+    goto :fail
+)
+
 REM Set Qt environment
-set "PATH=C:\Qt\6.10.0\mingw_64\bin;C:\Qt\Tools\mingw1310_64\bin;C:\Qt\Tools\CMake_64\bin;C:\Qt\Tools\Ninja;%PATH%"
-set "CC=C:\Qt\Tools\mingw1310_64\bin\gcc.exe"
-set "CXX=C:\Qt\Tools\mingw1310_64\bin\g++.exe"
+set "PATH=%QT_VERSION_DIR%\mingw_64\bin;%MINGW_DIR%\bin;%QT_ROOT%\Tools\CMake_64\bin;%QT_ROOT%\Tools\Ninja;%PATH%"
+set "CC=%MINGW_DIR%\bin\gcc.exe"
+set "CXX=%MINGW_DIR%\bin\g++.exe"
 set "GENERATOR=Ninja"
+
+echo Using Qt: %QT_VERSION_DIR%
+echo Using MinGW: %MINGW_DIR%
 
 REM Configure and build
 if not exist build mkdir build

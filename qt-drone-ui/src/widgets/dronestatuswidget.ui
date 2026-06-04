@@ -410,6 +410,21 @@ QPushButton:disabled { background-color: #374151; }</string>
             </property>
            </widget>
           </item>
+          <item>
+           <widget class="QPushButton" name="rcArmingButton">
+            <property name="toolTip">
+             <string>Sets NAV_DLL_ACT=0 so the drone can arm from the RC controller without QGroundControl connected</string>
+            </property>
+            <property name="styleSheet">
+             <string notr="true">QPushButton { background-color: #0e7490; color: white; border: none; padding: 8px; border-radius: 4px; } 
+QPushButton:hover { background-color: #0c6277; }
+QPushButton:disabled { background-color: #374151; }</string>
+            </property>
+            <property name="text">
+             <string>Configure RC-Only Arming</string>
+            </property>
+           </widget>
+          </item>
          </layout>
         </widget>
        </item>

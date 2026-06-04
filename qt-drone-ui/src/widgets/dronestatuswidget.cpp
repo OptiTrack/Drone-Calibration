@@ -10,6 +10,7 @@ DroneStatusWidget::DroneStatusWidget(QWidget *parent)
     , m_hideMapperMeshMessagesCheckBox(nullptr)
     , m_healthLabel(nullptr)
     , m_statusUpdateTimer(nullptr)
+    , m_navDllAct(-1)
 {
     ui->setupUi(this);
     
@@ -47,7 +48,7 @@ DroneStatusWidget::DroneStatusWidget(QWidget *parent)
     m_statusUpdateTimer->setInterval(1000); // Update every second
     connect(m_statusUpdateTimer, &QTimer::timeout, this, &DroneStatusWidget::onStatusUpdateTimer);
     m_statusUpdateTimer->start();
-    
+
     // Add initial message
     addMessage("Drone Status Widget initialized", "info");
     addMessage("Connect to a drone to see live telemetry", "info");
@@ -72,6 +73,7 @@ void DroneStatusWidget::setupConnections()
     connect(ui->rtlButton, &QPushButton::clicked, this, &DroneStatusWidget::onRTLClicked);
     connect(ui->forceDisarmButton, &QPushButton::clicked, this, &DroneStatusWidget::onForceDisarmClicked);
     connect(ui->flightTerminationButton, &QPushButton::clicked, this, &DroneStatusWidget::onFlightTerminationClicked);
+    connect(ui->rcArmingButton, &QPushButton::clicked, this, &DroneStatusWidget::onConfigureRcArmingClicked);
     
     // Connect clear messages button
     connect(ui->clearMessagesButton, &QPushButton::clicked, this, &DroneStatusWidget::onClearMessages);
@@ -140,7 +142,9 @@ void DroneStatusWidget::setConnectionStatus(bool connected)
     
     if (connected) {
         addMessage("Connected to drone", "info");
+        updateRcArmingButton(); // show "Reading..." while we wait for param response
     } else {
+        m_navDllAct = -1; // reset so button re-reads on next connect
         m_currentStatus.batteryPercentage = 0.0f;
         m_currentStatus.batteryVoltage = 0.0f;
         m_currentStatus.flightMode = "--";
@@ -464,6 +468,95 @@ void DroneStatusWidget::onFlightTerminationClicked()
         emit flightTerminationRequested();
         addMessage(QStringLiteral("Flight termination command sent"), "error");
     }
+}
+
+void DroneStatusWidget::onConfigureRcArmingClicked()
+{
+    if (!m_currentStatus.connected) {
+        QMessageBox::information(
+            this,
+            QStringLiteral("Not Connected"),
+            QStringLiteral("Connect to the drone first."));
+        return;
+    }
+
+    // Single dialog regardless of whether current value is known.
+    QMessageBox dlg(this);
+    dlg.setWindowTitle(QStringLiteral("GCS Link-Loss Failsafe (NAV_DLL_ACT)"));
+
+    const QString currentStr = (m_navDllAct < 0)
+        ? QStringLiteral("(unread)")
+        : QStringLiteral("%1").arg(m_navDllAct);
+    dlg.setText(QStringLiteral(
+        "<b>What should the drone do if it loses contact with the GCS?</b><br><br>"
+        "Current value: <b>%1</b><br><br>"
+        "<b>Disabled (0)</b> — No action. Fly without GCS at any time.<br>"
+        "<b>Hold (1)</b> — Loiter in place until link is restored.<br>"
+        "<b>Return (2)</b> — Fly back to launch point and land.<br>"
+        "<b>Land (3)</b> — Land immediately at current position."
+    ).arg(currentStr));
+
+    QPushButton *b0 = dlg.addButton(QStringLiteral("0 — Disabled (manual/no GCS)"),   QMessageBox::ActionRole);
+    QPushButton *b1 = dlg.addButton(QStringLiteral("1 — Hold position"),               QMessageBox::ActionRole);
+    QPushButton *b2 = dlg.addButton(QStringLiteral("2 — Return to launch (RTL)"),      QMessageBox::ActionRole);
+    QPushButton *b3 = dlg.addButton(QStringLiteral("3 — Land immediately"),            QMessageBox::ActionRole);
+    dlg.addButton(QMessageBox::Cancel);
+    dlg.exec();
+
+    int newVal = -1;
+    if      (dlg.clickedButton() == b0) newVal = 0;
+    else if (dlg.clickedButton() == b1) newVal = 1;
+    else if (dlg.clickedButton() == b2) newVal = 2;
+    else if (dlg.clickedButton() == b3) newVal = 3;
+    else return; // Cancel
+
+    static const char *labels[] = {
+        "Disabled", "Hold", "Return", "Land"
+    };
+    emit setPx4ParameterRequested(QStringLiteral("NAV_DLL_ACT"), static_cast<float>(newVal), 6);
+    m_navDllAct = newVal;
+    updateRcArmingButton();
+    addMessage(QStringLiteral("NAV_DLL_ACT=%1 sent (%2 on GCS link loss)")
+                   .arg(newVal).arg(QLatin1String(labels[newVal])), "info");
+}
+
+void DroneStatusWidget::onNavDllActReceived(float value)
+{
+    m_navDllAct = static_cast<int>(value);
+    updateRcArmingButton();
+}
+
+void DroneStatusWidget::updateRcArmingButton()
+{
+    if (!ui->rcArmingButton) return;
+
+    static const char *labels[] = { "Disabled", "Hold", "Return", "Land" };
+    static const char *tips[] = {
+        "No action when GCS link is lost. Drone flies without needing a GCS connected.",
+        "Hold position (loiter) when GCS link is lost.",
+        "Return to launch automatically when GCS link is lost.",
+        "Land immediately when GCS link is lost."
+    };
+
+    if (m_navDllAct < 0) {
+        ui->rcArmingButton->setText(QStringLiteral("GCS Failsafe: Configure"));
+        ui->rcArmingButton->setToolTip(
+            QStringLiteral("NAV_DLL_ACT: action taken when the GCS data link is lost.\n"
+                           "Click to choose: Disabled (0), Hold (1), Return (2), Land (3)"));
+        return;
+    }
+
+    const QString label = (m_navDllAct >= 0 && m_navDllAct <= 3)
+        ? QLatin1String(labels[m_navDllAct])
+        : QStringLiteral("Value %1").arg(m_navDllAct);
+    const QString tip = (m_navDllAct >= 0 && m_navDllAct <= 3)
+        ? QLatin1String(tips[m_navDllAct])
+        : QStringLiteral("NAV_DLL_ACT=%1").arg(m_navDllAct);
+
+    ui->rcArmingButton->setText(
+        QStringLiteral("GCS Failsafe: %1  |  Change").arg(label));
+    ui->rcArmingButton->setToolTip(
+        QStringLiteral("NAV_DLL_ACT=%1: %2\nClick to change.").arg(m_navDllAct).arg(tip));
 }
 
 void DroneStatusWidget::onStatusUpdateTimer()

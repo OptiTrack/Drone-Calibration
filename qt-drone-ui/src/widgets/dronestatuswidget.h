@@ -57,6 +57,7 @@ public:
     void updateDroneStatus(const DroneStatus &status);
     void setConnectionStatus(bool connected);
     bool addSystemMessage(const QString &message, const QString &type = "info");
+    void onNavDllActReceived(float value);
 
 signals:
     void armDisarmRequested(bool arm);
@@ -65,6 +66,8 @@ signals:
     void returnToLaunchRequested();
     void forceDisarmRequested();
     void flightTerminationRequested();
+    /// Emitted when user clicks "Configure RC-Only Arming"; carries param name + value.
+    void setPx4ParameterRequested(const QString &paramId, float value, quint8 paramType);
 
 private slots:
     void onArmDisarmClicked();
@@ -73,6 +76,7 @@ private slots:
     void onRTLClicked();
     void onForceDisarmClicked();
     void onFlightTerminationClicked();
+    void onConfigureRcArmingClicked();
     void onStatusUpdateTimer();
     void onClearMessages();
 
@@ -82,16 +86,18 @@ private:
     void updateFlightDisplay();
     void updatePositionDisplay();
     void updateControlsDisplay();
+    void updateRcArmingButton();
     void addMessage(const QString &message, const QString &type = "info");
     QString formatCoordinate(float value, const QString &unit);
     
     Ui::DroneStatusWidget *ui;
     QCheckBox *m_hideMapperMeshMessagesCheckBox;
     QLabel *m_healthLabel;    // compact CPU/thermal bar shown at top of widget
-    
+
     // Data and timers
     DroneStatus m_currentStatus;
     QTimer *m_statusUpdateTimer;
+    int m_navDllAct; // -1 = unknown, 0 = RC-only, >0 = GCS required
 };
 
 #endif // DRONESTATUSWIDGET_H

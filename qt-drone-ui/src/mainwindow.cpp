@@ -60,15 +60,12 @@ MainWindow::MainWindow(QWidget *parent)
     // Initialize flight telemetry logger
     m_flightLogger = new FlightLogger(this);
 
-    // Push active volume dirs into logger on startup if one is already saved.
-    if (m_volumeManager->hasActiveVolume()) {
-        m_flightLogger->setVolumeFlightDirs(
-            m_volumeManager->activeFlightsTelemetryDir(),
-            m_volumeManager->activeTrajectoriesDir());
-    }
-
     setupUI();
     connectSignals();
+    rebuildVolumeCombo(); // Populate the sidebar volume combo with persisted volumes
+
+    if (m_volumeManager->hasActiveVolume())
+        applyActiveVolume(m_volumeManager->activeVolume());
     
     // Set initial view
     setActiveView("home");
@@ -161,10 +158,21 @@ void MainWindow::setupPlannerMenus()
             return;
         }
 
+        const QString sshPassword = QInputDialog::getText(
+            this,
+            QStringLiteral("Connect to Starling 2 Max"),
+            QStringLiteral("SSH password (for map checks on drone; leave empty if using SSH keys):"),
+            QLineEdit::Password,
+            QStringLiteral("oelinux123"),
+            &ok);
+        if (!ok) {
+            return;
+        }
+
         const QString cleanHost = host.trimmed();
         if (m_cameraFeedWidget)
             m_cameraFeedWidget->setVoxlHost(cleanHost);
-        m_droneController->connectToDrone(cleanHost, port);
+        m_droneController->connectToDrone(cleanHost, port, sshPassword);
     });
 
     connect(disconnectAction, &QAction::triggered,
@@ -411,9 +419,52 @@ void MainWindow::setupNavigationBar()
     statusLayout->addLayout(connectionLayout);
     statusLayout->addWidget(versionLabel);
     statusLayout->addStretch();
-    
+
     m_navigationLayout->addWidget(statusFooter);
-    
+
+    // -----------------------------------------------------------------------
+    // Volume selector — sits in the sidebar above the status footer
+    // -----------------------------------------------------------------------
+    QFrame *volumeFrame = new QFrame;
+    volumeFrame->setFrameShape(QFrame::NoFrame);
+    volumeFrame->setStyleSheet(
+        "QFrame { background-color: #2d2d2d; border: none; border-top: 1px solid #555555; }");
+    QVBoxLayout *volumeLayout = new QVBoxLayout(volumeFrame);
+    volumeLayout->setContentsMargins(10, 8, 10, 8);
+    volumeLayout->setSpacing(4);
+
+    QLabel *volumeSideLabel = new QLabel(QStringLiteral("Volume:"));
+    volumeSideLabel->setStyleSheet(
+        "QLabel { color: #9ca3af; font-size: 11px; font-weight: bold; background: transparent; }");
+
+    QHBoxLayout *volumeRowLayout = new QHBoxLayout;
+    volumeRowLayout->setSpacing(4);
+    volumeRowLayout->setContentsMargins(0, 0, 0, 0);
+
+    m_volumeCombo = new QComboBox(volumeFrame);
+    m_volumeCombo->setToolTip(QStringLiteral("Select the active volume (room)"));
+    m_volumeCombo->setStyleSheet(
+        "QComboBox { background:#374151; color:#e5e7eb; border:1px solid #4b5563; padding:3px 6px;"
+        "            border-radius:3px; font-size:12px; }"
+        "QComboBox QAbstractItemView { background:#374151; color:#e5e7eb;"
+        "                              selection-background-color:#007acc; }");
+
+    m_newVolumeButton = new QPushButton(QStringLiteral("+"), volumeFrame);
+    m_newVolumeButton->setFixedSize(24, 24);
+    m_newVolumeButton->setToolTip(QStringLiteral("Create a new volume"));
+    m_newVolumeButton->setStyleSheet(
+        "QPushButton { background:#374151; color:white; border:1px solid #4b5563;"
+        "              border-radius:3px; font-size:14px; font-weight:bold; }"
+        "QPushButton:hover { background:#4b5563; }");
+
+    volumeRowLayout->addWidget(m_volumeCombo);
+    volumeRowLayout->addWidget(m_newVolumeButton);
+    volumeLayout->addWidget(volumeSideLabel);
+    volumeLayout->addLayout(volumeRowLayout);
+
+    // Insert volume frame just above the status footer
+    m_navigationLayout->insertWidget(m_navigationLayout->count() - 1, volumeFrame);
+
     // Select first item
     m_navigationList->setCurrentRow(0);
 }
@@ -434,6 +485,8 @@ void MainWindow::setupMainContent()
     
     // Index 2: Flight History (Recorded Paths)
     m_recordedPathsWidget = new RecordedPathsWidget;
+    m_recordedPathsWidget->setVolumeManager(m_volumeManager);
+    m_recordedPathsWidget->setDroneController(m_droneController);
     m_contentStack->addWidget(m_recordedPathsWidget);
     
     // Index 3: Media Library (Recorded Videos)
@@ -447,29 +500,6 @@ void MainWindow::setupMainContent()
 
 void MainWindow::setupStatusBar()
 {
-    // Volume selector — always visible so the user can identify and switch the
-    // active flight volume without entering a settings page.
-    m_volumeCombo = new QComboBox;
-    m_volumeCombo->setMinimumWidth(160);
-    m_volumeCombo->setMaximumWidth(220);
-    m_volumeCombo->setToolTip("Active volume — flight logs, trajectories and maps are saved here");
-    m_volumeCombo->setStyleSheet(
-        "QComboBox { background:#374151; color:#e5e7eb; border:1px solid #4b5563;"
-        "            padding:1px 4px; border-radius:3px; font-size:11px; }"
-        "QComboBox::drop-down { border:none; }"
-        "QComboBox QAbstractItemView { background:#374151; color:#e5e7eb; "
-        "    selection-background-color:#007acc; }");
-
-    m_newVolumeButton = new QPushButton(QStringLiteral("+ Volume"));
-    m_newVolumeButton->setToolTip("Create a new flight volume");
-    m_newVolumeButton->setFixedHeight(20);
-    m_newVolumeButton->setStyleSheet(
-        "QPushButton { background:#374151; color:#93c5fd; border:1px solid #4b5563;"
-        "              padding:0 6px; border-radius:3px; font-size:11px; }"
-        "QPushButton:hover { background:#4b5563; }");
-
-    rebuildVolumeCombo();
-
     m_logButton = new QPushButton(QStringLiteral("\u25CF Log"));
     m_logButton->setToolTip("Start or stop flight telemetry and trajectory logging");
     m_logButton->setCheckable(true);
@@ -481,9 +511,6 @@ void MainWindow::setupStatusBar()
         "QPushButton:checked { background:#065f46; color:#34d399; border-color:#34d399; }"
         "QPushButton:hover { background:#4b5563; }");
 
-    statusBar()->addPermanentWidget(new QLabel(QStringLiteral("Volume:")));
-    statusBar()->addPermanentWidget(m_volumeCombo);
-    statusBar()->addPermanentWidget(m_newVolumeButton);
     statusBar()->addPermanentWidget(m_logButton);
 
     statusBar()->showMessage("Ready - Disconnected from drone");
@@ -511,6 +538,8 @@ void MainWindow::connectSignals()
             this, &MainWindow::onPathSaved);
     connect(m_pathPlannerWidget, &PathPlannerWidget::pathSaved,
             m_recordedPathsWidget, &RecordedPathsWidget::addPath);
+    connect(m_pathPlannerWidget, &PathPlannerWidget::vioResetRequested,
+            m_droneController, &DroneController::resetVioService);
     
     // Recorded paths signals
     connect(m_recordedPathsWidget, &RecordedPathsWidget::pathDeleted,
@@ -519,6 +548,34 @@ void MainWindow::connectSignals()
             this, &MainWindow::onPathLoadRequested);
     connect(m_recordedPathsWidget, &RecordedPathsWidget::pathJsonLoadRequested,
             this, &MainWindow::onPathJsonLoadRequested);
+    connect(m_recordedPathsWidget, &RecordedPathsWidget::mapLoadRequested,
+            this, [this](const QString &mapperSubdir) {
+                if (!m_droneController->isConnected()) {
+                    statusBar()->showMessage(
+                        QStringLiteral("Connect to the drone first before loading a map"), 5000);
+                    return;
+                }
+                m_droneController->replaceMapperMap(mapperSubdir);
+                statusBar()->showMessage(
+                    QStringLiteral("Loading room map from drone (%1)\u2026").arg(mapperSubdir), 5000);
+            });
+
+    // When the planner establishes map context (on path load or save), persist metadata to the
+    // active volume via VolumeManager and refresh the Saved Paths tab's map status label.
+    connect(m_pathPlannerWidget, &PathPlannerWidget::mapContextEstablished,
+            this, [this](const QString &roomId, const QString &mapperSubdir) {
+                if (roomId.isEmpty() || !m_volumeManager->hasVolume(roomId))
+                    return;
+                VolumeManager::MapInfo info = m_volumeManager->mapInfo(roomId);
+                if (!mapperSubdir.trimmed().isEmpty())
+                    info.remotePath = mapperSubdir.trimmed();
+                info.updatedAt = QDateTime::currentDateTime();
+                m_volumeManager->writeMapInfo(roomId, info);
+                if (m_recordedPathsWidget) {
+                    m_recordedPathsWidget->updateRoomSummary();
+                    m_recordedPathsWidget->refreshMapPresence();
+                }
+            });
     
     // Camera feed signals
     connect(m_cameraFeedWidget, &CameraFeedWidget::recordingSaved,
@@ -591,12 +648,31 @@ void MainWindow::connectSignals()
             m_droneController, &DroneController::forceDisarm);
     connect(m_droneStatusWidget, &DroneStatusWidget::flightTerminationRequested,
             m_droneController, &DroneController::flightTermination);
+    connect(m_droneStatusWidget, &DroneStatusWidget::setPx4ParameterRequested,
+            m_droneController, &DroneController::setPx4Parameter);
+    connect(m_droneController, &DroneController::px4ParameterReceived,
+            m_droneStatusWidget, [this](const QString &paramId, float value) {
+                if (paramId == QStringLiteral("NAV_DLL_ACT")) {
+                    m_droneStatusWidget->onNavDllActReceived(value);
+                    m_droneStatusWidget->addSystemMessage(
+                        QString("NAV_DLL_ACT = %1 (%2)")
+                            .arg(static_cast<int>(value))
+                            .arg(static_cast<int>(value) == 0
+                                     ? QStringLiteral("RC-Only arming")
+                                     : QStringLiteral("GCS-Required arming")),
+                        "info");
+                }
+            });
 
     // --- Volume selector ---
-    connect(m_newVolumeButton, &QPushButton::clicked,
-            this, &MainWindow::onNewVolumeRequested);
-    connect(m_volumeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &MainWindow::onVolumeComboChanged);
+    if (m_newVolumeButton) {
+        connect(m_newVolumeButton, &QPushButton::clicked,
+                this, &MainWindow::onNewVolumeRequested);
+    }
+    if (m_volumeCombo) {
+        connect(m_volumeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, &MainWindow::onVolumeComboChanged);
+    }
 
     connect(m_volumeManager, &VolumeManager::volumeListChanged,
             this, &MainWindow::rebuildVolumeCombo);
@@ -606,7 +682,9 @@ void MainWindow::connectSignals()
             this, [this]() {
                 // Revert to default log dirs
                 m_flightLogger->setVolumeFlightDirs({}, {});
-                m_pathPlannerWidget->setPlannerPathsDirectory({});
+                m_pathPlannerWidget->setPlannerRoomContext({}, {}, {}, {});
+                if (m_recordedPathsWidget)
+                    m_recordedPathsWidget->loadPaths();
                 statusBar()->showMessage(QStringLiteral("Volume cleared — saving to default logs/"), 4000);
             });
 
@@ -788,7 +866,11 @@ void MainWindow::applyActiveVolume(const VolumeManager::VolumeInfo &volume)
         m_volumeManager->activeFlightsTelemetryDir(),
         m_volumeManager->activeTrajectoriesDir());
 
-    m_pathPlannerWidget->setPlannerPathsDirectory(m_volumeManager->activePathsDir());
+    m_pathPlannerWidget->setPlannerRoomContext(volume.id, volume.name,
+                                               m_volumeManager->activePathsDir(),
+                                               m_volumeManager->activeMapDir());
+    if (m_recordedPathsWidget)
+        m_recordedPathsWidget->loadPaths();
 
     statusBar()->showMessage(
         QStringLiteral("Volume \"%1\" active — logs/paths in %2")

@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QTimer>
+#include <QQueue>
 #include <QElapsedTimer>
 #include <QVector3D>
 #include <QColor>
@@ -11,7 +12,6 @@
 #include <vector>
 #include "../widgets/dronestatuswidget.h"
 #include "../models/waypoint.h"
-#include "../models/trajectory.h"
 #include "../network/voxlmapperclient.h"
 
 class VOXLConnection;
@@ -49,7 +49,8 @@ public:
     ~DroneController();
 
     // Connection management
-    bool connectToDrone(const QString &host = "192.168.1.10", int port = 14550);
+    bool connectToDrone(const QString &host = "192.168.1.10", int port = 14550,
+                        const QString &sshPassword = QString());
     void disconnectFromDrone();
     bool isConnected() const { return m_connected; }
     QString voxlHost() const { return m_droneHost; }
@@ -63,6 +64,10 @@ public:
     void forceDisarm();
     /// PX4 flight termination (MAV_CMD_DO_FLIGHTTERMINATION); strongest software stop if enabled in firmware.
     void flightTermination();
+    /// Send MAVLink PARAM_SET to write a PX4 parameter (INT32 by default; pass paramType=9 for float).
+    void setPx4Parameter(const QString &paramId, float value, quint8 paramType = 6);
+    /// Request a single PX4 parameter by name; result comes back via px4ParameterReceived().
+    void requestPx4Parameter(const QString &paramId);
 
     // Mission/waypoint control
     void uploadMission(const QVector<QVector3D> &waypoints);
@@ -76,17 +81,17 @@ public:
     void abortMission();
     void clearMission();
     void clearMapperMap();
-    /// SSH-restart voxl-mapper on the drone, then reconnect the mapper WebSocket.
-    /// More reliable than clear_map when the mapper service is stuck or unresponsive.
-    void restartMapperService();
     void loadMapperMap(const QString &remotePath = QString());
+    /// SSH-restart a VIO service by name (e.g. "voxl-open-vins-server" or "voxl-qvio-server").
+    void resetVioService(const QString &serviceName);
     /// clear_map on VOXL, then load_map after a short delay (avoids stacking two maps in mapper + garbled mesh in the UI).
     void replaceMapperMap(const QString &remotePath = QString());
-    /// clear_map, scp-upload a saved local bundle folder to remotePath, then load_map (live /mesh stream resumes after load).
-    void restoreMapperMapFromBundle(const QString &localBundleDir, const QString &remoteMapPath);
     void saveMapperMap(const QString &format = QStringLiteral("ply"), const QString &remotePath = QString());
-    void downloadMapperMapFromVehicle(const QString &localDir, const QString &remotePath);
     void uploadMapperMap(const QString &localFilePath, const QString &remotePath);
+    /// List folder names under /data/voxl-mapper/missions on the drone (SSH).
+    void listMapperMissionRooms();
+    /// One SSH session: mission folder list + map presence for @a mapperSubdir.
+    void syncMapperRoomState(const QString &mapperSubdir);
     bool isMapperMeshConnected() const;
     void planMapperHome();
 
@@ -109,18 +114,6 @@ public:
     bool isMissionRunning() const { return m_missionActive; }
     bool isMissionPaused() const { return m_missionPaused; }
 
-    // Trajectory mode (parallels mapper mission API).
-    // Validates first; if invalid, emits trajectoryValidationFailed and returns.
-    // Online: writes JSON to persistent AppLocalData/trajectories/traj_<ts>.json,
-    //         then uploads via SCP to /data/trajectories/inbox/trajectory.json on VOXL.
-    //         After upload succeeds, execution is explicitly started via VOXL runner API.
-    // Offline: writes the same file and emits trajectoryStaged(path, summary) without uploading.
-    void uploadTrajectory(const Trajectory &traj);
-    void stageTrajectoryLocally(const Trajectory &traj);
-    void cancelTrajectory();
-    bool isTrajectoryActive() const { return m_trajectoryActive; }
-    QString lastTrajectoryFilePath() const { return m_lastTrajectoryPath; }
-
 signals:
     void connectionStatusChanged(bool connected);
     void statusUpdated(const DroneStatus &status);
@@ -131,16 +124,11 @@ signals:
     void errorOccurred(const QString &error);
     void warningIssued(const QString &warning);
     void messageReceived(const QString &message);
-    void mapperBundleDownloadFinished(bool success, const QString &message);
-
-    // Trajectory signals
-    void trajectoryStaged(const QString &localPath, const QString &summary);   // summary: "N samples · X.X s · Y.Y m · peak Z.Z m/s"
-    void trajectoryUploaded(const QString &localPath);
-    void trajectoryStarted(const QString &missionFileName);
-    void trajectoryUploadFailed(const QString &reason);
-    void trajectoryStartFailed(const QString &reason);
-    void trajectoryValidationFailed(const QStringList &reasons);
-    void trajectoryCancelled();
+    void mapperMissionRoomsListed(const QStringList &roomFolderNames);
+    /// @a querySucceeded false when SSH failed — UI should keep the last known status.
+    void mapperMapPresencePolled(const QString &mapperSubdir, bool present, bool querySucceeded);
+    /// Forwarded from VOXLConnection when a PARAM_VALUE message is received.
+    void px4ParameterReceived(const QString &paramId, float value);
 
 private slots:
     void onHeartbeatTimer();
@@ -154,15 +142,12 @@ private slots:
     void onMapperMeshConnectedChanged(bool connected);
     void onMapperTick();
     void onMapperPortalWatchdogTimeout();
-    void onMapperBundleUploadForRestoreFinished(bool success, const QString &message);
+    void onSshCommandFinished(bool success, const QString &output);
     void onThermalPollTimer();
 
 private:
     void initializeConnection();
     void stopMapperPortalWatchdog();
-    // Writes traj JSON to AppLocalData/trajectories/, sets m_lastTrajectoryPath.
-    // Returns empty string on failure (also emits trajectoryUploadFailed).
-    QString writeTrajectoryFile(const Trajectory &traj);
     void requestStatus();
     void processStatusData(const QJsonObject &data);
     void processMissionStatus(const QJsonObject &data);
@@ -232,22 +217,23 @@ private:
         Load,
         Save,
         Clear,
-        LoadAfterClear,
-        RestoreFromBundle
+        LoadAfterClear
+    };
+    enum class PendingSshCommand {
+        None,
+        ListMissionRooms,
+        SyncMapperRoom,
+        ServiceMessage
     };
     PendingMapperMapCommand m_pendingMapperMapCommand;
     QString m_pendingMapperMapPath;
     QString m_pendingMapperMapFormat;
-    QString m_pendingMapperBundleLocalDir;
-    QString m_pendingBundleRestoreRemote;
+    QQueue<PendingSshCommand> m_sshKindQueue;
+    QQueue<QString> m_sshPollSubdirQueue;
     QTimer *m_mapperPortalWatchdog;
     QTimer *m_thermalPollTimer;
-    
-    // Trajectory state
-    bool m_trajectoryActive = false;
-    QString m_lastTrajectoryPath;
-    bool m_uploadingTrajectory = false;   // tag to distinguish missionUploadComplete callers
-    bool m_startingTrajectory = false;
+    QTimer *m_paramPollTimer;  ///< Retries PARAM_REQUEST_READ for NAV_DLL_ACT until a value arrives.
+    bool m_navDllActKnown;    ///< True once NAV_DLL_ACT has been received; stops poll timer.
 
     // Manual control state
     bool m_manualControlActive;

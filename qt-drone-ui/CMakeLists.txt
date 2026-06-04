@@ -70,6 +70,7 @@ set(HEADERS
     src/utils/settings.h
     src/utils/flightlogger.h
     src/utils/volumemanager.h
+    src/utils/voxlmappaths.h
     src/utils/pathfitter.h
 )
 
@@ -93,6 +94,7 @@ set(SOURCES
     src/utils/settings.cpp
     src/utils/flightlogger.cpp
     src/utils/volumemanager.cpp
+    src/utils/voxlmappaths.cpp
     src/utils/pathfitter.cpp
 )
 

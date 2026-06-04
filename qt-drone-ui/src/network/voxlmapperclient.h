@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QColor>
+#include <QNetworkAccessManager>
 #include <QTcpSocket>
 #include <QTimer>
 #include <QVector3D>
@@ -34,6 +35,10 @@ public:
     bool isMeshConnected() const { return m_meshReady; }
     bool isPoseConnected() const { return m_poseReady; }
 
+    // Restart voxl-mapper via the portal's HTTP restart endpoint (port 8099).
+    // This is what the VOXL Portal "Clear Map" button actually does.
+    void restartMapper();
+
     void planToFrd(const QVector3D &targetFrd);
     void planHome();
     void followPath();
@@ -41,6 +46,10 @@ public:
 
     void clearMap();
     void resetVio();
+    // Per-service resets: open a transient WebSocket to /reset_qvio/ or /reset_ov/
+    // (the connection itself triggers the reset, matching what VOXL Portal vio.js does)
+    void resetQvio();
+    void resetOv();
     void loadMap(const QString &remotePath = QString());
     void saveMap(const QString &format = QStringLiteral("ply"), const QString &remotePath = QString());
     void setCostmapSlice(float sliceLevel);
@@ -57,6 +66,7 @@ signals:
 private:
     void openSocket(QTcpSocket &socket, const QString &path);
     void sendHandshake(QTcpSocket &socket, const QString &path);
+    void triggerResetEndpoint(const QString &path);
     void handleSocketData(QTcpSocket &socket, QByteArray &buffer, bool &ready, const QString &name);
     void sendWebSocketText(QTcpSocket &socket, const QString &command);
     void sendPlanCommand(const QString &command);

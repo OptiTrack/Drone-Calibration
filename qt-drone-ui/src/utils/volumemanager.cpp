@@ -1,8 +1,10 @@
 #include "volumemanager.h"
+#include "voxlmappaths.h"
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -222,6 +224,11 @@ QString VolumeManager::mapDir(const QString &id) const
     return volumeDir(id) + QStringLiteral("/map");
 }
 
+QString VolumeManager::mapMetadataPath(const QString &id) const
+{
+    return mapDir(id) + QStringLiteral("/map.json");
+}
+
 QString VolumeManager::flightsTelemetryDir(const QString &id) const
 {
     return volumeDir(id) + QStringLiteral("/flights/telemetry");
@@ -248,6 +255,61 @@ bool VolumeManager::ensureVolumeDirs(const QString &id) const
 // Active-volume shortcuts
 QString VolumeManager::activeVolumeDir()           const { return hasActiveVolume() ? volumeDir(m_activeVolumeId)               : QString(); }
 QString VolumeManager::activeMapDir()              const { return hasActiveVolume() ? mapDir(m_activeVolumeId)                   : QString(); }
+QString VolumeManager::activeMapMetadataPath()     const { return hasActiveVolume() ? mapMetadataPath(m_activeVolumeId)          : QString(); }
 QString VolumeManager::activeFlightsTelemetryDir() const { return hasActiveVolume() ? flightsTelemetryDir(m_activeVolumeId)      : QString(); }
 QString VolumeManager::activeTrajectoriesDir()     const { return hasActiveVolume() ? flightsTrajectoriesDir(m_activeVolumeId)   : QString(); }
 QString VolumeManager::activePathsDir()            const { return hasActiveVolume() ? pathsDir(m_activeVolumeId)                 : QString(); }
+
+VolumeManager::MapInfo VolumeManager::mapInfo(const QString &id) const
+{
+    MapInfo info;
+    if (!hasVolume(id))
+        return info;
+
+    info.displayName = volumeById(id).name;
+
+    QFile f(mapMetadataPath(id));
+    if (!f.open(QIODevice::ReadOnly))
+        return info;
+
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    f.close();
+    if (!doc.isObject())
+        return info;
+
+    const QJsonObject root = doc.object();
+    const QString displayName = root.value(QStringLiteral("display_name")).toString();
+    if (!displayName.trimmed().isEmpty())
+        info.displayName = displayName.trimmed();
+    info.remotePath = VoxlMapperPaths::normalizeSubdir(root.value(QStringLiteral("remote_path")).toString());
+    info.updatedAt = QDateTime::fromString(root.value(QStringLiteral("updated_at")).toString(), Qt::ISODate);
+    return info;
+}
+
+VolumeManager::MapInfo VolumeManager::activeMapInfo() const
+{
+    return hasActiveVolume() ? mapInfo(m_activeVolumeId) : MapInfo();
+}
+
+bool VolumeManager::writeMapInfo(const QString &id, const MapInfo &info) const
+{
+    if (!hasVolume(id))
+        return false;
+    if (!QDir().mkpath(mapDir(id)))
+        return false;
+
+    QJsonObject root;
+    root[QStringLiteral("display_name")] = info.displayName.trimmed().isEmpty()
+                                               ? volumeById(id).name
+                                               : info.displayName.trimmed();
+    root[QStringLiteral("remote_path")] = VoxlMapperPaths::normalizeSubdir(info.remotePath.trimmed());
+    root[QStringLiteral("updated_at")] = (info.updatedAt.isValid() ? info.updatedAt : QDateTime::currentDateTime()).toString(Qt::ISODate);
+
+    QFile f(mapMetadataPath(id));
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        qWarning() << "VolumeManager: failed to write map metadata ->" << mapMetadataPath(id);
+        return false;
+    }
+    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    return true;
+}
