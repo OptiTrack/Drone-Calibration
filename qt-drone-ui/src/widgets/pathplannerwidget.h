@@ -341,7 +341,6 @@ private slots:
     void onSavePath();
     void onLoadPath();
     void onLoadPathFromRecording();
-    void onMapperBundleDownloadFinished(bool success, const QString &message);
     void onUploadMission();
     void onMissionPlayClicked();
     void onMissionPauseContinueClicked();
