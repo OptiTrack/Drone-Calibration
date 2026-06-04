@@ -11,6 +11,7 @@
 #include <QJsonDocument>
 #include <QBuffer>
 #include <QProcess>
+#include <QQueue>
 #include <QHostAddress>
 #include <QElapsedTimer>
 
@@ -52,8 +53,6 @@ public:
     // Mission upload and control (VOXL2 Runner API)
     void uploadMissionFile(const QString &localFilePath, const QString &remotePath = "/data/trajectories/inbox/trajectory.json");
     void uploadFileToVoxl(const QString &localFilePath, const QString &remotePath, const QString &uploadLabel = QStringLiteral("file"));
-    void downloadDirectoryFromVoxl(const QString &localDir, const QString &remotePath);
-    void uploadDirectoryToVoxl(const QString &localDir, const QString &remotePath);
     void runMission(const QString &missionFileName);
     void getMissionStatus();
     void cancelMission();
@@ -66,6 +65,8 @@ public:
     void setConnectionTimeout(int timeoutMs) { m_connectionTimeout = timeoutMs; }
     void setHeartbeatInterval(int intervalMs);
     void setVoxlHost(const QString &host) { m_voxlHost = host; }
+    /// When set, non-interactive SSH uses this password (VOXL default is often oelinux123).
+    void setVoxlSshPassword(const QString &password);
     void setRunnerApiPort(int port) { m_runnerApiPort = port; }
 
 signals:
@@ -81,8 +82,6 @@ signals:
     void missionUploadProgress(int percent);
     void missionUploadComplete();
     void missionUploadFailed(const QString &error);
-    void mapperBundleDownloadFinished(bool success, const QString &message);
-    void mapperBundleUploadFinished(bool success, const QString &message);
     void missionStatusReceived(const QJsonObject &status);
     void missionCompleted();
     void missionCancelled();
@@ -188,11 +187,20 @@ private:
     
     // Mission upload management (VOXL2 Runner API)
     QString m_voxlHost;
+    QString m_voxlSshPassword;
+    QString m_sshAskpassScriptPath;
     int m_runnerApiPort;  // Default: 8080
-    enum class ScpMode { Upload, Download, UploadDirectory };
+    enum class ScpMode { Upload };
     QProcess *m_scpProcess;
     ScpMode m_scpMode;
-    QString m_scpDownloadLocalPath;
+    void startNextSshCommand();
+    void finishSshCommand(bool success, const QString &output);
+    void cancelPendingSshCommands();
+
+    QQueue<QString> m_sshCommandQueue;
+    bool m_sshRunning = false;
+    QProcess *m_sshProcess = nullptr;
+    QTimer *m_sshTimeoutTimer = nullptr;
     QNetworkReply *m_missionApiReply;
     QString m_currentMissionFile;
     QString m_currentUploadLabel;

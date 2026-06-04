@@ -1,6 +1,8 @@
 #include "recordedpathswidget.h"
 #include "ui_recordedpathswidget.h"
+#include "../controllers/dronecontroller.h"
 #include "../utils/volumemanager.h"
+#include "../utils/voxlmappaths.h"
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -20,7 +22,9 @@
 #include <QStyleFactory>
 #include <QFontMetrics>
 #include <QSignalBlocker>
+#include <QTimer>
 #include <QUuid>
+#include <QSet>
 #include <cmath>
 
 namespace {
@@ -60,28 +64,6 @@ QJsonObject readJsonObject(const QString &filePath)
     return doc.isObject() ? doc.object() : QJsonObject();
 }
 
-bool copyDirectoryRecursively(const QString &sourceDirPath, const QString &destDirPath)
-{
-    QDir sourceDir(sourceDirPath);
-    if (!sourceDir.exists())
-        return false;
-    QDir().mkpath(destDirPath);
-
-    const QFileInfoList entries = sourceDir.entryInfoList(QDir::NoDotAndDotDot | QDir::Files | QDir::Dirs);
-    for (const QFileInfo &entry : entries) {
-        const QString destPath = QDir(destDirPath).filePath(entry.fileName());
-        if (entry.isDir()) {
-            if (!copyDirectoryRecursively(entry.absoluteFilePath(), destPath))
-                return false;
-        } else {
-            QFile::remove(destPath);
-            if (!QFile::copy(entry.absoluteFilePath(), destPath))
-                return false;
-        }
-    }
-    return true;
-}
-
 bool deletePathJsonOnDisk(const QString &sourceFilePath, const QString &pathsDir, const QString &displayName)
 {
     QStringList candidates;
@@ -117,11 +99,10 @@ RecordedPathsWidget::RecordedPathsWidget(QWidget *parent)
     : QWidget(parent)
     , ui(new Ui::RecordedPathsWidget)
     , m_volumeManager(nullptr)
+    , m_droneController(nullptr)
     , m_roomCombo(nullptr)
     , m_newRoomButton(nullptr)
     , m_renameRoomButton(nullptr)
-    , m_importLegacyButton(nullptr)
-    , m_cleanupLegacyButton(nullptr)
     , m_loadMapButton(nullptr)
     , m_roomMapLabel(nullptr)
     , m_selectedPathIndex(-1)
@@ -155,8 +136,6 @@ void RecordedPathsWidget::setupConnections()
             this, &RecordedPathsWidget::onRoomSelectionChanged);
     connect(m_newRoomButton, &QPushButton::clicked, this, &RecordedPathsWidget::onNewRoom);
     connect(m_renameRoomButton, &QPushButton::clicked, this, &RecordedPathsWidget::onRenameRoom);
-    connect(m_importLegacyButton, &QPushButton::clicked, this, &RecordedPathsWidget::onImportLegacyPaths);
-    connect(m_cleanupLegacyButton, &QPushButton::clicked, this, &RecordedPathsWidget::onCleanupLegacyPaths);
     connect(m_loadMapButton, &QPushButton::clicked, this, &RecordedPathsWidget::onLoadMap);
 }
 
@@ -178,16 +157,14 @@ void RecordedPathsWidget::setupRoomControls()
 
     m_newRoomButton = new QPushButton(QStringLiteral("New Room"), roomBar);
     m_renameRoomButton = new QPushButton(QStringLiteral("Rename"), roomBar);
-    m_importLegacyButton = new QPushButton(QStringLiteral("Import Old Paths"), roomBar);
-    m_cleanupLegacyButton = new QPushButton(QStringLiteral("Cleanup Old"), roomBar);
     m_loadMapButton = new QPushButton(QStringLiteral("Load Map \u25B6"), roomBar);
-    m_loadMapButton->setToolTip(QStringLiteral("Restore this room's saved map to the connected VOXL drone"));
+    m_loadMapButton->setToolTip(QStringLiteral("Load this room's map from the drone (missions/<room>/)"));
 
     const QString buttonStyle = QStringLiteral(
         "QPushButton { background:#374151; color:white; border:1px solid #4b5563; padding:5px 8px; border-radius:3px; }"
         "QPushButton:hover { background:#4b5563; }"
         "QPushButton:disabled { background:#1f2937; color:#6b7280; }");
-    for (QPushButton *button : {m_newRoomButton, m_renameRoomButton, m_importLegacyButton, m_cleanupLegacyButton, m_loadMapButton})
+    for (QPushButton *button : {m_newRoomButton, m_renameRoomButton, m_loadMapButton})
         button->setStyleSheet(buttonStyle);
 
     m_roomMapLabel = new QLabel(QStringLiteral("Map: no room selected"), roomBar);
@@ -197,8 +174,6 @@ void RecordedPathsWidget::setupRoomControls()
     roomLayout->addWidget(m_roomCombo);
     roomLayout->addWidget(m_newRoomButton);
     roomLayout->addWidget(m_renameRoomButton);
-    roomLayout->addWidget(m_importLegacyButton);
-    roomLayout->addWidget(m_cleanupLegacyButton);
     roomLayout->addStretch();
     roomLayout->addWidget(m_loadMapButton);
     roomLayout->addWidget(m_roomMapLabel);
@@ -231,6 +206,159 @@ void RecordedPathsWidget::setVolumeManager(VolumeManager *volumeManager)
     loadPaths();
 }
 
+void RecordedPathsWidget::setDroneController(DroneController *controller)
+{
+    if (m_droneController == controller)
+        return;
+
+    if (m_droneController)
+        disconnect(m_droneController, nullptr, this, nullptr);
+
+    m_droneController = controller;
+    if (!m_droneController)
+        return;
+
+    connect(m_droneController, &DroneController::connectionStatusChanged, this, [this](bool connected) {
+        if (connected) {
+            refreshMapPresence();
+        } else {
+            m_droneMissionFolderNames.clear();
+            m_remoteMapPresence.clear();
+            m_mapPresencePollPending.clear();
+            m_mapPresenceCheckFailed.clear();
+            m_mapPresenceCachedSubdir.clear();
+            m_mapPresenceCachedAt = QDateTime();
+            updateRoomSummary();
+            updatePathList();
+        }
+    });
+    connect(m_droneController, &DroneController::mapperMissionRoomsListed, this,
+            [this](const QStringList &roomFolderNames) {
+                m_droneMissionFolderNames = roomFolderNames;
+                if (!m_pendingNewRoomName.isEmpty())
+                    handlePendingNewRoomName(m_pendingNewRoomName);
+            });
+    connect(m_droneController, &DroneController::mapperMapPresencePolled, this,
+            [this](const QString &subdir, bool present, bool querySucceeded) {
+                const QString key = VoxlMapperPaths::normalizeSubdir(subdir);
+                m_mapPresencePollPending.remove(key);
+                if (querySucceeded) {
+                    m_mapPresenceCheckFailed.remove(key);
+                    m_remoteMapPresence[key] = present;
+                    m_mapPresenceCachedSubdir = key;
+                    m_mapPresenceCachedAt = QDateTime::currentDateTime();
+                } else {
+                    m_mapPresenceCheckFailed.insert(key);
+                }
+                updateRoomSummary();
+            });
+
+    m_mapPresenceDebounce = new QTimer(this);
+    m_mapPresenceDebounce->setSingleShot(true);
+    m_mapPresenceDebounce->setInterval(250);
+    connect(m_mapPresenceDebounce, &QTimer::timeout, this, &RecordedPathsWidget::refreshMapPresenceNow);
+
+    if (m_droneController->isConnected())
+        refreshMapPresence();
+}
+
+QString RecordedPathsWidget::resolveDroneMissionFolder(const QString &sanitizedBase) const
+{
+    for (const QString &folder : m_droneMissionFolderNames) {
+        if (folder.compare(sanitizedBase, Qt::CaseInsensitive) == 0)
+            return folder;
+    }
+    return sanitizedBase;
+}
+
+QString RecordedPathsWidget::activeRoomMapperSubdir() const
+{
+    if (!m_volumeManager || !m_volumeManager->hasActiveVolume())
+        return {};
+
+    const VolumeManager::MapInfo map = m_volumeManager->activeMapInfo();
+    if (!map.remotePath.trimmed().isEmpty())
+        return map.remotePath.trimmed();
+
+    const QString base = FlightPath::fileBaseFromDisplayName(m_volumeManager->activeVolume().name);
+    return VoxlMapperPaths::roomSubdir(resolveDroneMissionFolder(base));
+}
+
+QString RecordedPathsWidget::mapperSubdirForPathFile(const QString &filePath) const
+{
+    const QJsonObject root = readJsonObject(filePath);
+    const QString fromJson = VoxlMapperPaths::normalizeSubdir(root.value(QStringLiteral("mapper_map_path")).toString());
+    if (!fromJson.isEmpty())
+        return fromJson;
+    return activeRoomMapperSubdir();
+}
+
+void RecordedPathsWidget::refreshMapPresence()
+{
+    if (!m_mapPresenceDebounce)
+        refreshMapPresenceNow();
+    else
+        m_mapPresenceDebounce->start();
+}
+
+void RecordedPathsWidget::refreshMapPresenceNow()
+{
+    if (!m_droneController || !m_droneController->isConnected())
+        return;
+
+    const QString roomSubdir = activeRoomMapperSubdir();
+    updateRoomSummary();
+
+    if (roomSubdir.isEmpty() || m_mapPresencePollPending.contains(roomSubdir))
+        return;
+
+    constexpr int kCacheSeconds = 12;
+    if (roomSubdir == m_mapPresenceCachedSubdir && m_mapPresenceCachedAt.isValid()
+        && m_mapPresenceCachedAt.secsTo(QDateTime::currentDateTime()) < kCacheSeconds
+        && m_remoteMapPresence.contains(roomSubdir) && !m_mapPresenceCheckFailed.contains(roomSubdir)) {
+        return;
+    }
+
+    m_mapPresenceCheckFailed.remove(roomSubdir);
+    m_mapPresencePollPending.insert(roomSubdir);
+    m_droneController->syncMapperRoomState(roomSubdir);
+}
+
+void RecordedPathsWidget::handlePendingNewRoomName(const QString &name)
+{
+    const QString pending = name.trimmed();
+    m_pendingNewRoomName.clear();
+    if (pending.isEmpty())
+        return;
+
+    const QString sanitized = FlightPath::fileBaseFromDisplayName(pending);
+    if (m_droneMissionFolderNames.contains(sanitized, Qt::CaseInsensitive)) {
+        const int ret = QMessageBox::question(
+            this,
+            QStringLiteral("Room Exists on Drone"),
+            QStringLiteral("The drone already has a map folder named \"%1\" under missions/.\n\n"
+                           "Create a new local room with this name anyway?")
+                .arg(sanitized),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (ret != QMessageBox::Yes)
+            return;
+    }
+
+    const QString id = m_volumeManager->createVolume(pending);
+    if (id.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Create Room"), QStringLiteral("Could not create the room."));
+        return;
+    }
+
+    VolumeManager::MapInfo mapInfo;
+    mapInfo.displayName = pending;
+    mapInfo.remotePath = VoxlMapperPaths::roomSubdir(sanitized);
+    mapInfo.updatedAt = QDateTime::currentDateTime();
+    m_volumeManager->writeMapInfo(id, mapInfo);
+    m_volumeManager->setActiveVolume(id);
+}
+
 void RecordedPathsWidget::refreshRooms()
 {
     if (!m_roomCombo)
@@ -254,6 +382,8 @@ void RecordedPathsWidget::refreshRooms()
     }
 
     updateRoomSummary();
+    if (m_droneController && m_droneController->isConnected())
+        refreshMapPresence();
 }
 
 void RecordedPathsWidget::addPath(const QString &name, const QVector<QVector3D> &points)
@@ -283,71 +413,7 @@ QString RecordedPathsWidget::getPathsDirectory()
             return m_pathsDirectory;
         }
     }
-    if (m_volumeManager)
-        return {};
-
-    if (!m_pathsDirectory.isEmpty() && QDir(m_pathsDirectory).exists()) {
-        return m_pathsDirectory;
-    }
-    
-    QString appDir = QCoreApplication::applicationDirPath();
-    
-    // First priority: Use the source directory paths folder (defined by CMake at compile time)
-    // This works for development - the SOURCE_DIR macro points to qt-drone-ui folder
-#ifdef SOURCE_DIR
-    QString sourcePathsDir = QString(SOURCE_DIR) + "/paths";
-    QDir sourceDir(sourcePathsDir);
-    if (sourceDir.exists()) {
-        m_pathsDirectory = sourceDir.absolutePath();
-        qDebug() << "Using source paths directory:" << m_pathsDirectory;
-        return m_pathsDirectory;
-    }
-#endif
-    
-    // Second priority: paths folder next to the executable (for distribution)
-    QString exePathsDir = appDir + "/paths";
-    QDir exeDir(exePathsDir);
-    if (exeDir.exists()) {
-        m_pathsDirectory = exeDir.absolutePath();
-        qDebug() << "Using exe-relative paths directory:" << m_pathsDirectory;
-        return m_pathsDirectory;
-    }
-    
-    // If neither exists, create the source directory one (for development)
-#ifdef SOURCE_DIR
-    QString newPathsDir = QString(SOURCE_DIR) + "/paths";
-    QDir().mkpath(newPathsDir);
-    m_pathsDirectory = QDir(newPathsDir).absolutePath();
-#else
-    // Fallback: create next to exe
-    QDir().mkpath(exePathsDir);
-    m_pathsDirectory = QDir(exePathsDir).absolutePath();
-#endif
-    
-    qDebug() << "Created paths directory:" << m_pathsDirectory;
-    return m_pathsDirectory;
-}
-
-QStringList RecordedPathsWidget::legacyPathsDirectories() const
-{
-    QStringList dirs;
-    auto addDir = [&dirs](const QString &path) {
-        if (path.isEmpty())
-            return;
-        const QString abs = QDir(path).absolutePath();
-        if (QDir(abs).exists() && !dirs.contains(abs))
-            dirs.append(abs);
-    };
-
-#ifdef SOURCE_DIR
-    addDir(QString(SOURCE_DIR) + QStringLiteral("/paths"));
-#endif
-    addDir(QCoreApplication::applicationDirPath() + QStringLiteral("/paths"));
-
-    if (m_volumeManager && m_volumeManager->hasActiveVolume())
-        dirs.removeAll(QDir(m_volumeManager->activePathsDir()).absolutePath());
-
-    return dirs;
+    return {};
 }
 
 bool RecordedPathsWidget::writeJsonPreservingPlannerFields(const QString &destPath, const FlightPath &path,
@@ -406,19 +472,11 @@ bool RecordedPathsWidget::copyPathIntoCurrentRoom(const QString &sourcePath, QSt
         root[QStringLiteral("room_id")] = room.id;
         root[QStringLiteral("room_name")] = room.name;
 
-        const QString oldBundleName = root.value(QStringLiteral("mapper_map_bundle")).toString();
-        if (!oldBundleName.trimmed().isEmpty()) {
-            const QString oldBundlePath = sourceInfo.absoluteDir().filePath(oldBundleName);
-            if (QDir(oldBundlePath).exists()) {
-                const QString roomBundle = m_volumeManager->activeMapBundleDir();
-                if (!QDir(roomBundle).exists()) {
-                    QDir().mkpath(m_volumeManager->activeMapDir());
-                    copyDirectoryRecursively(oldBundlePath, roomBundle);
-                }
-                root[QStringLiteral("mapper_map_bundle")] = QStringLiteral("../map/mapper_map");
-            }
+        if (m_volumeManager->hasActiveVolume()) {
+            const QString subdir = activeRoomMapperSubdir();
+            if (!subdir.isEmpty())
+                root[QStringLiteral("mapper_map_path")] = subdir;
         }
-
         QFile out(destination);
         if (!out.open(QIODevice::WriteOnly | QIODevice::Text))
             return false;
@@ -499,6 +557,7 @@ void RecordedPathsWidget::loadPaths()
     
     updatePathList();
     updateRoomSummary();
+    refreshMapPresence();
 }
 
 void RecordedPathsWidget::updatePathList()
@@ -510,7 +569,7 @@ void RecordedPathsWidget::updatePathList()
     for (int i = 0; i < m_paths.size(); ++i) {
         const FlightPath &path = m_paths[i];
         QDateTime created = path.createdAt();
-        
+
         QString itemText = QString("%1\n%2 waypoints • %3")
                           .arg(path.name())
                           .arg(path.waypointCount())
@@ -815,6 +874,8 @@ void RecordedPathsWidget::onRoomSelectionChanged(int index)
         m_volumeManager->clearActiveVolume();
     else
         m_volumeManager->setActiveVolume(roomId);
+
+    refreshMapPresence();
 }
 
 void RecordedPathsWidget::onNewRoom()
@@ -825,19 +886,33 @@ void RecordedPathsWidget::onNewRoom()
     bool ok = false;
     const QString name = QInputDialog::getText(this,
                                                QStringLiteral("Create Room"),
-                                               QStringLiteral("Room name:"),
+                                               QStringLiteral("Room name (saved on drone as missions/<name>/):"),
                                                QLineEdit::Normal,
                                                QString(),
                                                &ok).trimmed();
     if (!ok || name.isEmpty())
         return;
 
-    const QString id = m_volumeManager->createVolume(name);
-    if (id.isEmpty()) {
-        QMessageBox::warning(this, QStringLiteral("Create Room"), QStringLiteral("Could not create the room."));
+    const QString sanitized = FlightPath::fileBaseFromDisplayName(name);
+    for (const VolumeManager::VolumeInfo &room : m_volumeManager->volumes()) {
+        if (FlightPath::fileBaseFromDisplayName(room.name).compare(sanitized, Qt::CaseInsensitive) == 0) {
+            QMessageBox::information(this,
+                                     QStringLiteral("Create Room"),
+                                     QStringLiteral("A local room named \"%1\" already exists.").arg(room.name));
+            const int idx = m_roomCombo ? m_roomCombo->findData(room.id) : -1;
+            if (idx >= 0)
+                m_roomCombo->setCurrentIndex(idx);
+            return;
+        }
+    }
+
+    if (m_droneController && m_droneController->isConnected()) {
+        m_pendingNewRoomName = name;
+        m_droneController->listMapperMissionRooms();
         return;
     }
-    m_volumeManager->setActiveVolume(id);
+
+    handlePendingNewRoomName(name);
 }
 
 void RecordedPathsWidget::onRenameRoom()
@@ -860,105 +935,11 @@ void RecordedPathsWidget::onRenameRoom()
         QMessageBox::warning(this, QStringLiteral("Rename Room"), QStringLiteral("Could not rename the room."));
 }
 
-void RecordedPathsWidget::onImportLegacyPaths()
-{
-    if (!m_volumeManager || !m_volumeManager->hasActiveVolume()) {
-        QMessageBox::information(this, QStringLiteral("Import Old Paths"),
-                                 QStringLiteral("Select or create a room before importing old paths."));
-        return;
-    }
-
-    QStringList candidates;
-    for (const QString &dirPath : legacyPathsDirectories()) {
-        QDir dir(dirPath);
-        const QFileInfoList files = dir.entryInfoList(QStringList() << QStringLiteral("*.json"), QDir::Files, QDir::Name);
-        for (const QFileInfo &file : files)
-            candidates.append(file.absoluteFilePath());
-    }
-
-    if (candidates.isEmpty()) {
-        QMessageBox::information(this, QStringLiteral("Import Old Paths"),
-                                 QStringLiteral("No legacy JSON paths were found outside the selected room."));
-        return;
-    }
-
-    const int ret = QMessageBox::question(
-        this,
-        QStringLiteral("Import Old Paths"),
-        QStringLiteral("Import %1 legacy path file(s) into room \"%2\"?\n\nOriginal files will be left in place.")
-            .arg(candidates.size())
-            .arg(m_volumeManager->activeVolume().name),
-        QMessageBox::Yes | QMessageBox::No);
-    if (ret != QMessageBox::Yes)
-        return;
-
-    int copied = 0;
-    for (const QString &candidate : candidates) {
-        if (copyPathIntoCurrentRoom(candidate))
-            ++copied;
-    }
-
-    loadPaths();
-    QMessageBox::information(this, QStringLiteral("Import Old Paths"),
-                             QStringLiteral("Imported %1 of %2 path file(s).").arg(copied).arg(candidates.size()));
-}
-
-void RecordedPathsWidget::onCleanupLegacyPaths()
-{
-    if (!m_volumeManager || !m_volumeManager->hasActiveVolume()) {
-        QMessageBox::information(this, QStringLiteral("Clean Old Paths"),
-                                 QStringLiteral("Select a room before cleaning old path files."));
-        return;
-    }
-
-    QStringList deleteCandidates;
-    const QDir activeDir(getPathsDirectory());
-    for (const QString &dirPath : legacyPathsDirectories()) {
-        QDir dir(dirPath);
-        const QFileInfoList files = dir.entryInfoList(QStringList() << QStringLiteral("*.json"), QDir::Files, QDir::Name);
-        for (const QFileInfo &file : files) {
-            if (QFile::exists(activeDir.filePath(file.fileName())))
-                deleteCandidates.append(file.absoluteFilePath());
-        }
-    }
-
-    if (deleteCandidates.isEmpty()) {
-        QMessageBox::information(this, QStringLiteral("Clean Old Paths"),
-                                 QStringLiteral("No duplicate legacy path files were found."));
-        return;
-    }
-
-    const int ret = QMessageBox::warning(
-        this,
-        QStringLiteral("Clean Old Paths"),
-        QStringLiteral("Delete %1 old duplicate file(s) from the legacy paths folders?\n\nThis cannot be undone.")
-            .arg(deleteCandidates.size()),
-        QMessageBox::Yes | QMessageBox::No,
-        QMessageBox::No);
-    if (ret != QMessageBox::Yes)
-        return;
-
-    int removed = 0;
-    for (const QString &path : deleteCandidates) {
-        QFile f(path);
-        f.setPermissions(QFileDevice::ReadUser | QFileDevice::WriteUser);
-        if (f.remove())
-            ++removed;
-    }
-
-    QMessageBox::information(this, QStringLiteral("Clean Old Paths"),
-                             QStringLiteral("Deleted %1 of %2 duplicate file(s).").arg(removed).arg(deleteCandidates.size()));
-}
-
 void RecordedPathsWidget::updateRoomSummary()
 {
     const bool hasRoom = m_volumeManager && m_volumeManager->hasActiveVolume();
     if (m_renameRoomButton)
         m_renameRoomButton->setEnabled(hasRoom);
-    if (m_importLegacyButton)
-        m_importLegacyButton->setEnabled(hasRoom);
-    if (m_cleanupLegacyButton)
-        m_cleanupLegacyButton->setEnabled(hasRoom);
     if (m_loadMapButton)
         m_loadMapButton->setEnabled(false); // updated below once map info is known
 
@@ -969,18 +950,31 @@ void RecordedPathsWidget::updateRoomSummary()
         return;
     }
 
-    const VolumeManager::MapInfo map = m_volumeManager->activeMapInfo();
-    if (m_loadMapButton)
-        m_loadMapButton->setEnabled(map.hasBundle());
-    QString status = QStringLiteral("missing");
-    if (map.hasBundle())
-        status = QStringLiteral("bundle available");
-    else if (map.hasMesh())
-        status = QStringLiteral("mesh available");
-    else if (!map.remotePath.trimmed().isEmpty())
-        status = QStringLiteral("remote only");
+    const QString subdir = activeRoomMapperSubdir();
+    const bool connected = m_droneController && m_droneController->isConnected();
+    const bool pending = !subdir.isEmpty() && m_mapPresencePollPending.contains(subdir);
+    const bool checkFailed = !subdir.isEmpty() && m_mapPresenceCheckFailed.contains(subdir);
+    const bool known = !subdir.isEmpty() && m_remoteMapPresence.contains(subdir);
+    const bool onDrone = known && m_remoteMapPresence.value(subdir);
 
-    m_roomMapLabel->setText(QStringLiteral("Map: %1 (%2)").arg(m_volumeManager->activeVolume().name, status));
+    if (m_loadMapButton)
+        m_loadMapButton->setEnabled(connected && !subdir.isEmpty());
+
+    QString status = QStringLiteral("not connected");
+    if (connected) {
+        if (subdir.isEmpty())
+            status = QStringLiteral("no subdir");
+        else if (pending)
+            status = QStringLiteral("checking…");
+        else if (known)
+            status = onDrone ? QStringLiteral("on drone") : QStringLiteral("missing on drone");
+        else if (checkFailed)
+            status = QStringLiteral("check failed");
+        else
+            status = QStringLiteral("checking…");
+    }
+
+    m_roomMapLabel->setText(QStringLiteral("Map: %1").arg(status));
 }
 
 void RecordedPathsWidget::onLoadMap()
@@ -988,17 +982,12 @@ void RecordedPathsWidget::onLoadMap()
     if (!m_volumeManager || !m_volumeManager->hasActiveVolume())
         return;
 
-    const VolumeManager::MapInfo map = m_volumeManager->activeMapInfo();
-    if (!map.hasBundle()) {
+    const QString subdir = activeRoomMapperSubdir();
+    if (subdir.isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Load Map"),
-                                 QStringLiteral("No local map bundle found for this room.\n"
-                                                "Save a map first by downloading it from the drone via the Mission planner."));
+                                 QStringLiteral("No mapper subdir is configured for this room."));
         return;
     }
 
-    const QString remote = map.remotePath.trimmed().isEmpty()
-                               ? QStringLiteral("/data/voxl_mapper/missions/") + m_volumeManager->activeVolume().name
-                               : map.remotePath.trimmed();
-
-    emit mapRestoreRequested(map.bundleDir, remote);
+    emit mapLoadRequested(subdir);
 }

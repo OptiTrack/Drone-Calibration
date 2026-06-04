@@ -69,6 +69,7 @@ set(HEADERS
     src/utils/settings.h
     src/utils/flightlogger.h
     src/utils/volumemanager.h
+    src/utils/voxlmappaths.h
 )
 
 # Source files
@@ -90,6 +91,7 @@ set(SOURCES
     src/utils/settings.cpp
     src/utils/flightlogger.cpp
     src/utils/volumemanager.cpp
+    src/utils/voxlmappaths.cpp
 )
 
 # UI files

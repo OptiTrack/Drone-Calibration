@@ -3,6 +3,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
+#include <QTemporaryFile>
+#include <QProcessEnvironment>
 #include <QUrl>
 #include <QUrlQuery>
 #include <QHttpMultiPart>
@@ -21,6 +23,28 @@ constexpr quint8 MavTypeGcs = 6;
 constexpr quint8 MavAutopilotInvalid = 8;
 constexpr quint8 MavStateActive = 4;
 constexpr int MavlinkHeartbeatTimeoutMs = 5000;
+
+bool writeSshAskpassScript(const QString &password, QString *scriptPathOut)
+{
+    if (password.isEmpty() || !scriptPathOut)
+        return false;
+
+    QTemporaryFile temp(QDir::temp().filePath(QStringLiteral("voxl_ssh_askpass_XXXXXX.cmd")));
+    temp.setAutoRemove(false);
+    if (!temp.open())
+        return false;
+
+    const QString scriptBody = QStringLiteral("@echo off\r\necho %1\r\n").arg(password);
+    if (temp.write(scriptBody.toUtf8()) < 0) {
+        temp.close();
+        QFile::remove(temp.fileName());
+        return false;
+    }
+    temp.close();
+
+    *scriptPathOut = temp.fileName();
+    return true;
+}
 
 enum MavCommand : quint16 {
     MavCmdNavReturnToLaunch = 20,
@@ -226,8 +250,24 @@ bool VOXLConnection::connectToVOXL(const QString &host, int port, ConnectionType
     return true;
 }
 
+void VOXLConnection::setVoxlSshPassword(const QString &password)
+{
+    if (m_voxlSshPassword == password && !m_sshAskpassScriptPath.isEmpty())
+        return;
+
+    if (!m_sshAskpassScriptPath.isEmpty()) {
+        QFile::remove(m_sshAskpassScriptPath);
+        m_sshAskpassScriptPath.clear();
+    }
+
+    m_voxlSshPassword = password;
+    if (!password.isEmpty())
+        writeSshAskpassScript(password, &m_sshAskpassScriptPath);
+}
+
 void VOXLConnection::disconnect()
 {
+    cancelPendingSshCommands();
     m_heartbeatTimer->stop();
     m_connectionTimer->stop();
 
@@ -789,102 +829,6 @@ void VOXLConnection::uploadFileToVoxl(const QString &localFilePath, const QStrin
     m_scpProcess->start("scp", arguments);
 }
 
-void VOXLConnection::downloadDirectoryFromVoxl(const QString &localDir, const QString &remotePath)
-{
-    if (m_voxlHost.isEmpty()) {
-        emit mapperBundleDownloadFinished(false, QStringLiteral("VOXL host not set."));
-        return;
-    }
-    const QString cleanRemote = remotePath.trimmed();
-    if (cleanRemote.isEmpty()) {
-        emit mapperBundleDownloadFinished(false, QStringLiteral("Remote map path is empty."));
-        return;
-    }
-
-    const QString nativeLocal = QDir::toNativeSeparators(localDir);
-    const QFileInfo localInfo(nativeLocal);
-    QDir().mkpath(localInfo.absolutePath());
-    if (QDir(nativeLocal).exists())
-        QDir(nativeLocal).removeRecursively();
-
-    if (m_scpProcess) {
-        m_scpProcess->kill();
-        m_scpProcess->deleteLater();
-        m_scpProcess = nullptr;
-    }
-
-    m_scpProcess = new QProcess(this);
-    m_scpMode = ScpMode::Download;
-    m_scpDownloadLocalPath = nativeLocal;
-    connect(m_scpProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, &VOXLConnection::onScpProcessFinished);
-    connect(m_scpProcess, &QProcess::errorOccurred,
-            this, &VOXLConnection::onScpProcessError);
-
-    QString remoteArg = QStringLiteral("root@%1:%2").arg(m_voxlHost, QDir::fromNativeSeparators(cleanRemote));
-    if (!remoteArg.endsWith(QLatin1Char('/')))
-        remoteArg += QLatin1Char('/');
-
-    QStringList arguments;
-    arguments << QStringLiteral("-r")
-              << QStringLiteral("-o") << QStringLiteral("StrictHostKeyChecking=no")
-              << QStringLiteral("-o") << QStringLiteral("UserKnownHostsFile=/dev/null")
-              << remoteArg
-              << nativeLocal;
-
-    emit statusChanged(QStringLiteral("Downloading mapper map from VOXL via scp…"));
-    m_scpProcess->start(QStringLiteral("scp"), arguments);
-}
-
-void VOXLConnection::uploadDirectoryToVoxl(const QString &localDir, const QString &remotePath)
-{
-    if (m_voxlHost.isEmpty()) {
-        emit mapperBundleUploadFinished(false, QStringLiteral("VOXL host not set."));
-        return;
-    }
-    const QString cleanLocal = QDir::cleanPath(localDir);
-    if (cleanLocal.isEmpty() || !QDir(cleanLocal).exists()) {
-        emit mapperBundleUploadFinished(false, QStringLiteral("Local map bundle folder not found."));
-        return;
-    }
-    const QString cleanRemote = remotePath.trimmed();
-    if (cleanRemote.isEmpty()) {
-        emit mapperBundleUploadFinished(false, QStringLiteral("Remote map path is empty."));
-        return;
-    }
-
-    if (m_scpProcess) {
-        m_scpProcess->kill();
-        m_scpProcess->deleteLater();
-        m_scpProcess = nullptr;
-    }
-
-    m_scpProcess = new QProcess(this);
-    m_scpMode = ScpMode::UploadDirectory;
-    connect(m_scpProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, &VOXLConnection::onScpProcessFinished);
-    connect(m_scpProcess, &QProcess::errorOccurred,
-            this, &VOXLConnection::onScpProcessError);
-
-    QString localArg = QDir::fromNativeSeparators(cleanLocal);
-    if (!localArg.endsWith(QLatin1String("/.")))
-        localArg += QStringLiteral("/.");
-
-    QString remoteArg = QStringLiteral("root@%1:%2").arg(m_voxlHost, QDir::fromNativeSeparators(cleanRemote));
-    if (!remoteArg.endsWith(QLatin1Char('/')))
-        remoteArg += QLatin1Char('/');
-
-    QStringList arguments;
-    arguments << QStringLiteral("-r")
-              << QStringLiteral("-o") << QStringLiteral("StrictHostKeyChecking=no")
-              << QStringLiteral("-o") << QStringLiteral("UserKnownHostsFile=/dev/null")
-              << localArg
-              << remoteArg;
-
-    emit statusChanged(QStringLiteral("Uploading mapper map bundle to VOXL via scp…"));
-    m_scpProcess->start(QStringLiteral("scp"), arguments);
-}
-
 void VOXLConnection::runMission(const QString &missionFileName)
 {
     if (m_voxlHost.isEmpty()) {
@@ -972,6 +916,23 @@ void VOXLConnection::cancelMission()
 // SSH command execution
 // ============================================================================
 
+void VOXLConnection::cancelPendingSshCommands()
+{
+    m_sshCommandQueue.clear();
+    if (m_sshTimeoutTimer)
+        m_sshTimeoutTimer->stop();
+    if (m_sshProcess) {
+        m_sshProcess->kill();
+        m_sshProcess->deleteLater();
+        m_sshProcess = nullptr;
+    }
+    m_sshRunning = false;
+    if (!m_sshAskpassScriptPath.isEmpty()) {
+        QFile::remove(m_sshAskpassScriptPath);
+        m_sshAskpassScriptPath.clear();
+    }
+}
+
 void VOXLConnection::sshRunCommand(const QString &remoteCommand)
 {
     if (m_voxlHost.isEmpty()) {
@@ -979,31 +940,110 @@ void VOXLConnection::sshRunCommand(const QString &remoteCommand)
         return;
     }
 
-    // Fire a fire-and-forget QProcess; it is parented to this object so it
-    // will be cleaned up automatically, but we also connect finished() so we
-    // can emit the result signal.
-    QProcess *proc = new QProcess(this);
+    m_sshCommandQueue.enqueue(remoteCommand);
+    startNextSshCommand();
+}
+
+void VOXLConnection::startNextSshCommand()
+{
+    if (m_sshRunning || m_sshCommandQueue.isEmpty())
+        return;
+
+    m_sshRunning = true;
+    const QString remoteCommand = m_sshCommandQueue.head();
+
+    if (m_sshProcess) {
+        m_sshProcess->kill();
+        m_sshProcess->deleteLater();
+        m_sshProcess = nullptr;
+    }
+
+    m_sshProcess = new QProcess(this);
+    QProcess *proc = m_sshProcess;
     connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, [this, proc](int exitCode, QProcess::ExitStatus) {
+                if (proc != m_sshProcess)
+                    return;
                 const QString output = QString::fromUtf8(proc->readAllStandardOutput())
                                        + QString::fromUtf8(proc->readAllStandardError());
-                emit sshCommandFinished(exitCode == 0, output.trimmed());
+                if (proc == m_sshProcess)
+                    m_sshProcess = nullptr;
                 proc->deleteLater();
+                finishSshCommand(exitCode == 0, output.trimmed());
             });
     connect(proc, &QProcess::errorOccurred, this, [this, proc](QProcess::ProcessError) {
-        emit sshCommandFinished(false, proc->errorString());
+        if (proc != m_sshProcess)
+            return;
+        if (proc == m_sshProcess)
+            m_sshProcess = nullptr;
+        const QString error = proc->errorString();
         proc->deleteLater();
+        finishSshCommand(false, error);
     });
 
-    const QStringList args = {
-        QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=no"),
-        QStringLiteral("-o"), QStringLiteral("UserKnownHostsFile=/dev/null"),
-        QStringLiteral("-o"), QStringLiteral("ConnectTimeout=5"),
-        QStringLiteral("root@") + m_voxlHost,
-        remoteCommand
-    };
+    if (!m_sshTimeoutTimer) {
+        m_sshTimeoutTimer = new QTimer(this);
+        m_sshTimeoutTimer->setSingleShot(true);
+        connect(m_sshTimeoutTimer, &QTimer::timeout, this, [this]() {
+            if (!m_sshProcess || m_sshProcess->state() == QProcess::NotRunning)
+                return;
+            QProcess *proc = m_sshProcess;
+            m_sshProcess = nullptr;
+            proc->kill();
+            proc->deleteLater();
+            finishSshCommand(false, QStringLiteral("SSH timed out (check ssh key / drone IP)"));
+        });
+    }
+    m_sshTimeoutTimer->start(12000);
+
+    if (!m_voxlSshPassword.isEmpty() && m_sshAskpassScriptPath.isEmpty()) {
+        if (!writeSshAskpassScript(m_voxlSshPassword, &m_sshAskpassScriptPath)) {
+            if (proc == m_sshProcess)
+                m_sshProcess = nullptr;
+            proc->deleteLater();
+            finishSshCommand(false, QStringLiteral("Could not create SSH_ASKPASS helper."));
+            return;
+        }
+    }
+
+    // No ControlMaster: multiplex sockets break on Windows (getsockname failed: Not a socket).
+    QFile::remove(QDir::temp().filePath(QStringLiteral("voxl-ssh-%1").arg(m_voxlHost)));
+
+    QStringList args = {QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=accept-new"),
+                        QStringLiteral("-o"), QStringLiteral("ConnectTimeout=8")};
+    if (!m_voxlSshPassword.isEmpty()) {
+        args << QStringLiteral("-o") << QStringLiteral("PreferredAuthentications=password")
+             << QStringLiteral("-o") << QStringLiteral("PubkeyAuthentication=no");
+    } else {
+        args << QStringLiteral("-o") << QStringLiteral("BatchMode=yes")
+             << QStringLiteral("-o") << QStringLiteral("NumberOfPasswordPrompts=0");
+    }
+    args << QStringLiteral("root@") + m_voxlHost << remoteCommand;
+
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    if (!m_voxlSshPassword.isEmpty() && !m_sshAskpassScriptPath.isEmpty()) {
+        env.insert(QStringLiteral("SSH_ASKPASS"), m_sshAskpassScriptPath);
+        env.insert(QStringLiteral("SSH_ASKPASS_REQUIRE"), QStringLiteral("force"));
+    }
+    proc->setProcessEnvironment(env);
+
     qDebug() << "SSH:" << args.join(QStringLiteral(" "));
     proc->start(QStringLiteral("ssh"), args);
+}
+
+void VOXLConnection::finishSshCommand(bool success, const QString &output)
+{
+    if (!m_sshRunning)
+        return;
+
+    if (m_sshTimeoutTimer)
+        m_sshTimeoutTimer->stop();
+
+    if (!m_sshCommandQueue.isEmpty())
+        m_sshCommandQueue.dequeue();
+    m_sshRunning = false;
+    emit sshCommandFinished(success, output);
+    startNextSshCommand();
 }
 
 // ============================================================================
@@ -1012,44 +1052,12 @@ void VOXLConnection::sshRunCommand(const QString &remoteCommand)
 
 void VOXLConnection::onScpProcessFinished(int exitCode)
 {
-    const bool isDownload = (m_scpMode == ScpMode::Download);
-    const bool isUploadDir = (m_scpMode == ScpMode::UploadDirectory);
     if (exitCode == 0) {
-        if (isDownload) {
-            m_scpMode = ScpMode::Upload;
-            emit statusChanged(QStringLiteral("Mapper map copied from VOXL."));
-            emit mapperBundleDownloadFinished(true, m_scpDownloadLocalPath);
-            return;
-        }
-        if (isUploadDir) {
-            m_scpMode = ScpMode::Upload;
-            emit statusChanged(QStringLiteral("Mapper map bundle uploaded to VOXL."));
-            emit mapperBundleUploadFinished(true, QString());
-            return;
-        }
         const QString label = m_currentUploadLabel.isEmpty() ? QStringLiteral("file") : m_currentUploadLabel;
         qDebug() << label << "uploaded successfully";
         emit missionUploadComplete();
         emit statusChanged(QString("%1 uploaded").arg(label.left(1).toUpper() + label.mid(1)));
     } else {
-        if (isDownload) {
-            QString errorMsg = QStringLiteral("SCP download failed with exit code %1").arg(exitCode);
-            if (m_scpProcess)
-                errorMsg += QStringLiteral(": %1").arg(QString::fromLocal8Bit(m_scpProcess->readAllStandardError()));
-            qWarning() << errorMsg;
-            m_scpMode = ScpMode::Upload;
-            emit mapperBundleDownloadFinished(false, errorMsg);
-            return;
-        }
-        if (isUploadDir) {
-            QString errorMsg = QStringLiteral("SCP bundle upload failed with exit code %1").arg(exitCode);
-            if (m_scpProcess)
-                errorMsg += QStringLiteral(": %1").arg(QString::fromLocal8Bit(m_scpProcess->readAllStandardError()));
-            qWarning() << errorMsg;
-            m_scpMode = ScpMode::Upload;
-            emit mapperBundleUploadFinished(false, errorMsg);
-            return;
-        }
         QString errorMsg = QString("SCP upload failed with exit code %1").arg(exitCode);
         if (m_scpProcess) {
             errorMsg += QString(": %1").arg(QString::fromLocal8Bit(m_scpProcess->readAllStandardError()));
@@ -1062,23 +1070,11 @@ void VOXLConnection::onScpProcessFinished(int exitCode)
 
 void VOXLConnection::onScpProcessError()
 {
-    const bool isDownload = (m_scpMode == ScpMode::Download);
-    const bool isUploadDir = (m_scpMode == ScpMode::UploadDirectory);
     QString errorMsg = QStringLiteral("SCP process error");
     if (m_scpProcess) {
         errorMsg += QString(": %1").arg(m_scpProcess->errorString());
     }
     qWarning() << errorMsg;
-    if (isDownload) {
-        m_scpMode = ScpMode::Upload;
-        emit mapperBundleDownloadFinished(false, errorMsg);
-        return;
-    }
-    if (isUploadDir) {
-        m_scpMode = ScpMode::Upload;
-        emit mapperBundleUploadFinished(false, errorMsg);
-        return;
-    }
     emit missionUploadFailed(errorMsg);
     emit errorOccurred(errorMsg);
 }

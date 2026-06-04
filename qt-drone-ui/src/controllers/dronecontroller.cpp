@@ -1,5 +1,6 @@
 #include "dronecontroller.h"
 #include "../network/voxlconnection.h"
+#include "../utils/voxlmappaths.h"
 #include "../network/voxlmapperclient.h"
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -87,10 +88,6 @@ void DroneController::initializeConnection()
             this, &DroneController::onVOXLDataReceived);
     connect(m_voxlConnection, &VOXLConnection::errorOccurred,
             this, &DroneController::onVOXLError);
-    connect(m_voxlConnection, &VOXLConnection::mapperBundleDownloadFinished,
-            this, &DroneController::mapperBundleDownloadFinished);
-    connect(m_voxlConnection, &VOXLConnection::mapperBundleUploadFinished,
-            this, &DroneController::onMapperBundleUploadForRestoreFinished);
     connect(m_voxlConnection, &VOXLConnection::px4ParameterReceived,
             this, [this](const QString &paramId, float value) {
                 if (paramId == QStringLiteral("NAV_DLL_ACT") && !m_navDllActKnown) {
@@ -109,15 +106,7 @@ void DroneController::initializeConnection()
             requestPx4Parameter(QStringLiteral("NAV_DLL_ACT"));
     });
     connect(m_voxlConnection, &VOXLConnection::sshCommandFinished,
-            this, [this](bool success, const QString &output) {
-                if (success)
-                    emit messageReceived(
-                        output.isEmpty() ? QStringLiteral("SSH command succeeded")
-                                         : QStringLiteral("SSH: %1").arg(output));
-                else
-                    emit warningIssued(
-                        QStringLiteral("SSH command failed: %1").arg(output));
-            });
+            this, &DroneController::onSshCommandFinished);
     connect(m_mapperClient, &VOXLMapperClient::poseReceived,
             this, &DroneController::onMapperPoseReceived);
     connect(m_mapperClient, &VOXLMapperClient::pathRenderReceived,
@@ -159,7 +148,7 @@ void DroneController::initializeConnection()
     connect(m_thermalPollTimer, &QTimer::timeout, this, &DroneController::onThermalPollTimer);
 }
 
-bool DroneController::connectToDrone(const QString &host, int port)
+bool DroneController::connectToDrone(const QString &host, int port, const QString &sshPassword)
 {
     m_droneHost = host;
     m_dronePort = port;
@@ -175,6 +164,7 @@ bool DroneController::connectToDrone(const QString &host, int port)
     // Always tell VOXLConnection the real drone host (not SIL localhost)
     // so that SCP uploads and the runner REST API target the actual VOXL 2.
     m_voxlConnection->setVoxlHost(host);
+    m_voxlConnection->setVoxlSshPassword(sshPassword);
 
     bool success = m_voxlConnection->connectToVOXL(connectHost, connectPort, VOXLConnection::UDP_CONNECTION);
     
@@ -199,7 +189,8 @@ bool DroneController::connectToDrone(const QString &host, int port)
 void DroneController::disconnectFromDrone()
 {
     stopMapperPortalWatchdog();
-    m_pendingBundleRestoreRemote.clear();
+    m_sshKindQueue.clear();
+    m_sshPollSubdirQueue.clear();
     if (m_voxlConnection) {
         m_voxlConnection->disconnect();
     }
@@ -250,6 +241,8 @@ void DroneController::updateConnectionStatus(bool connected)
             requestPx4Parameter(QStringLiteral("NAV_DLL_ACT"));
             m_paramPollTimer->start();
         } else {
+            m_sshKindQueue.clear();
+            m_sshPollSubdirQueue.clear();
             m_navDllActKnown = false;
             m_paramPollTimer->stop();
             m_heartbeatTimer->stop();
@@ -826,10 +819,14 @@ void DroneController::clearMapperMap()
 
 void DroneController::loadMapperMap(const QString &remotePath)
 {
+    const QString path = VoxlMapperPaths::normalizeSubdir(remotePath);
+    if (!path.isEmpty() && path != remotePath.trimmed()) {
+        emit warningIssued(QStringLiteral("Mapper path must be missions/<room>/ (got: %1)").arg(remotePath.trimmed()));
+    }
     if (!m_mapperClient || !m_mapperClient->isMeshConnected()) {
         if (m_mapperClient && !m_droneHost.trimmed().isEmpty()) {
             m_pendingMapperMapCommand = PendingMapperMapCommand::Load;
-            m_pendingMapperMapPath = remotePath;
+            m_pendingMapperMapPath = path;
             m_mapperClient->connectToMapper(m_droneHost, 80);
             emit messageReceived("Connecting to VOXL Mapper mesh socket before loading map...");
         } else {
@@ -837,61 +834,19 @@ void DroneController::loadMapperMap(const QString &remotePath)
         }
         return;
     }
-    m_mapperClient->loadMap(remotePath);
-    emit messageReceived(remotePath.trimmed().isEmpty()
+    m_mapperClient->loadMap(path);
+    emit messageReceived(path.isEmpty()
                              ? QStringLiteral("VOXL Mapper load default map command sent")
-                             : QStringLiteral("VOXL Mapper load map command sent: %1").arg(remotePath.trimmed()));
-}
-
-void DroneController::restoreMapperMapFromBundle(const QString &localBundleDir, const QString &remoteMapPath)
-{
-    const QString remote = remoteMapPath.trimmed();
-    const QString cleanLocal = QDir::toNativeSeparators(QDir::cleanPath(localBundleDir));
-    if (cleanLocal.isEmpty() || !QDir(cleanLocal).exists()) {
-        emit errorOccurred(QStringLiteral("Local map bundle folder does not exist."));
-        return;
-    }
-    if (remote.isEmpty()) {
-        emit errorOccurred(QStringLiteral("Remote map path in trajectory file is empty."));
-        return;
-    }
-    if (!m_mapperClient || m_droneHost.trimmed().isEmpty()) {
-        emit errorOccurred(QStringLiteral("Cannot restore bundled map: VOXL Mapper is not available."));
-        return;
-    }
-
-    if (!m_mapperClient->isMeshConnected()) {
-        m_pendingMapperMapCommand = PendingMapperMapCommand::RestoreFromBundle;
-        m_pendingMapperMapPath = remote;
-        m_pendingMapperBundleLocalDir = cleanLocal;
-        m_mapperClient->connectToMapper(m_droneHost, 80);
-        emit messageReceived(QStringLiteral("Connecting to VOXL Mapper mesh; will clear, upload bundled map, then load…"));
-        return;
-    }
-
-    if (!m_voxlConnection) {
-        emit errorOccurred(QStringLiteral("VOXL connection not available for scp."));
-        return;
-    }
-
-    m_pendingBundleRestoreRemote = remote;
-    m_mapperClient->clearMap();
-    emit messageReceived(QStringLiteral("VOXL Mapper clear_map; uploading saved map bundle via scp…"));
-
-    QTimer::singleShot(600, this, [this, cleanLocal, remote]() {
-        if (!m_voxlConnection) {
-            m_pendingBundleRestoreRemote.clear();
-            return;
-        }
-        if (m_pendingBundleRestoreRemote.isEmpty() || m_pendingBundleRestoreRemote != remote)
-            return;
-        m_voxlConnection->uploadDirectoryToVoxl(cleanLocal, remote);
-    });
+                             : QStringLiteral("VOXL Mapper load map command sent: %1").arg(path));
 }
 
 void DroneController::replaceMapperMap(const QString &remotePath)
 {
-    const QString path = remotePath.trimmed();
+    const QString path = VoxlMapperPaths::normalizeSubdir(remotePath);
+    if (path.isEmpty() && !remotePath.trimmed().isEmpty()) {
+        emit errorOccurred(QStringLiteral("Mapper path must be missions/<room>/ (got: %1)").arg(remotePath.trimmed()));
+        return;
+    }
     if (!m_mapperClient || m_droneHost.trimmed().isEmpty()) {
         emit errorOccurred(QStringLiteral("Cannot replace map: VOXL Mapper is not available."));
         return;
@@ -925,10 +880,11 @@ void DroneController::replaceMapperMap(const QString &remotePath)
 
 void DroneController::saveMapperMap(const QString &format, const QString &remotePath)
 {
+    const QString path = VoxlMapperPaths::normalizeSubdir(remotePath);
     if (!m_mapperClient || !m_mapperClient->isMeshConnected()) {
         if (m_mapperClient && !m_droneHost.trimmed().isEmpty()) {
             m_pendingMapperMapCommand = PendingMapperMapCommand::Save;
-            m_pendingMapperMapPath = remotePath;
+            m_pendingMapperMapPath = path;
             m_pendingMapperMapFormat = format;
             m_mapperClient->connectToMapper(m_droneHost, 80);
             emit messageReceived("Connecting to VOXL Mapper mesh socket before saving map...");
@@ -937,19 +893,10 @@ void DroneController::saveMapperMap(const QString &format, const QString &remote
         }
         return;
     }
-    m_mapperClient->saveMap(format, remotePath);
-    emit messageReceived(remotePath.trimmed().isEmpty()
+    m_mapperClient->saveMap(format, path);
+    emit messageReceived(path.isEmpty()
                              ? QStringLiteral("VOXL Mapper save map command sent")
-                             : QStringLiteral("VOXL Mapper save map command sent: %1").arg(remotePath.trimmed()));
-}
-
-void DroneController::downloadMapperMapFromVehicle(const QString &localDir, const QString &remotePath)
-{
-    if (!m_voxlConnection) {
-        emit mapperBundleDownloadFinished(false, QStringLiteral("VOXL connection not available."));
-        return;
-    }
-    m_voxlConnection->downloadDirectoryFromVoxl(localDir, remotePath);
+                             : QStringLiteral("VOXL Mapper save map command sent: %1").arg(path));
 }
 
 bool DroneController::isMapperMeshConnected() const
@@ -972,6 +919,107 @@ void DroneController::uploadMapperMap(const QString &localFilePath, const QStrin
 
     m_voxlConnection->uploadFileToVoxl(localFilePath, trimmedRemotePath, QStringLiteral("mapper map"));
     emit messageReceived(QStringLiteral("Uploading mapper map to VOXL: %1").arg(trimmedRemotePath));
+}
+
+void DroneController::listMapperMissionRooms()
+{
+    if (!m_connected || !m_voxlConnection) {
+        emit mapperMissionRoomsListed({});
+        return;
+    }
+
+    m_sshKindQueue.enqueue(PendingSshCommand::ListMissionRooms);
+    m_sshPollSubdirQueue.enqueue(QString());
+    m_voxlConnection->sshRunCommand(VoxlMapperPaths::listMissionRoomsScript());
+}
+
+void DroneController::syncMapperRoomState(const QString &mapperSubdir)
+{
+    const QString subdir = VoxlMapperPaths::normalizeSubdir(mapperSubdir);
+    if (subdir.isEmpty()) {
+        emit mapperMapPresencePolled(QString(), false, false);
+        return;
+    }
+    if (!m_connected || !m_voxlConnection || m_droneHost.trimmed().isEmpty()) {
+        emit mapperMapPresencePolled(subdir, false, false);
+        return;
+    }
+
+    const int queuedSshCount = qMin(m_sshKindQueue.size(), m_sshPollSubdirQueue.size());
+    for (int i = 0; i < queuedSshCount; ++i) {
+        if (m_sshKindQueue.at(i) == PendingSshCommand::SyncMapperRoom
+            && m_sshPollSubdirQueue.at(i) == subdir) {
+            return;
+        }
+    }
+
+    m_sshKindQueue.enqueue(PendingSshCommand::SyncMapperRoom);
+    m_sshPollSubdirQueue.enqueue(subdir);
+    m_voxlConnection->sshRunCommand(VoxlMapperPaths::listRoomsAndPollMapScript(subdir));
+}
+
+void DroneController::onSshCommandFinished(bool success, const QString &output)
+{
+    if (m_sshKindQueue.isEmpty() || m_sshPollSubdirQueue.isEmpty())
+        return;
+
+    const PendingSshCommand command = m_sshKindQueue.dequeue();
+    const QString pollSubdir = m_sshPollSubdirQueue.dequeue();
+
+    switch (command) {
+    case PendingSshCommand::ListMissionRooms: {
+        QStringList rooms;
+        if (success) {
+            const QStringList lines = output.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+            for (const QString &line : lines) {
+                const QString trimmed = line.trimmed();
+                if (!trimmed.isEmpty() && trimmed != QLatin1String(".") && trimmed != QLatin1String(".."))
+                    rooms.append(trimmed);
+            }
+        }
+        emit mapperMissionRoomsListed(rooms);
+        break;
+    }
+    case PendingSshCommand::SyncMapperRoom: {
+        QStringList rooms;
+        bool present = false;
+        bool mapLineSeen = false;
+        if (success) {
+            const QStringList lines = output.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+            for (const QString &line : lines) {
+                const QString trimmed = line.trimmed();
+                if (trimmed == QLatin1String("MAP_READY")) {
+                    present = true;
+                    mapLineSeen = true;
+                } else if (trimmed == QLatin1String("MAP_WAIT")) {
+                    present = false;
+                    mapLineSeen = true;
+                } else if (trimmed.startsWith(QLatin1String("ROOM:"))) {
+                    const QString room = trimmed.mid(5).trimmed();
+                    if (!room.isEmpty() && room != QLatin1String(".") && room != QLatin1String(".."))
+                        rooms.append(room);
+                }
+            }
+        }
+        if (success && mapLineSeen) {
+            emit mapperMissionRoomsListed(rooms);
+            emit mapperMapPresencePolled(pollSubdir, present, true);
+        } else {
+            if (!output.trimmed().isEmpty())
+                emit warningIssued(QStringLiteral("Map check SSH failed for %1: %2").arg(pollSubdir, output));
+            emit mapperMapPresencePolled(pollSubdir, false, false);
+        }
+        break;
+    }
+    case PendingSshCommand::ServiceMessage:
+    case PendingSshCommand::None:
+        if (success)
+            emit messageReceived(output.isEmpty() ? QStringLiteral("SSH command succeeded")
+                                                  : QStringLiteral("SSH: %1").arg(output));
+        else
+            emit warningIssued(QStringLiteral("SSH command failed: %1").arg(output));
+        break;
+    }
 }
 
 void DroneController::onMapperMeshConnectedChanged(bool connected)
@@ -998,11 +1046,9 @@ void DroneController::onMapperMeshConnectedChanged(bool connected)
     const PendingMapperMapCommand command = m_pendingMapperMapCommand;
     const QString path = m_pendingMapperMapPath;
     const QString format = m_pendingMapperMapFormat;
-    const QString bundleDir = m_pendingMapperBundleLocalDir;
     m_pendingMapperMapCommand = PendingMapperMapCommand::None;
     m_pendingMapperMapPath.clear();
     m_pendingMapperMapFormat.clear();
-    m_pendingMapperBundleLocalDir.clear();
 
     switch (command) {
     case PendingMapperMapCommand::Load:
@@ -1019,9 +1065,6 @@ void DroneController::onMapperMeshConnectedChanged(bool connected)
         break;
     case PendingMapperMapCommand::LoadAfterClear:
         replaceMapperMap(path);
-        break;
-    case PendingMapperMapCommand::RestoreFromBundle:
-        restoreMapperMapFromBundle(bundleDir, path);
         break;
     case PendingMapperMapCommand::None:
         break;
@@ -1041,26 +1084,6 @@ void DroneController::onMapperPortalWatchdogTimeout()
             "VOXL Mapper portal not detected on port 80 (mesh socket). "
             "Start voxl-portal on the drone to stream the live map."));
     }
-}
-
-void DroneController::onMapperBundleUploadForRestoreFinished(bool success, const QString &msg)
-{
-    if (m_pendingBundleRestoreRemote.isEmpty())
-        return;
-    const QString remote = m_pendingBundleRestoreRemote;
-    m_pendingBundleRestoreRemote.clear();
-
-    if (!success) {
-        emit errorOccurred(QStringLiteral("Bundled map upload failed: %1").arg(msg));
-        return;
-    }
-    if (!m_mapperClient || !m_mapperClient->isMeshConnected()) {
-        emit errorOccurred(QStringLiteral("Mapper disconnected before load_map could run."));
-        return;
-    }
-    m_mapperClient->loadMap(remote);
-    emit messageReceived(QStringLiteral("VOXL Mapper load_map after bundle upload: %1").arg(remote));
-    emit messageReceived(QStringLiteral("Live mesh stream continues from the mapper service."));
 }
 
 void DroneController::onThermalPollTimer()
@@ -1174,6 +1197,8 @@ void DroneController::resetVioService(const QString &serviceName)
             emit errorOccurred(QStringLiteral("Cannot restart mapper: not connected to VOXL"));
             return;
         }
+        m_sshKindQueue.enqueue(PendingSshCommand::ServiceMessage);
+        m_sshPollSubdirQueue.enqueue(QString());
         m_voxlConnection->sshRunCommand(
             QStringLiteral("systemctl restart voxl-mapper && echo 'voxl-mapper restarted successfully'"));
         emit messageReceived(QStringLiteral("Restarting voxl-mapper service via SSH..."));

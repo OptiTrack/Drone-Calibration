@@ -158,10 +158,21 @@ void MainWindow::setupPlannerMenus()
             return;
         }
 
+        const QString sshPassword = QInputDialog::getText(
+            this,
+            QStringLiteral("Connect to Starling 2 Max"),
+            QStringLiteral("SSH password (for map checks on drone; leave empty if using SSH keys):"),
+            QLineEdit::Password,
+            QStringLiteral("oelinux123"),
+            &ok);
+        if (!ok) {
+            return;
+        }
+
         const QString cleanHost = host.trimmed();
         if (m_cameraFeedWidget)
             m_cameraFeedWidget->setVoxlHost(cleanHost);
-        m_droneController->connectToDrone(cleanHost, port);
+        m_droneController->connectToDrone(cleanHost, port, sshPassword);
     });
 
     connect(disconnectAction, &QAction::triggered,
@@ -475,6 +486,7 @@ void MainWindow::setupMainContent()
     // Index 2: Flight History (Recorded Paths)
     m_recordedPathsWidget = new RecordedPathsWidget;
     m_recordedPathsWidget->setVolumeManager(m_volumeManager);
+    m_recordedPathsWidget->setDroneController(m_droneController);
     m_contentStack->addWidget(m_recordedPathsWidget);
     
     // Index 3: Media Library (Recorded Videos)
@@ -536,32 +548,33 @@ void MainWindow::connectSignals()
             this, &MainWindow::onPathLoadRequested);
     connect(m_recordedPathsWidget, &RecordedPathsWidget::pathJsonLoadRequested,
             this, &MainWindow::onPathJsonLoadRequested);
-    connect(m_recordedPathsWidget, &RecordedPathsWidget::mapRestoreRequested,
-            this, [this](const QString &bundleDir, const QString &remotePath) {
+    connect(m_recordedPathsWidget, &RecordedPathsWidget::mapLoadRequested,
+            this, [this](const QString &mapperSubdir) {
                 if (!m_droneController->isConnected()) {
                     statusBar()->showMessage(
-                        QStringLiteral("Connect to the drone first before restoring a map"), 5000);
+                        QStringLiteral("Connect to the drone first before loading a map"), 5000);
                     return;
                 }
-                m_droneController->restoreMapperMapFromBundle(bundleDir, remotePath);
+                m_droneController->replaceMapperMap(mapperSubdir);
                 statusBar()->showMessage(
-                    QStringLiteral("Restoring saved room map to VOXL\u2026"), 5000);
+                    QStringLiteral("Loading room map from drone (%1)\u2026").arg(mapperSubdir), 5000);
             });
 
     // When the planner establishes map context (on path load or save), persist metadata to the
     // active volume via VolumeManager and refresh the Saved Paths tab's map status label.
     connect(m_pathPlannerWidget, &PathPlannerWidget::mapContextEstablished,
-            this, [this](const QString &roomId, const QString &remotePath, const QString &bundleDir) {
+            this, [this](const QString &roomId, const QString &mapperSubdir) {
                 if (roomId.isEmpty() || !m_volumeManager->hasVolume(roomId))
                     return;
                 VolumeManager::MapInfo info = m_volumeManager->mapInfo(roomId);
-                if (!remotePath.trimmed().isEmpty())
-                    info.remotePath = remotePath.trimmed();
-                // bundleDir is absolute — writeMapInfo stores relative names, so only update
-                // remote_path here; the bundle and mesh paths stay at their canonical locations.
+                if (!mapperSubdir.trimmed().isEmpty())
+                    info.remotePath = mapperSubdir.trimmed();
+                info.updatedAt = QDateTime::currentDateTime();
                 m_volumeManager->writeMapInfo(roomId, info);
-                if (m_recordedPathsWidget)
+                if (m_recordedPathsWidget) {
                     m_recordedPathsWidget->updateRoomSummary();
+                    m_recordedPathsWidget->refreshMapPresence();
+                }
             });
     
     // Camera feed signals

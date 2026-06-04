@@ -13,10 +13,14 @@
 #include <QComboBox>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QSet>
+#include <QDateTime>
+#include <QTimer>
 #include <QVector3D>
 #include "../models/flightpath.h"
 
 class VolumeManager;
+class DroneController;
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class RecordedPathsWidget; }
@@ -33,17 +37,21 @@ public:
     void addPath(const QString &name, const QVector<QVector3D> &points);
     void loadPaths();
     void setVolumeManager(VolumeManager *volumeManager);
+    void setDroneController(DroneController *controller);
     void refreshRooms();
     /// Refresh the map status label and Load Map button state for the current room.
     void updateRoomSummary();
+    /// Poll the drone for map files referenced by the active room and saved paths.
+    void refreshMapPresence();
+    void refreshMapPresenceNow();
 
 signals:
     void pathDeleted(const QString &pathId);
     void pathLoadRequested(const QVector<QVector3D> &points);
     /// Full planner JSON (waypoints + mapper_map_path); preferred when the list entry came from disk.
     void pathJsonLoadRequested(const QString &absoluteJsonPath);
-    /// Request the main window to push the active volume's stored map bundle back to the drone.
-    void mapRestoreRequested(const QString &bundleDir, const QString &remotePath);
+    /// Request loading the room map from the drone (missions/.../ subdir).
+    void mapLoadRequested(const QString &mapperSubdir);
 
 private slots:
     void onPathSelectionChanged();
@@ -56,8 +64,6 @@ private slots:
     void onRoomSelectionChanged(int index);
     void onNewRoom();
     void onRenameRoom();
-    void onImportLegacyPaths();
-    void onCleanupLegacyPaths();
     void onLoadMap();
 
 private:
@@ -68,20 +74,30 @@ private:
     void clearPathDetails();
     FlightPath* getSelectedPath();
     QString getPathsDirectory();
-    QStringList legacyPathsDirectories() const;
     bool copyPathIntoCurrentRoom(const QString &sourcePath, QString *destPath = nullptr);
     bool writeJsonPreservingPlannerFields(const QString &destPath, const FlightPath &path,
                                           const QJsonObject &sourceRoot = QJsonObject()) const;
     FlightPath loadPathFromFile(const QString &filePath);
+    QString mapperSubdirForPathFile(const QString &filePath) const;
+    QString activeRoomMapperSubdir() const;
+    QString resolveDroneMissionFolder(const QString &sanitizedBase) const;
+    void handlePendingNewRoomName(const QString &name);
     
     Ui::RecordedPathsWidget *ui;
     QString m_pathsDirectory;
     VolumeManager *m_volumeManager;
+    DroneController *m_droneController;
+    QHash<QString, bool> m_remoteMapPresence;
+    QSet<QString> m_mapPresencePollPending;
+    QSet<QString> m_mapPresenceCheckFailed;
+    QTimer *m_mapPresenceDebounce = nullptr;
+    QString m_mapPresenceCachedSubdir;
+    QDateTime m_mapPresenceCachedAt;
+    QString m_pendingNewRoomName;
+    QStringList m_droneMissionFolderNames;
     QComboBox *m_roomCombo;
     QPushButton *m_newRoomButton;
     QPushButton *m_renameRoomButton;
-    QPushButton *m_importLegacyButton;
-    QPushButton *m_cleanupLegacyButton;
     QLabel *m_roomMapLabel;
     QPushButton *m_loadMapButton;
 

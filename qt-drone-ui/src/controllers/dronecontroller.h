@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QTimer>
+#include <QQueue>
 #include <QElapsedTimer>
 #include <QVector3D>
 #include <QColor>
@@ -47,7 +48,8 @@ public:
     ~DroneController();
 
     // Connection management
-    bool connectToDrone(const QString &host = "192.168.1.10", int port = 14550);
+    bool connectToDrone(const QString &host = "192.168.1.10", int port = 14550,
+                        const QString &sshPassword = QString());
     void disconnectFromDrone();
     bool isConnected() const { return m_connected; }
     QString voxlHost() const { return m_droneHost; }
@@ -83,11 +85,12 @@ public:
     void resetVioService(const QString &serviceName);
     /// clear_map on VOXL, then load_map after a short delay (avoids stacking two maps in mapper + garbled mesh in the UI).
     void replaceMapperMap(const QString &remotePath = QString());
-    /// clear_map, scp-upload a saved local bundle folder to remotePath, then load_map (live /mesh stream resumes after load).
-    void restoreMapperMapFromBundle(const QString &localBundleDir, const QString &remoteMapPath);
     void saveMapperMap(const QString &format = QStringLiteral("ply"), const QString &remotePath = QString());
-    void downloadMapperMapFromVehicle(const QString &localDir, const QString &remotePath);
     void uploadMapperMap(const QString &localFilePath, const QString &remotePath);
+    /// List folder names under /data/voxl-mapper/missions on the drone (SSH).
+    void listMapperMissionRooms();
+    /// One SSH session: mission folder list + map presence for @a mapperSubdir.
+    void syncMapperRoomState(const QString &mapperSubdir);
     bool isMapperMeshConnected() const;
     void planMapperHome();
 
@@ -120,7 +123,9 @@ signals:
     void errorOccurred(const QString &error);
     void warningIssued(const QString &warning);
     void messageReceived(const QString &message);
-    void mapperBundleDownloadFinished(bool success, const QString &message);
+    void mapperMissionRoomsListed(const QStringList &roomFolderNames);
+    /// @a querySucceeded false when SSH failed — UI should keep the last known status.
+    void mapperMapPresencePolled(const QString &mapperSubdir, bool present, bool querySucceeded);
     /// Forwarded from VOXLConnection when a PARAM_VALUE message is received.
     void px4ParameterReceived(const QString &paramId, float value);
 
@@ -136,7 +141,7 @@ private slots:
     void onMapperMeshConnectedChanged(bool connected);
     void onMapperTick();
     void onMapperPortalWatchdogTimeout();
-    void onMapperBundleUploadForRestoreFinished(bool success, const QString &message);
+    void onSshCommandFinished(bool success, const QString &output);
     void onThermalPollTimer();
 
 private:
@@ -211,14 +216,19 @@ private:
         Load,
         Save,
         Clear,
-        LoadAfterClear,
-        RestoreFromBundle
+        LoadAfterClear
+    };
+    enum class PendingSshCommand {
+        None,
+        ListMissionRooms,
+        SyncMapperRoom,
+        ServiceMessage
     };
     PendingMapperMapCommand m_pendingMapperMapCommand;
     QString m_pendingMapperMapPath;
     QString m_pendingMapperMapFormat;
-    QString m_pendingMapperBundleLocalDir;
-    QString m_pendingBundleRestoreRemote;
+    QQueue<PendingSshCommand> m_sshKindQueue;
+    QQueue<QString> m_sshPollSubdirQueue;
     QTimer *m_mapperPortalWatchdog;
     QTimer *m_thermalPollTimer;
     QTimer *m_paramPollTimer;  ///< Retries PARAM_REQUEST_READ for NAV_DLL_ACT until a value arrives.
