@@ -13,6 +13,11 @@
 #include <QJsonObject>
 #include <QFileInfo>
 #include <QDateTime>
+#include <QMediaPlayer>
+#include <QVideoSink>
+#include <QSet>
+#include <QSharedPointer>
+#include <QSet>
 
 struct Recording {
     QString id;
@@ -60,18 +65,21 @@ private:
     void setupConnections();
     void updateRecordingList();
     void updateRecordingDetails();
+    void updateButtonStates();
+    void updateStorageInfo();
     void clearRecordingDetails();
+    void probeRecordingMedia(Recording *recording);
     Recording* getSelectedRecording();
     QString generateRecordingId();
     QString formatFileSize(qint64 bytes);
     QString formatDuration(qint64 seconds);
-    void updateStorageInfo();
     
     Ui::RecordedVideosWidget *ui;
     
     // Data
     QVector<Recording> m_recordings;
     int m_selectedRecordingIndex;
+    QSet<QString> m_probedIds; // IDs already probed; prevents re-probing on every click
 };
 
 #endif // RECORDEDVIDEOSWIDGET_H
