@@ -122,6 +122,7 @@ RecordedPathsWidget::RecordedPathsWidget(QWidget *parent)
     , m_renameRoomButton(nullptr)
     , m_importLegacyButton(nullptr)
     , m_cleanupLegacyButton(nullptr)
+    , m_loadMapButton(nullptr)
     , m_roomMapLabel(nullptr)
     , m_selectedPathIndex(-1)
 {
@@ -154,6 +155,9 @@ void RecordedPathsWidget::setupConnections()
             this, &RecordedPathsWidget::onRoomSelectionChanged);
     connect(m_newRoomButton, &QPushButton::clicked, this, &RecordedPathsWidget::onNewRoom);
     connect(m_renameRoomButton, &QPushButton::clicked, this, &RecordedPathsWidget::onRenameRoom);
+    connect(m_importLegacyButton, &QPushButton::clicked, this, &RecordedPathsWidget::onImportLegacyPaths);
+    connect(m_cleanupLegacyButton, &QPushButton::clicked, this, &RecordedPathsWidget::onCleanupLegacyPaths);
+    connect(m_loadMapButton, &QPushButton::clicked, this, &RecordedPathsWidget::onLoadMap);
 }
 
 void RecordedPathsWidget::setupRoomControls()
@@ -174,12 +178,16 @@ void RecordedPathsWidget::setupRoomControls()
 
     m_newRoomButton = new QPushButton(QStringLiteral("New Room"), roomBar);
     m_renameRoomButton = new QPushButton(QStringLiteral("Rename"), roomBar);
+    m_importLegacyButton = new QPushButton(QStringLiteral("Import Old Paths"), roomBar);
+    m_cleanupLegacyButton = new QPushButton(QStringLiteral("Cleanup Old"), roomBar);
+    m_loadMapButton = new QPushButton(QStringLiteral("Load Map \u25B6"), roomBar);
+    m_loadMapButton->setToolTip(QStringLiteral("Restore this room's saved map to the connected VOXL drone"));
 
     const QString buttonStyle = QStringLiteral(
         "QPushButton { background:#374151; color:white; border:1px solid #4b5563; padding:5px 8px; border-radius:3px; }"
         "QPushButton:hover { background:#4b5563; }"
         "QPushButton:disabled { background:#1f2937; color:#6b7280; }");
-    for (QPushButton *button : {m_newRoomButton, m_renameRoomButton})
+    for (QPushButton *button : {m_newRoomButton, m_renameRoomButton, m_importLegacyButton, m_cleanupLegacyButton, m_loadMapButton})
         button->setStyleSheet(buttonStyle);
 
     m_roomMapLabel = new QLabel(QStringLiteral("Map: no room selected"), roomBar);
@@ -189,7 +197,10 @@ void RecordedPathsWidget::setupRoomControls()
     roomLayout->addWidget(m_roomCombo);
     roomLayout->addWidget(m_newRoomButton);
     roomLayout->addWidget(m_renameRoomButton);
+    roomLayout->addWidget(m_importLegacyButton);
+    roomLayout->addWidget(m_cleanupLegacyButton);
     roomLayout->addStretch();
+    roomLayout->addWidget(m_loadMapButton);
     roomLayout->addWidget(m_roomMapLabel);
 
     ui->mainLayout->insertWidget(0, roomBar);
@@ -948,6 +959,8 @@ void RecordedPathsWidget::updateRoomSummary()
         m_importLegacyButton->setEnabled(hasRoom);
     if (m_cleanupLegacyButton)
         m_cleanupLegacyButton->setEnabled(hasRoom);
+    if (m_loadMapButton)
+        m_loadMapButton->setEnabled(false); // updated below once map info is known
 
     if (!m_roomMapLabel)
         return;
@@ -957,6 +970,8 @@ void RecordedPathsWidget::updateRoomSummary()
     }
 
     const VolumeManager::MapInfo map = m_volumeManager->activeMapInfo();
+    if (m_loadMapButton)
+        m_loadMapButton->setEnabled(map.hasBundle());
     QString status = QStringLiteral("missing");
     if (map.hasBundle())
         status = QStringLiteral("bundle available");
@@ -966,4 +981,24 @@ void RecordedPathsWidget::updateRoomSummary()
         status = QStringLiteral("remote only");
 
     m_roomMapLabel->setText(QStringLiteral("Map: %1 (%2)").arg(m_volumeManager->activeVolume().name, status));
+}
+
+void RecordedPathsWidget::onLoadMap()
+{
+    if (!m_volumeManager || !m_volumeManager->hasActiveVolume())
+        return;
+
+    const VolumeManager::MapInfo map = m_volumeManager->activeMapInfo();
+    if (!map.hasBundle()) {
+        QMessageBox::information(this, QStringLiteral("Load Map"),
+                                 QStringLiteral("No local map bundle found for this room.\n"
+                                                "Save a map first by downloading it from the drone via the Mission planner."));
+        return;
+    }
+
+    const QString remote = map.remotePath.trimmed().isEmpty()
+                               ? QStringLiteral("/data/voxl_mapper/missions/") + m_volumeManager->activeVolume().name
+                               : map.remotePath.trimmed();
+
+    emit mapRestoreRequested(map.bundleDir, remote);
 }

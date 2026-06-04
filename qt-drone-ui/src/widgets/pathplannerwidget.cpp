@@ -3548,6 +3548,11 @@ bool PathPlannerWidget::loadPathFromFile(const QString &fileName, bool showSucce
 
     if (showSuccessDialog)
         QMessageBox::information(this, "Load Path", "Path loaded successfully!");
+
+    // Notify MainWindow so it can persist map metadata to the volume and refresh the Saved Paths tab.
+    if (!m_roomId.isEmpty() && (!m_mapperMapPath.isEmpty() || !m_mapperMapBundleDir.isEmpty()))
+        emit mapContextEstablished(m_roomId, m_mapperMapPath, m_mapperMapBundleDir);
+
     return true;
 }
 
@@ -4429,6 +4434,28 @@ void PathPlannerWidget::onMapperBundleDownloadFinished(bool success, const QStri
                     "path:\n%4")
                 .arg(displayName, jsonPath, m_mapperMapBundleDir, m_mapperMapPath));
     } else {
+        // Even on SCP failure, record the remote path in the room's map.json so the room
+        // remembers which VOXL map belongs to it for future restore attempts.
+        if (!m_roomMapDir.trimmed().isEmpty() && !m_mapperMapPath.trimmed().isEmpty()) {
+            QDir().mkpath(m_roomMapDir);
+            QFile metaFile(QDir(m_roomMapDir).filePath(QStringLiteral("map.json")));
+            // Preserve existing bundle_dir/mesh_path if the file already exists.
+            QJsonObject mapMeta;
+            if (metaFile.open(QIODevice::ReadOnly)) {
+                const QJsonDocument existing = QJsonDocument::fromJson(metaFile.readAll());
+                if (existing.isObject()) mapMeta = existing.object();
+                metaFile.close();
+            }
+            mapMeta[QStringLiteral("display_name")] = m_roomName.trimmed().isEmpty() ? displayName : m_roomName.trimmed();
+            mapMeta[QStringLiteral("remote_path")] = m_mapperMapPath.trimmed();
+            if (!mapMeta.contains(QStringLiteral("bundle_dir")))
+                mapMeta[QStringLiteral("bundle_dir")] = QStringLiteral("mapper_map");
+            if (!mapMeta.contains(QStringLiteral("mesh_path")))
+                mapMeta[QStringLiteral("mesh_path")] = QStringLiteral("map.ply");
+            mapMeta[QStringLiteral("updated_at")] = QDateTime::currentDateTime().toString(Qt::ISODate);
+            if (metaFile.open(QIODevice::WriteOnly | QIODevice::Text))
+                metaFile.write(QJsonDocument(mapMeta).toJson(QJsonDocument::Indented));
+        }
         QMessageBox::warning(
             this,
             "Mapper map copy",
@@ -4437,6 +4464,10 @@ void PathPlannerWidget::onMapperBundleDownloadFinished(bool success, const QStri
                     "VOXL load path:\n%3")
                 .arg(message, jsonPath, m_mapperMapPath));
     }
+
+    // Notify MainWindow to persist map metadata to VolumeManager and refresh the Saved Paths tab.
+    if (!m_roomId.isEmpty())
+        emit mapContextEstablished(m_roomId, m_mapperMapPath, m_mapperMapBundleDir);
 }
 
 void PathPlannerWidget::onUploadMission()

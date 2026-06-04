@@ -34,12 +34,16 @@ public:
     void loadPaths();
     void setVolumeManager(VolumeManager *volumeManager);
     void refreshRooms();
+    /// Refresh the map status label and Load Map button state for the current room.
+    void updateRoomSummary();
 
 signals:
     void pathDeleted(const QString &pathId);
     void pathLoadRequested(const QVector<QVector3D> &points);
     /// Full planner JSON (waypoints + mapper_map_path); preferred when the list entry came from disk.
     void pathJsonLoadRequested(const QString &absoluteJsonPath);
+    /// Request the main window to push the active volume's stored map bundle back to the drone.
+    void mapRestoreRequested(const QString &bundleDir, const QString &remotePath);
 
 private slots:
     void onPathSelectionChanged();
@@ -54,6 +58,7 @@ private slots:
     void onRenameRoom();
     void onImportLegacyPaths();
     void onCleanupLegacyPaths();
+    void onLoadMap();
 
 private:
     void setupRoomControls();
@@ -68,7 +73,6 @@ private:
     bool writeJsonPreservingPlannerFields(const QString &destPath, const FlightPath &path,
                                           const QJsonObject &sourceRoot = QJsonObject()) const;
     FlightPath loadPathFromFile(const QString &filePath);
-    void updateRoomSummary();
     
     Ui::RecordedPathsWidget *ui;
     QString m_pathsDirectory;
@@ -79,7 +83,8 @@ private:
     QPushButton *m_importLegacyButton;
     QPushButton *m_cleanupLegacyButton;
     QLabel *m_roomMapLabel;
-    
+    QPushButton *m_loadMapButton;
+
     // Data
     QVector<FlightPath> m_paths;
     int m_selectedPathIndex;

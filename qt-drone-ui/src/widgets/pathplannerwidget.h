@@ -292,6 +292,9 @@ signals:
     void waypointsChanged(const std::vector<Waypoint> &waypoints);
     /// Emitted when the user confirms a VIO service restart.
     void vioResetRequested(const QString &serviceName);
+    /// Emitted when a path's map context is known (load or save). Used to persist map metadata
+    /// to the active volume and refresh the Saved Paths tab map status label.
+    void mapContextEstablished(const QString &roomId, const QString &remotePath, const QString &bundleDir);
 
 private slots:
     void onClearPath();

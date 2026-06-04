@@ -62,6 +62,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     setupUI();
     connectSignals();
+    rebuildVolumeCombo(); // Populate the sidebar volume combo with persisted volumes
 
     if (m_volumeManager->hasActiveVolume())
         applyActiveVolume(m_volumeManager->activeVolume());
@@ -407,9 +408,52 @@ void MainWindow::setupNavigationBar()
     statusLayout->addLayout(connectionLayout);
     statusLayout->addWidget(versionLabel);
     statusLayout->addStretch();
-    
+
     m_navigationLayout->addWidget(statusFooter);
-    
+
+    // -----------------------------------------------------------------------
+    // Volume selector — sits in the sidebar above the status footer
+    // -----------------------------------------------------------------------
+    QFrame *volumeFrame = new QFrame;
+    volumeFrame->setFrameShape(QFrame::NoFrame);
+    volumeFrame->setStyleSheet(
+        "QFrame { background-color: #2d2d2d; border: none; border-top: 1px solid #555555; }");
+    QVBoxLayout *volumeLayout = new QVBoxLayout(volumeFrame);
+    volumeLayout->setContentsMargins(10, 8, 10, 8);
+    volumeLayout->setSpacing(4);
+
+    QLabel *volumeSideLabel = new QLabel(QStringLiteral("Volume:"));
+    volumeSideLabel->setStyleSheet(
+        "QLabel { color: #9ca3af; font-size: 11px; font-weight: bold; background: transparent; }");
+
+    QHBoxLayout *volumeRowLayout = new QHBoxLayout;
+    volumeRowLayout->setSpacing(4);
+    volumeRowLayout->setContentsMargins(0, 0, 0, 0);
+
+    m_volumeCombo = new QComboBox(volumeFrame);
+    m_volumeCombo->setToolTip(QStringLiteral("Select the active volume (room)"));
+    m_volumeCombo->setStyleSheet(
+        "QComboBox { background:#374151; color:#e5e7eb; border:1px solid #4b5563; padding:3px 6px;"
+        "            border-radius:3px; font-size:12px; }"
+        "QComboBox QAbstractItemView { background:#374151; color:#e5e7eb;"
+        "                              selection-background-color:#007acc; }");
+
+    m_newVolumeButton = new QPushButton(QStringLiteral("+"), volumeFrame);
+    m_newVolumeButton->setFixedSize(24, 24);
+    m_newVolumeButton->setToolTip(QStringLiteral("Create a new volume"));
+    m_newVolumeButton->setStyleSheet(
+        "QPushButton { background:#374151; color:white; border:1px solid #4b5563;"
+        "              border-radius:3px; font-size:14px; font-weight:bold; }"
+        "QPushButton:hover { background:#4b5563; }");
+
+    volumeRowLayout->addWidget(m_volumeCombo);
+    volumeRowLayout->addWidget(m_newVolumeButton);
+    volumeLayout->addWidget(volumeSideLabel);
+    volumeLayout->addLayout(volumeRowLayout);
+
+    // Insert volume frame just above the status footer
+    m_navigationLayout->insertWidget(m_navigationLayout->count() - 1, volumeFrame);
+
     // Select first item
     m_navigationList->setCurrentRow(0);
 }
@@ -492,6 +536,33 @@ void MainWindow::connectSignals()
             this, &MainWindow::onPathLoadRequested);
     connect(m_recordedPathsWidget, &RecordedPathsWidget::pathJsonLoadRequested,
             this, &MainWindow::onPathJsonLoadRequested);
+    connect(m_recordedPathsWidget, &RecordedPathsWidget::mapRestoreRequested,
+            this, [this](const QString &bundleDir, const QString &remotePath) {
+                if (!m_droneController->isConnected()) {
+                    statusBar()->showMessage(
+                        QStringLiteral("Connect to the drone first before restoring a map"), 5000);
+                    return;
+                }
+                m_droneController->restoreMapperMapFromBundle(bundleDir, remotePath);
+                statusBar()->showMessage(
+                    QStringLiteral("Restoring saved room map to VOXL\u2026"), 5000);
+            });
+
+    // When the planner establishes map context (on path load or save), persist metadata to the
+    // active volume via VolumeManager and refresh the Saved Paths tab's map status label.
+    connect(m_pathPlannerWidget, &PathPlannerWidget::mapContextEstablished,
+            this, [this](const QString &roomId, const QString &remotePath, const QString &bundleDir) {
+                if (roomId.isEmpty() || !m_volumeManager->hasVolume(roomId))
+                    return;
+                VolumeManager::MapInfo info = m_volumeManager->mapInfo(roomId);
+                if (!remotePath.trimmed().isEmpty())
+                    info.remotePath = remotePath.trimmed();
+                // bundleDir is absolute — writeMapInfo stores relative names, so only update
+                // remote_path here; the bundle and mesh paths stay at their canonical locations.
+                m_volumeManager->writeMapInfo(roomId, info);
+                if (m_recordedPathsWidget)
+                    m_recordedPathsWidget->updateRoomSummary();
+            });
     
     // Camera feed signals
     connect(m_cameraFeedWidget, &CameraFeedWidget::recordingSaved,
